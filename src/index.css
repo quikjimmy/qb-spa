@@ -4,7 +4,6 @@
   --bg: #fff;
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
 
   font: 18px/145% var(--sans);
   color-scheme: light dark;
@@ -26,11 +25,7 @@ body {
   margin: 0;
 }
 
-h1, h2 {
+h1 {
   font-weight: 500;
   color: var(--text-h);
-}
-
-code {
-  font-family: var(--mono);
 }
