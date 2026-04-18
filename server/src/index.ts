@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
+import fs from 'fs'
 import { UPLOADS_DIR } from './lib/upload'
 import { authRouter } from './routes/auth'
 import { qbRouter } from './routes/qb'
@@ -21,13 +22,19 @@ import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 
 const app = express()
-const PORT = process.env['PORT'] || 3001
+const PORT = Number(process.env['PORT']) || 3001
+const isProd = process.env['NODE_ENV'] === 'production'
 
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
+if (!isProd) {
+  app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
+}
 app.use(express.json({ limit: '1mb' }))
 
 // Serve uploaded media files
 app.use('/uploads', express.static(UPLOADS_DIR))
+
+// Health check
+app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
 
 // Public routes
 app.use('/api/auth', authRouter)
@@ -49,7 +56,21 @@ app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)
 app.use('/api/admin/qb-sync', authenticate, requireRole('admin'), qbSyncRouter)
 app.use('/api/admin/feed', authenticate, requireRole('admin'), feedIngestRouter)
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`)
+if (isProd) {
+  const clientDist = process.env['CLIENT_DIST']
+    ? path.resolve(process.env['CLIENT_DIST'])
+    : path.resolve(process.cwd(), '../client/dist')
+  if (fs.existsSync(clientDist)) {
+    app.use(express.static(clientDist))
+    app.get(/^(?!\/api\/|\/uploads\/).*/, (_req, res) => {
+      res.sendFile(path.join(clientDist, 'index.html'))
+    })
+  } else {
+    console.warn(`client/dist not found at ${clientDist} — static serving disabled`)
+  }
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT} (${isProd ? 'production' : 'development'})`)
   startAgentScheduler()
 })

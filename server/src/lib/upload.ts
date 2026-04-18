@@ -3,7 +3,8 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 
-export const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads')
+const DATA_DIR = process.env['DATA_DIR'] || process.cwd()
+export const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads')
 export const THUMBS_DIR = path.join(UPLOADS_DIR, 'thumbs')
 
 // Ensure dirs exist

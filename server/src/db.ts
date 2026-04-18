@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 
-const dbPath = path.resolve(process.cwd(), 'portal.db')
+const DATA_DIR = process.env['DATA_DIR'] || process.cwd()
+const dbPath = path.resolve(DATA_DIR, 'portal.db')
 const db = new Database(dbPath)
 
 db.pragma('journal_mode = WAL')
