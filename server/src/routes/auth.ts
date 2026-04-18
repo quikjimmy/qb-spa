@@ -52,15 +52,22 @@ router.post('/register', (req: Request, res: Response): void => {
   const passwordHash = bcrypt.hashSync(password, 10)
 
   const registerTransaction = db.transaction(() => {
+    const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c
+    const isFirstUser = userCount === 0
+
     const result = db.prepare(
       'INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)'
     ).run(email, name, passwordHash)
 
     const userId = result.lastInsertRowid as number
 
-    // Assign default 'customer' role
     const customerRole = db.prepare("SELECT id FROM roles WHERE name = 'customer'").get() as { id: number }
     db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, customerRole.id)
+
+    if (isFirstUser) {
+      const adminRole = db.prepare("SELECT id FROM roles WHERE name = 'admin'").get() as { id: number }
+      db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, adminRole.id)
+    }
 
     return userId
   })
