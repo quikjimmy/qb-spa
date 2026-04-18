@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed": "#ff9742",
+                        "surface-container-low": "#f0f1f1",
+                        "inverse-surface": "#0c0f0f",
+                        "on-tertiary-container": "#4f2500",
+                        "tertiary-fixed-dim": "#fb8300",
+                        "on-error-container": "#570008",
+                        "primary-dim": "#a00045",
+                        "on-secondary": "#f2f3f3",
+                        "surface-container": "#e7e8e8",
+                        "error-container": "#fb5151",
+                        "tertiary": "#904800",
+                        "on-tertiary": "#fff0e8",
+                        "tertiary-container": "#ff9742",
+                        "on-surface": "#2d2f2f",
+                        "secondary-fixed-dim": "#d4d4d4",
+                        "secondary-fixed": "#e2e2e2",
+                        "surface-container-highest": "#dbdddd",
+                        "outline": "#757777",
+                        "surface-container-high": "#e1e3e3",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#5a5c5c",
+                        "on-tertiary-fixed-variant": "#5c2c00",
+                        "error": "#b31b25",
+                        "inverse-primary": "#ff4c83",
+                        "surface-variant": "#dbdddd",
+                        "error-dim": "#9f0519",
+                        "on-secondary-fixed-variant": "#5a5c5c",
+                        "surface-bright": "#f6f6f6",
+                        "on-primary": "#ffeff0",
+                        "on-secondary-container": "#505252",
+                        "secondary-dim": "#4e5050",
+                        "surface": "#f6f6f6",
+                        "on-surface-variant": "#5a5c5c",
+                        "on-primary-container": "#4d001d",
+                        "on-background": "#2d2f2f",
+                        "outline-variant": "#acadad",
+                        "primary-container": "#ff7196",
+                        "primary-fixed-dim": "#ff5486",
+                        "on-secondary-fixed": "#3e4040",
+                        "secondary-container": "#e2e2e2",
+                        "on-tertiary-fixed": "#2a1100",
+                        "primary": "#b6004f",
+                        "on-primary-fixed-variant": "#5e0025",
+                        "background": "#f6f6f6",
+                        "on-error": "#ffefee",
+                        "primary-fixed": "#ff7196",
+                        "on-primary-fixed": "#000000",
+                        "tertiary-dim": "#7e3e00",
+                        "surface-tint": "#b6004f",
+                        "surface-dim": "#d2d5d5",
+                        "inverse-on-surface": "#9c9d9d"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "2xl": "1rem",
+                        "3xl": "1.5rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .signature-gradient {
+            background: linear-gradient(135deg, #b6004f 0%, #ff9742 100%);
+        }
+        .signature-text-gradient {
+            background: linear-gradient(135deg, #b6004f 0%, #ff9742 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface font-body text-on-surface antialiased">
+<!-- NavigationDrawer (The Blueprint - Pre-rendered for demonstration) -->
+<div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[55] hidden" id="drawer-overlay"></div>
+<aside class="fixed inset-y-0 left-0 z-[60] flex flex-col py-8 bg-white dark:bg-zinc-950 h-full w-[280px] rounded-r-3xl shadow-2xl shadow-zinc-200/50 transform -translate-x-full transition-transform duration-300 ease-in-out" id="nav-drawer">
+<!-- Header Profile Section -->
+<div class="px-6 mb-8 flex flex-col items-start">
+<div class="w-16 h-16 rounded-2xl overflow-hidden mb-4 bg-surface-container">
+<img alt="User Profile Avatar" class="w-full h-full object-cover" data-alt="portrait of a professional creative man with glasses and a friendly expression in a bright studio" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAyH6BOIrwW0qkQwQ1o2XypFlD-ZdWy6jJSUsJJuAppmabYADBo4zYkxC_yBQr2T0KNAF2oW3axMn5ynD0A8gsBtVHADcT-i2gPVTqZnTYUrZ8lNZvGYLA_AmI8RdgRcxiKLIcC0bQgYaoFUU7q_QAIz56SH-Vq6Biw2lnJnaPxB9HxMO1OHaYfvKzHIX42XnuJ8xh99eJuIYjtDBL75MMhFwHaRMbVPiDhgQD9ximnRHzWJO3PF0QmvHotCImKtF0_3TmZGu0SIiM"/>
+</div>
+<h2 class="text-lg font-bold text-zinc-900 dark:text-white">Alex Curator</h2>
+<p class="text-xs font-medium text-zinc-500 uppercase tracking-widest">Lead Architect</p>
+<span class="mt-1 text-[10px] px-2 py-0.5 bg-pink-50 text-pink-700 rounded-full font-bold">Premium Member</span>
+</div>
+<!-- Nav Items -->
+<nav class="flex-1 space-y-1">
+<!-- Active State Dashboard -->
+<a class="bg-pink-50 dark:bg-pink-900/20 text-pink-700 dark:text-pink-300 rounded-xl mx-2 flex items-center px-4 py-3 font-['Inter'] text-sm font-medium transition-all active:translate-x-1" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="dashboard">dashboard</span>
+                Dashboard
+            </a>
+<a class="text-zinc-600 dark:text-zinc-400 px-4 py-3 mx-2 flex items-center font-['Inter'] text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800/50 rounded-xl transition-all active:translate-x-1" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="folder_copy">folder_copy</span>
+                Projects
+            </a>
+<a class="text-zinc-600 dark:text-zinc-400 px-4 py-3 mx-2 flex items-center font-['Inter'] text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800/50 rounded-xl transition-all active:translate-x-1" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="group">group</span>
+                Contributors
+            </a>
+<a class="text-zinc-600 dark:text-zinc-400 px-4 py-3 mx-2 flex items-center font-['Inter'] text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800/50 rounded-xl transition-all active:translate-x-1" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="archive">archive</span>
+                Archives
+            </a>
+</nav>
+<div class="px-6 mt-auto">
+<div class="p-4 bg-surface-container-low rounded-2xl">
+<p class="text-xs font-semibold text-on-surface mb-2">Project Quota</p>
+<div class="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full signature-gradient w-[75%]"></div>
+</div>
+<p class="text-[10px] text-secondary mt-2">18 / 24 Projects active</p>
+</div>
+</div>
+</aside>
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl h-16 flex justify-between items-center px-6">
+<div class="flex items-center gap-4">
+<button class="p-2 -ml-2 text-pink-600 dark:text-pink-400 hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 transition-colors rounded-full active:scale-95" onclick="document.getElementById('nav-drawer').classList.remove('-translate-x-full'); document.getElementById('drawer-overlay').classList.remove('hidden')">
+<span class="material-symbols-outlined" data-icon="menu">menu</span>
+</button>
+<h1 class="text-xl font-bold tracking-tighter text-zinc-900 dark:text-white font-['Inter']">Muse Projects</h1>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 transition-colors rounded-full active:scale-95">
+<span class="material-symbols-outlined" data-icon="search">search</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden ring-2 ring-pink-50 ring-offset-2 ring-offset-white cursor-pointer active:scale-90 transition-transform">
+<img alt="Profile" class="w-full h-full object-cover" data-alt="headshot of a man with short hair and a subtle beard smiling" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBDTQIRzILvS20V553yP-26rWuig9ZgIkdXpO5AKEeb9z6Fzn6XG0m78kc7sBOk8HHMyQM89wxY7b66OHe29Q_1403hkQADZUwhOz-qCD_HuFHmHWJMfZ2cnVsxvxFNenfA2du6OlVEdrM7tovYS0rVMjzEqt0PseRXhax2jzJ-sEEDJzzJb1uGomiSVV_yEN8Zmwoi6jYwGHEU-OL6xVih8GVuWb19LACXIJItCGzTyi8NmaRvHjYokbjoxrj5I5JIC1cyfvKo9NU"/>
+</div>
+</div>
+</header>
+<main class="pt-20 pb-12 max-w-xl mx-auto px-4 lg:px-0">
+<!-- Story/Milestone Circles (The Digital Curator Aesthetic) -->
+<div class="flex gap-4 overflow-x-auto pb-8 no-scrollbar scroll-smooth">
+<div class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer">
+<div class="w-[72px] h-[72px] rounded-full p-[3px] signature-gradient transition-transform group-hover:scale-105">
+<div class="w-full h-full rounded-full bg-white p-0.5">
+<img class="w-full h-full rounded-full object-cover" data-alt="close-up portrait of creative professional woman" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDUaG_KfNYKTHhSD-ptL3fC5F6dwGyJRUUod4hylWOruKdY-IqnQF55DwpoXlALF98BRo954KgB1yl0gqUq9dV8ds8PM9_FTHwkSAOS6vLhuqEkks-T4vO3klDhM06eaqFrg3G_D408XXcntmjg1f7bymdvfTFRMN-KgnSDRwmSMVlndlKqrFp5mDq8Wd2iRYTU55zqSwvF5H8oJiC8KjvlanuHIqNM3jZ4MCXxrDJmS8AV0Eb1UAxQm0KXVMFJsT2E5LVz8gY17EQ"/>
+</div>
+</div>
+<span class="text-[10px] font-semibold text-secondary uppercase tracking-wider">Design</span>
+</div>
+<div class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer">
+<div class="w-[72px] h-[72px] rounded-full p-[3px] bg-surface-container-highest">
+<div class="w-full h-full rounded-full bg-white p-0.5">
+<img class="w-full h-full rounded-full object-cover" data-alt="professional man in casual suit" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD4ZF04T-Ypy2-FgIT3rzGLJcFDLrXTYTciKEu2t6lacMUtUHsNi-huEQ8IYpIY8XRJIYCzLzIHvhHcH0af1lDHR3iBxSy6bu_4Jrd-IfgeT_ssLMUadgCRts-gOsnSj9IHqNAUAGKdi7X9EiUCPxXYF2OwSZR_2lZY84Ml5Ejv9ewQ2zi-PkamPmzlMUJZCDjQLXVaPALY63IP8Zt7V4H2NQDtQ2oDY4H-8Ywnk3Pm-9xKQ9vFkK-FOvdu_sGljHLupMyYIJld9I8"/>
+</div>
+</div>
+<span class="text-[10px] font-semibold text-secondary uppercase tracking-wider">Dev Ops</span>
+</div>
+<div class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer">
+<div class="w-[72px] h-[72px] rounded-full p-[3px] signature-gradient">
+<div class="w-full h-full rounded-full bg-white p-0.5">
+<img class="w-full h-full rounded-full object-cover" data-alt="business woman working in a creative office space" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBmGmVB-vVQUcubbGvNATb_EczA5aB6FVAE3fA6KzVy41VI8Ht_7gUWepjVl3jQ6kx2h4H5p2jdaDJ8Y3Iohntdqj_XM1JhHYCw_rP_tf0f9jSjom9OrcDfxWsJmh57ty0GXC1HtQRqQSZsC5qBZXSignyTTwNypU3pAYdV0ZluxexG59br6oCUk-_6LoE_gwQQzhfWYNQezizw6suBpZ7Uqes4cDKDv3gwiLCRIlOmK9jCmGYY9DhU4hBzSY-yzGsF0QgEumR-2Gk"/>
+</div>
+</div>
+<span class="text-[10px] font-semibold text-secondary uppercase tracking-wider">Product</span>
+</div>
+<div class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer">
+<div class="w-[72px] h-[72px] rounded-full p-[3px] bg-surface-container-highest">
+<div class="w-full h-full rounded-full bg-white p-0.5">
+<img class="w-full h-full rounded-full object-cover" data-alt="smiling creative individual" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDSFatZqS9YYgaSjenYoUP14vqd8KnIJtWQYGsq1HONNLgULNp6OC1VOYEpNxXMRUAFFhfbNu63MgSalmiYejzoAUhcIAFsptuLHlOxsUg-8owobDwcOz5TvKV4r6ZkylmN3vBaeH80b4EBj3JjNPv0Eeypu8IU4zTweRu7-P5PcEsKXILOmf0i2IcoiURM2KJWhKSfI1B2owvk0w8NwTw_obpaQeXNWf_46Qu6F2PTNdsl50o6eul0IVmMo9m_59r8Z4C2QM_qqY0"/>
+</div>
+</div>
+<span class="text-[10px] font-semibold text-secondary uppercase tracking-wider">Research</span>
+</div>
+<div class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer">
+<div class="w-[72px] h-[72px] rounded-full p-[3px] bg-surface-container-highest">
+<div class="w-full h-full rounded-full bg-white p-0.5">
+<img class="w-full h-full rounded-full object-cover" data-alt="male professional headshot" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDrQwxn0K2H5GulQsLsmwlBx3T0AOzkef0DjpY-sFgVMqkEcbzwQmrJDNXWUHrPBQVLm8jiiWyPwKF0kVtDmTKuXRa-fDoRWrozTMBYPCli3NPxandw0xQ8Tn0MNLvNQMM_C04eEb4YToHulK2aGchrtoI7FOVnwh96xVdWAb65v3nmqNGxMTCav_-Y1JGvfLukxf6AJU1kwnC9sIgsxJoDV6EmSB8NOgdWkY1cTNli3qMk7NJUtG1nHjC6MC1MuP4FD6La3KHWBKo"/>
+</div>
+</div>
+<span class="text-[10px] font-semibold text-secondary uppercase tracking-wider">QA</span>
+</div>
+</div>
+<!-- Project Feed Container -->
+<div class="space-y-12">
+<!-- Feed Item 1: High-End Magazine Style -->
+<article class="bg-surface-container-lowest rounded-3xl overflow-hidden group">
+<div class="p-4 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="professional headshot profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA5QC7yAdIZDgFPXL1hoycVG2q8fruMaSsSKwXisaDZZPfWmtEPkpli6HYHT7-wVJLcUS8nbahIMV78GTlR1x_Oskna5mm6FMtRDd58MWebRanQ0WWHxs3kDwEpgpDVg76t-RgvALTxnv1e52PspiztQ_dQRsj7zk_i0kQkP7SOTolaIqa0QLyKqdzfTQcJzMqeYrqz-Mcg9Wn0T6QyqCVqMgLnIrgkHcAoBDH5TjPFvuSoRB1t6dTtqFyEpaJI_Po2A819frjBKEY"/>
+</div>
+<div>
+<p class="text-sm font-bold text-on-surface">Elena Vance</p>
+<p class="text-[10px] text-secondary font-medium tracking-wide">PHASE 2 • ARCHITECTURE</p>
+</div>
+</div>
+<button class="text-secondary hover:text-on-surface transition-colors">
+<span class="material-symbols-outlined" data-icon="more_horiz">more_horiz</span>
+</button>
+</div>
+<div class="relative px-4">
+<div class="aspect-[4/5] rounded-3xl overflow-hidden bg-surface-container">
+<img alt="Modern office architecture" class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" data-alt="stunning architectural view of a modern brutalist interior with raw concrete and warm lighting at dusk" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB_FhaOwtBcIzaBFZJSb6dE8pFzGdbI6sJA_wjVBY947NOvcN4gE83d1lJ6KU9d3rGFX3T1azZQmJc41l2vTG9ZexzHs32kGfHt1HCr78EUdU2LnMb9fsN6p1FlR4ilPZGZIwBQ3WiqmomzZXJlsaCs2oyG96pUpODltV6Ch2Ubfr1Q9wkIjNp-Qll2SzGsy2fhla6711y9tQY5MmWNvLpomuriHoRwWISlQqjpSl_6H4YZ_gcnR3hl87dJtmgOkuOucOKiRaknVvU"/>
+<div class="absolute bottom-8 left-8 right-8">
+<div class="bg-white/20 backdrop-blur-md p-4 rounded-2xl border border-white/20 shadow-xl">
+<span class="label-sm bg-primary text-white px-2 py-0.5 rounded text-[10px] font-bold">MILESTONE</span>
+<p class="text-white font-bold mt-1">Atrium Core Structural Finish</p>
+</div>
+</div>
+</div>
+</div>
+<div class="p-5">
+<div class="flex items-center justify-between mb-4">
+<div class="flex items-center gap-5">
+<button class="flex items-center gap-1.5 transition-transform active:scale-90 group/like">
+<span class="material-symbols-outlined text-primary" data-icon="favorite" style="font-variation-settings: 'FILL' 1;">favorite</span>
+<span class="text-xs font-bold signature-text-gradient">1.2k</span>
+</button>
+<button class="flex items-center gap-1.5 transition-transform active:scale-90 text-secondary hover:text-primary">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+<span class="text-xs font-bold">48</span>
+</button>
+<button class="text-secondary hover:text-primary transition-transform active:scale-90">
+<span class="material-symbols-outlined" data-icon="share">share</span>
+</button>
+</div>
+<button class="text-secondary hover:text-on-surface transition-transform active:scale-90">
+<span class="material-symbols-outlined" data-icon="bookmark">bookmark</span>
+</button>
+</div>
+<div class="space-y-2">
+<p class="text-sm leading-relaxed text-on-surface">
+<span class="font-bold">Elena Vance</span> The core structural elements of the Central Atrium are finally complete. This marks a massive pivot in our Q3 timeline. Major thanks to <span class="text-primary-dim font-medium">@structural_team</span> for the round-the-clock precision.
+                        </p>
+<div class="space-y-1">
+<p class="text-xs text-secondary">
+<span class="font-bold text-on-surface">marcus_dev</span> <span class="text-primary-dim">@Elena</span> looks absolutely pristine. When do we start the glass installation?
+                            </p>
+<p class="text-xs text-secondary italic">See all 48 comments</p>
+</div>
+<p class="text-[10px] text-outline-variant font-bold uppercase tracking-tighter mt-4">2 HOURS AGO</p>
+</div>
+</div>
+</article>
+<!-- Feed Item 2: Status Update Layout -->
+<article class="bg-surface-container-lowest rounded-3xl overflow-hidden group">
+<div class="p-4 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="professional man profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAtjhLp1mfPnqWrHXKMq_kyELAvBazDO5YZaO1ulwMo3UgEj8xr7xwo1VmwX0AKCrB8GS_qZpiQKKdXyBt0XoNtzNHwtyvviHBAg-5wA6hxNUC_rAs8Y8R8QyWmdt7RdRAS6_WGUH3utKsZemVuDgrMUJYrDvYsDTZtVw2f5HnbJgWDIpr3vmeTiNAYb9jBzVv7ia1KSyShS7SDpc3PM4yL4Cs9Clkq6PrgjZWf2jUbNFaOPapXa6Oy1ZmFg9um2HnVfQOQ3IaAjkc"/>
+</div>
+<div>
+<p class="text-sm font-bold text-on-surface">Alex Curator</p>
+<p class="text-[10px] text-secondary font-medium tracking-wide">STRATEGY • PIPELINE</p>
+</div>
+</div>
+<button class="text-secondary hover:text-on-surface">
+<span class="material-symbols-outlined" data-icon="more_horiz">more_horiz</span>
+</button>
+</div>
+<div class="px-4">
+<div class="aspect-video rounded-3xl overflow-hidden bg-gradient-to-br from-zinc-900 to-zinc-800 p-8 flex flex-col justify-center items-center text-center">
+<span class="material-symbols-outlined text-white/40 mb-4 scale-[2]" data-icon="auto_awesome" style="font-size: 48px;">auto_awesome</span>
+<h3 class="text-2xl font-black text-white tracking-tighter leading-none mb-2">PIPELINE UNLOCKED</h3>
+<p class="text-white/60 text-sm font-medium">Sprint "Obsidian" reached 100% velocity.</p>
+</div>
+</div>
+<div class="p-5">
+<div class="flex items-center justify-between mb-4">
+<div class="flex items-center gap-5">
+<button class="flex items-center gap-1.5 transition-transform active:scale-90 text-secondary hover:text-primary">
+<span class="material-symbols-outlined" data-icon="favorite">favorite</span>
+<span class="text-xs font-bold">284</span>
+</button>
+<button class="flex items-center gap-1.5 transition-transform active:scale-90 text-secondary hover:text-primary">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+<span class="text-xs font-bold">12</span>
+</button>
+</div>
+</div>
+<div class="space-y-2">
+<p class="text-sm leading-relaxed text-on-surface">
+<span class="font-bold">Alex Curator</span> Obsidian pipeline is now officially green-lit for production. Huge efficiency gains in the asset processing chain. <span class="text-primary-dim">@eng_lead</span>
+</p>
+<p class="text-[10px] text-outline-variant font-bold uppercase tracking-tighter">5 HOURS AGO</p>
+</div>
+<!-- Modern Comment Input -->
+<div class="mt-4 pt-4 border-t border-surface-container flex items-center gap-3">
+<div class="w-8 h-8 rounded-full overflow-hidden flex-none">
+<img class="w-full h-full object-cover" data-alt="user self profile photo" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCP1vX_3R2rahGi7OPqMt2rrlXV-TLKrgPjKpxLHRfuJgN2eenNNtAXz2b0Nu3pdpOpxUvLpusnaWrVSLt05RGx3ljC9f1nVZoNcU1UftAXe0VasWCiOWA3zQaKVnzebwHCROgeuFPV3dcSvb7JHOWv52667-dRmNU6fw_S3ABbAKJXmfUFb3zW5d2ZLKWuMCD3mzFNK20Z8ijGIIba1wx7S3yrOoXpkg17Ngs7v4Ka72vSn2inqncIPb-93WYVvjpAUGUcWanjeVo"/>
+</div>
+<div class="flex-1 relative">
+<input class="w-full bg-surface-container-low border-none rounded-full px-4 py-2 text-xs focus:ring-1 focus:ring-primary/20 focus:bg-white transition-all outline-none" placeholder="Add a comment..." type="text"/>
+<button class="absolute right-3 top-1/2 -translate-y-1/2 text-primary font-bold text-[10px] uppercase tracking-wider">Post</button>
+</div>
+</div>
+</div>
+</article>
+<!-- Feed Item 3: Grid Collage Style -->
+<article class="bg-surface-container-lowest rounded-3xl overflow-hidden group">
+<div class="p-4 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="professional headshot" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCTeojR6GVd-O-1LMJ92-rPRBpiBoIg9XsL74p5M51T-h_PzTuhI7IBGlWMmOB-iCSxwWrc4TVr6YZN4V27SgEuCSbeasGaiEyta4fAhl76Q8r2i25zfPV4Rq40HqviFvw7YIZRKkJGcRdJ2sfI8qMUfLuQegNEOpD8GXIIYhXkbLPhhpfYZVOpwiPuFuIIAndcvASl8X61Q_N18XE5Ip-rjnQo3cTfIfHq0S05u2uB9JlpG9BR0KvBbukft83Ff0KYd3O4oYWSU90"/>
+</div>
+<div>
+<p class="text-sm font-bold text-on-surface">Sarah Connor</p>
+<p class="text-[10px] text-secondary font-medium tracking-wide">RESOURCES • PROCUREMENT</p>
+</div>
+</div>
+</div>
+<div class="px-4 grid grid-cols-2 gap-2">
+<div class="aspect-square rounded-2xl overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="detailed industrial factory setting with precision machinery" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCa1uqCW3q2VxU7lifBHzIW6hcJY0UTZx6zk8oY56kJu_l_vfH8EUOBroP31Kc4XCgdQbWbHTACyL2YYXl6mgVb27QFBqrbbw-wQYj95JwvP8LAjzHBHeQYOBO2lo18IVDyLJ0NsH4FGC0dwdROveLqyzZVB0wsrc115crKk9ybShbhur5CtNGcs1cJ7IQlzrHXGWPY4_OEaDgfGPbSTvut8zwOfz30_mA4pHIq-IBUBDTMzoEDJ7saIvhshqJI-dFai8gPSlWuCyM"/>
+</div>
+<div class="grid grid-rows-2 gap-2">
+<div class="rounded-2xl overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="close-up of circuit board and microchips" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC6RUgfsUz8BCO6dgFDNTnFvfsBu-a06Ny47GOJXVaLrIVUjkm4uS1Dz4GNDEcppioJsdrzEjQ-2Ot0QjDhnv5R-QfaqyKcxvWBHGYwlp-pGcn93VVbumbSVBTy_6Flh-bamXRXcE4kfDz-Dicw38HMbMom6s9aQ3E6xdLIZHJsGj1K9KmvMd8rycRg9pHof7PINsS7pyUgZ-9w5PzXKHBKgY2btCftevgFKU5VG_Dvna5Bnuqie-rZd8Rpn-gUNBxnQmByFDe2Ij0"/>
+</div>
+<div class="rounded-2xl overflow-hidden relative">
+<img class="w-full h-full object-cover" data-alt="cyber security server room glowing with blue lights" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB7BsiwjRptxd9Q4XBdZBuyuGSPVkXIgtVK34csppglO2yswReltV811Z0k5_hDUpUPoGqPh0Qt5Jow59-vCjiHgz-xZ4RvYp80tqz7UzKBa1f-fo-6zChRdQw9wLdlokM03lgoKYp5Z7ypAalNqewMjkgZ70gHUz14ca4CUOiYdmDFyZunyBXGbT_6zz9TT-3ztlGWcIMbLS9lSZ_xeB2w2Zf_l2FgCCg4Sr7SzuHps-ZVbI6S6MxG71V1IWhAceDuqB03vupnvMs"/>
+<div class="absolute inset-0 bg-black/40 flex items-center justify-center">
+<span class="text-white font-bold text-xl">+4</span>
+</div>
+</div>
+</div>
+</div>
+<div class="p-5">
+<p class="text-sm leading-relaxed text-on-surface">
+<span class="font-bold">Sarah Connor</span> Inventory audit complete for the Smart-City Pilot. Everything is on-site and tagged. Shoutout to <span class="text-primary-dim font-medium">@logistics_dept</span> for the early delivery.
+                    </p>
+<p class="text-[10px] text-outline-variant font-bold uppercase tracking-tighter mt-4">8 HOURS AGO</p>
+</div>
+</article>
+</div>
+</main>
+<!-- Script for handling simple drawer interaction without complex JS as requested -->
+<script>
+        // Simple manual listener for the overlay
+        document.getElementById('drawer-overlay').addEventListener('click', function() {
+            document.getElementById('nav-drawer').classList.add('-translate-x-full');
+            this.classList.add('hidden');
+        });
+    </script>
+</body></html>

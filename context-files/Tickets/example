@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tickets">
+<title>Tickets &mdash; Core Ops</title>
+<style>
+  :root {
+    --bg: #f7f3f0;
+    --card: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e0d8d1;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #3b82f6;
+    --purple: #8b5cf6;
+    --warm: #cec4bc;
+    --warm-light: #e8e2dc;
+    --header-bg: #1e293b;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { height: 100%; width: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: contain;
+    min-height: 100%; min-height: 100vh; min-height: 100dvh;
+    position: relative; overflow: hidden;
+  }
+
+  /* ===== HEADER ===== */
+  .header {
+    background: var(--header-bg); color: white;
+    padding: 14px 16px 12px;
+    padding-top: max(14px, env(safe-area-inset-top));
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    transform: translateZ(0); -webkit-transform: translateZ(0);
+  }
+  .header-top { display: flex; align-items: center; justify-content: space-between; }
+  .header-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+  .header h1 { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .header-actions button {
+    background: rgba(255,255,255,0.10); border: none; color: white;
+    width: 38px; height: 38px; border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-appearance: none; transition: background 0.15s;
+  }
+  .header-actions button:active { background: rgba(255,255,255,0.22); }
+  .header-actions button svg { width: 18px; height: 18px; }
+  .back-btn {
+    display: none; width: 38px; height: 38px; border-radius: 10px; border: none;
+    background: rgba(255,255,255,0.10); color: white; cursor: pointer;
+    align-items: center; justify-content: center; flex-shrink: 0;
+    -webkit-appearance: none; transition: background 0.15s;
+  }
+  .back-btn:active { background: rgba(255,255,255,0.22); }
+  .back-btn svg { width: 18px; height: 18px; }
+  .header-spacer { height: calc(60px + env(safe-area-inset-top, 0px)); }
+
+  /* ===== SEARCH BAR ===== */
+  .search-bar {
+    display: none; padding: 0 16px 12px;
+    background: var(--header-bg);
+    position: fixed; top: calc(62px + env(safe-area-inset-top, 0px)); left: 0; right: 0;
+    z-index: 99; transform: translateZ(0);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .search-bar.open { display: flex; align-items: center; gap: 8px; }
+  .search-bar input {
+    flex: 1; min-width: 0; padding: 10px 14px; border-radius: 10px;
+    border: none; background: rgba(255,255,255,0.12); color: white;
+    font-size: 15px; outline: none;
+  }
+  .search-bar input::placeholder { color: rgba(255,255,255,0.5); }
+  .search-bar .search-close {
+    background: none; border: none; color: rgba(255,255,255,0.6);
+    font-size: 20px; cursor: pointer; padding: 8px;
+  }
+
+  /* ===== KPI CHIPS ===== */
+  .kpi-strip-wrap { padding: 0 16px; }
+  .kpi-strip {
+    display: flex; gap: 8px; padding: 14px 0; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .kpi-strip::-webkit-scrollbar { display: none; }
+  .kpi-chip {
+    flex: 0 0 auto; scroll-snap-align: start; background: white; border-radius: 14px;
+    padding: 12px 16px; min-width: 100px; border: 1.5px solid var(--border);
+    position: relative; overflow: hidden; transition: border-color 0.2s, transform 0.1s;
+  }
+  .kpi-chip::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+  .kpi-chip[data-kpi="all"]::before { background: var(--header-bg); }
+  .kpi-chip[data-kpi="overdue"]::before { background: var(--danger); }
+  .kpi-chip[data-kpi="duetoday"]::before { background: var(--warning); }
+  .kpi-chip[data-kpi="futuredue"]::before { background: var(--success); }
+  .kpi-chip .label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px; }
+  .kpi-chip .value { font-size: 28px; font-weight: 800; margin: 2px 0 0; }
+  .kpi-chip[data-kpi="overdue"] .value { color: var(--danger); }
+  .kpi-chip[data-kpi="duetoday"] .value { color: var(--warning); }
+  .kpi-chip[data-kpi="futuredue"] .value { color: var(--success); }
+  .kpi-chip[data-kpi="overdue"]:active, .kpi-chip[data-kpi="duetoday"]:active { transform: scale(0.96); }
+
+  /* ===== QUICK FILTERS ===== */
+  .filter-section { padding: 0 16px 6px; }
+  .filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .qf-chip {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    background: white; border: 1.5px solid var(--border); color: var(--muted);
+    cursor: pointer; white-space: nowrap; -webkit-appearance: none;
+    min-height: 30px; display: inline-flex; align-items: center;
+  }
+  .qf-chip:active { background: #f1f5f9; }
+  .qf-chip.active { background: var(--header-bg); color: white; border-color: var(--header-bg); }
+
+  /* ===== SCROLL AREA ===== */
+  .scroll-area {
+    position: fixed;
+    top: calc(60px + env(safe-area-inset-top, 0px));
+    left: 0; right: 0;
+    bottom: 0;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg);
+  }
+
+  /* ===== VIEW PANELS ===== */
+  .view-panel { display: none; padding: 0 16px 20px; }
+  .view-panel.active { display: block; }
+
+  /* ===== PIVOT SELECTOR ===== */
+  .pivot-strip { display: flex; gap: 6px; padding: 10px 0 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .pivot-strip::-webkit-scrollbar { display: none; }
+  .pivot-btn {
+    padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    background: white; border: 1.5px solid var(--border); color: var(--muted);
+    cursor: pointer; white-space: nowrap; -webkit-appearance: none; appearance: none;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .pivot-btn:active { background: #f1f5f9; }
+  .pivot-btn.active { background: var(--header-bg); color: white; border-color: var(--header-bg); }
+
+  /* ===== SUMMARY TABLES ===== */
+  .section-label {
+    font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 14px 0 6px; display: flex; align-items: center;
+    justify-content: space-between; cursor: pointer; -webkit-user-select: none; user-select: none;
+  }
+  .section-label .collapse-arrow {
+    font-size: 10px; transition: transform 0.2s; display: inline-block; margin-left: 8px;
+  }
+  .section-label .collapse-arrow.collapsed { transform: rotate(-90deg); }
+  .summary-table-wrap.collapsed { display: none; }
+  .summary-table-wrap {
+    background: white; border-radius: 14px; border: 1px solid var(--border);
+    overflow: hidden; margin-bottom: 16px;
+  }
+  .summary-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .summary-table th {
+    font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.3px; padding: 10px 8px; border-bottom: 1.5px solid var(--border);
+    text-align: center; background: #faf8f6;
+  }
+  .summary-table th:first-child { text-align: left; width: 36%; }
+  .summary-table td {
+    padding: 10px 8px; font-size: 13px; font-weight: 500;
+    text-align: center; border-bottom: 1px solid #f0ece8;
+  }
+  .summary-table td:first-child {
+    text-align: left; font-weight: 600; font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .summary-table tr:nth-child(even) td { background: #faf8f6; }
+  .summary-table tr:last-child td { border-bottom: none; }
+  .summary-table td.tappable { cursor: pointer; }
+  .summary-table td.tappable:active { background: var(--warm-light); }
+  .summary-table td.past-due { color: var(--danger); font-weight: 700; }
+  .summary-table td.due-today { color: var(--warning); font-weight: 700; }
+  .summary-table tr.totals-row td {
+    font-weight: 700; border-top: 1.5px solid var(--border);
+    background: #faf8f6; font-size: 13px;
+  }
+  .summary-table tr.totals-row td:first-child { color: var(--muted); text-transform: uppercase; font-size: 11px; }
+
+  /* ===== GROUP HEADER ===== */
+  .group-header {
+    font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 12px 0 6px; border-bottom: 1px solid var(--border);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; -webkit-user-select: none; user-select: none;
+  }
+  .group-header .collapse-arrow {
+    font-size: 10px; transition: transform 0.2s; display: inline-block;
+  }
+  .group-header .collapse-arrow.collapsed { transform: rotate(-90deg); }
+  .group-cards.collapsed { display: none; }
+  .group-header .group-count {
+    background: var(--bg); padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 700; color: var(--text);
+  }
+  .group-header.overdue { color: var(--danger); }
+  .group-header.today { color: var(--warning); }
+  .group-header.futuredue { color: var(--success); }
+
+  /* ===== TICKET CARDS ===== */
+  .record-card {
+    background: white; border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+    border: 1px solid var(--border); transition: transform 0.1s; cursor: pointer;
+    position: relative;
+  }
+  .record-card:active { transform: scale(0.985); }
+  .record-card.border-high { border-left: 3px solid var(--danger); }
+  .record-card.border-medium { border-left: 3px solid var(--warning); }
+  .record-card.border-low { border-left: 3px solid var(--success); }
+  .record-card.border-normal { border-left: 3px solid #e0d8d1; }
+  .record-card.overdue-tint { background: #fff5f5; }
+  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; gap: 8px; }
+  .card-header .card-title { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+  .card-header .card-pills { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+  .card-sub { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .card-sub span + span::before { content: ' \00B7 '; }
+
+  /* ===== STATUS PILLS (computed) ===== */
+  .status-pill {
+    display: inline-flex; align-items: center; padding: 3px 8px;
+    border-radius: 20px; font-size: 11px; font-weight: 600;
+  }
+  .status-pill.pastdue { background: rgba(239,68,68,0.12); color: var(--danger); }
+  .status-pill.duetoday { background: rgba(245,158,11,0.12); color: var(--warning); }
+  .status-pill.ontrack { background: rgba(16,185,129,0.12); color: var(--success); }
+  .status-pill.followupscheduled { background: rgba(59,130,246,0.12); color: var(--info); }
+  /* Days past due badge */
+  .past-due-badge {
+    display: inline-flex; align-items: center; padding: 2px 7px;
+    border-radius: 20px; font-size: 10px; font-weight: 700;
+    background: rgba(239,68,68,0.1); color: var(--danger);
+  }
+
+  /* ===== TICKET DETAIL (Level 2) ===== */
+  .detail-card {
+    background: white; border-radius: 14px; padding: 16px; margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+  .detail-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .detail-desc { font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+  .card-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 13px; border-bottom: 1px solid #f1f5f9; }
+  .card-row:last-child { border-bottom: none; }
+  .card-row .label { color: var(--muted); font-weight: 500; }
+  .card-row .val { font-weight: 600; text-align: right; max-width: 60%; word-break: break-word; }
+  .qb-open-btn {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    text-align: center; margin-top: 12px; padding: 14px;
+    background: var(--header-bg); color: white; border-radius: 12px;
+    text-decoration: none; font-weight: 600; font-size: 14px; min-height: 48px;
+  }
+  .qb-open-btn:active { opacity: 0.85; }
+
+  /* ===== RELATED TASKS DRAWER ===== */
+  .related-header {
+    font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 16px 0 8px; display: flex; align-items: center; gap: 6px;
+    cursor: pointer;
+  }
+  .related-header .arrow { font-size: 10px; transition: transform 0.2s; display: inline-block; }
+  .related-header .arrow.open { transform: rotate(90deg); }
+  .related-tasks-list { display: none; }
+  .related-tasks-list.open { display: block; }
+
+  /* ===== USER SELECT MODAL ===== */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    z-index: 500; display: none; opacity: 0; transition: opacity 0.2s;
+  }
+  .modal-overlay.show { display: block; opacity: 1; }
+  .modal-sheet {
+    position: fixed; bottom: 0; left: 0; right: 0; background: white;
+    border-radius: 16px 16px 0 0; z-index: 501; max-height: 70vh;
+    display: none; flex-direction: column;
+    padding-bottom: max(16px, var(--safe-bottom));
+    transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  .modal-sheet.show { display: flex; transform: translateY(0); }
+  .modal-sheet-handle { width: 36px; height: 4px; border-radius: 2px; background: #cbd5e1; margin: 10px auto 0; }
+  .modal-sheet h3 { font-size: 16px; font-weight: 700; padding: 14px 20px 8px; }
+  .modal-sheet .user-list { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
+  .modal-sheet .user-option {
+    display: flex; align-items: center; gap: 12px; padding: 14px 12px;
+    border-radius: 12px; cursor: pointer; border: none; background: none;
+    width: 100%; text-align: left; font-size: 15px; font-weight: 500;
+    color: var(--text); transition: background 0.1s; min-height: 48px;
+  }
+  .modal-sheet .user-option:active { background: var(--warm-light); }
+  .modal-sheet .user-option.selected { background: #eff6ff; color: var(--info); }
+  .modal-sheet .user-option .user-avatar {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--warm-light);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; color: var(--muted); flex-shrink: 0;
+  }
+
+  /* ===== LOADING / ERROR ===== */
+  .loading-overlay {
+    position: fixed; inset: 0; background: rgba(247,243,240,0.92);
+    z-index: 400; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .loading-overlay.hidden { display: none; }
+  .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--header-bg); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { margin-top: 14px; color: var(--muted); font-size: 14px; }
+  .error-banner {
+    background: #fee2e2; color: #991b1b; padding: 12px 16px; font-size: 13px;
+    display: none; align-items: center; gap: 8px;
+  }
+  .error-banner.show { display: flex; }
+  .error-banner .close { margin-left: auto; padding: 8px; cursor: pointer; font-size: 18px; border: none; background: none; color: inherit; }
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+
+  /* ===== SIDE DRAWER ===== */
+  .drawer-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    z-index: 9998; opacity: 0; transition: opacity 0.25s ease;
+  }
+  .drawer-overlay.open { display: block; opacity: 1; }
+  .side-drawer {
+    position: fixed; top: 0; left: -280px; width: 260px; height: 100%; height: 100vh; height: 100dvh;
+    background: white; z-index: 9999; transition: left 0.28s cubic-bezier(0.4,0,0.2,1);
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15); display: flex; flex-direction: column;
+    padding-top: max(20px, env(safe-area-inset-top));
+  }
+  .side-drawer.open { left: 0; }
+  .drawer-header { padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+  .drawer-header h2 { font-size: 16px; font-weight: 700; color: var(--text); }
+  .drawer-header .drawer-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .drawer-nav { flex: 1; padding: 8px 12px; overflow-y: auto; }
+  .drawer-nav a {
+    display: flex; align-items: center; gap: 14px; padding: 14px 12px;
+    border-radius: 12px; text-decoration: none; color: var(--text);
+    font-size: 15px; font-weight: 500; transition: background 0.15s;
+  }
+  .drawer-nav a:active { background: var(--warm-light); }
+  .drawer-nav a.active { background: #f0f4f8; color: var(--header-bg); font-weight: 600; }
+  .drawer-nav a svg { width: 22px; height: 22px; flex-shrink: 0; color: var(--muted); }
+  .drawer-nav a.active svg { color: var(--header-bg); }
+  .nav-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 9px; background: #ef4444; color: white;
+    font-size: 10px; font-weight: 700; margin-left: auto;
+  }
+
+  /* ===== SNAPSHOT ===== */
+  body.snapshot-mode .scroll-area { bottom: 0; }
+  body.snapshot-mode .side-drawer, body.snapshot-mode .drawer-overlay { display: none !important; }
+  body.snapshot-mode::after {
+    content: attr(data-timestamp);
+    position: fixed; bottom: 12px; right: 12px;
+    font-size: 11px; color: var(--muted); z-index: 10;
+    background: rgba(255,255,255,0.8); padding: 4px 8px; border-radius: 6px;
+  }
+
+  @media (min-width: 768px) {
+    .kpi-strip { justify-content: center; }
+    .view-panel { max-width: 700px; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="loading-text">Loading tickets...</div>
+</div>
+
+<div class="error-banner" id="errorBanner">
+  <span id="errorText"></span>
+  <span class="close" onclick="this.parentElement.classList.remove('show')">&times;</span>
+</div>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-top">
+    <div class="header-left">
+      <button class="back-btn" id="backBtn" onclick="goBack()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <img src="https://raw.githubusercontent.com/quikjimmy/qb-skin/main/qb_skin_embed/assets/Kin%20-%20Square%20Profile-blake-white.png" alt="Kin" style="width:28px;height:28px;border-radius:6px;">
+      <h1 id="headerTitle">Tickets</h1>
+    </div>
+    <div class="header-actions">
+      <button onclick="toggleSearch()" id="searchBtn" title="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+      <button onclick="toggleDrawer()" id="menuBtn" title="Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+<div class="header-spacer"></div>
+
+<!-- SEARCH BAR -->
+<div class="search-bar" id="searchBar">
+  <input type="text" id="searchInput" placeholder="Search tickets..." oninput="handleSearch(this.value)" autocomplete="off" autocorrect="off">
+  <button class="search-close" onclick="toggleSearch()">&times;</button>
+</div>
+
+<!-- SCROLL AREA -->
+<div class="scroll-area" id="scrollArea">
+  <!-- KPI STRIP -->
+  <div class="kpi-strip-wrap"><div class="kpi-strip" id="kpiStrip">
+    <div class="kpi-chip" data-kpi="all"><div class="label">All Open</div><div class="value" id="kpiAll">-</div></div>
+    <div class="kpi-chip" data-kpi="overdue"><div class="label">Past Due</div><div class="value" id="kpiOverdue">-</div></div>
+    <div class="kpi-chip" data-kpi="duetoday"><div class="label">Due Today</div><div class="value" id="kpiDueToday">-</div></div>
+    <div class="kpi-chip" data-kpi="futuredue"><div class="label">Future Due</div><div class="value" id="kpiFutureDue">-</div></div>
+  </div></div>
+
+  <!-- QUICK FILTERS -->
+  <div class="filter-section" id="filterSection">
+    <div id="filterRow1"></div>
+    <div id="filterRow2"></div>
+  </div>
+
+  <!-- Level 0: Summary Tables -->
+  <div class="view-panel active" id="viewSummary">
+    <div class="pivot-strip">
+      <button class="pivot-btn active" onclick="setPivot('assigned')">Assigned To</button>
+      <button class="pivot-btn" onclick="setPivot('requested')">Requested By</button>
+      <button class="pivot-btn" onclick="setPivot('issue')">Issue</button>
+      <button class="pivot-btn" onclick="setPivot('category')">Category</button>
+      <button class="pivot-btn" onclick="setPivot('state')">State</button>
+      <button class="pivot-btn" onclick="setPivot('coordinator')">Coordinator</button>
+      <button class="pivot-btn" onclick="setPivot('closer')">Closer</button>
+      <button class="pivot-btn" onclick="setPivot('status')">Proj Status</button>
+      <button class="pivot-btn" onclick="setPivot('disposition')">Disposition</button>
+      <button class="pivot-btn" onclick="setPivot('blocker')">Blocker</button>
+    </div>
+    <div id="summaryContent"><div class="empty-state">Loading tickets...</div></div>
+  </div>
+
+  <!-- Level 1: Ticket List -->
+  <div class="view-panel" id="viewTicketList">
+    <div id="ticketListContent"></div>
+  </div>
+
+  <!-- Level 2: Ticket Detail -->
+  <div class="view-panel" id="viewTicketDetail">
+    <div id="ticketDetailContent"></div>
+  </div>
+</div>
+
+<!-- SIDE DRAWER NAV -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
+<div class="side-drawer" id="sideDrawer">
+  <div class="drawer-header" style="display:flex;align-items:center;gap:12px;">
+    <img src="https://raw.githubusercontent.com/quikjimmy/qb-skin/main/qb_skin_embed/assets/Kin%20-%20Square%20Profile-white-black.png" alt="Kin" style="width:36px;height:36px;border-radius:8px;">
+    <div><h2>Core Ops</h2><div class="drawer-sub">Kin Home</div></div>
+  </div>
+  <div class="drawer-nav">
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=cc-quick-glance.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      Home
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=cc-quick-glance.html#favorites">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+      Favorites
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-project-detail.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+      Projects
+    </a>
+    <a href="javascript:void(0)" class="active">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M22 5.18L10.59 16.6l-4.24-4.24 1.41-1.41 2.83 2.83 10-10L22 5.18zM19.79 10.22C19.92 10.79 20 11.39 20 12c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8c1.58 0 3.04.46 4.28 1.25l1.44-1.44A9.9 9.9 0 0012 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10c0-1.19-.22-2.33-.6-3.39l-1.61 1.61z"/></svg>
+      Tickets
+      <span class="nav-badge" id="ticketBadge" style="display:none"></span>
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-labor.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+      Field
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-trends.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      Trends
+    </a>
+  </div>
+</div>
+
+<!-- USER SELECT MODAL -->
+<div class="modal-overlay" id="userModalOverlay" onclick="hideUserModal()"></div>
+<div class="modal-sheet" id="userModal">
+  <div class="modal-sheet-handle"></div>
+  <h3>Select User</h3>
+  <div class="user-list" id="userList"></div>
+</div>
+
+<script>
+/* ===== CONFIG ===== */
+var QB = {
+  realm: 'kin.quickbase.com',
+  appId: 'br9kwm8bk',
+  token: 'b6teb3_p3bs_0_bzh28isbyba5yh9ujb73hqthh5',
+  ticketsTable: 'bstdqwrkg',
+  arrivyTable: 'bvbqgs5yc'
+};
+
+var TICKET_FIELDS = [3,1,4,19,20,23,26,27,36,37,41,42,44,47,50,52,59,67,85,87,88,91,95,100,108,109,134,163];
+var ARRIVY_FIELDS = [3,56,85,97,107,115,117,137,146,268,270];
+
+/* ===== HELPERS ===== */
+function titleCase(str) { if(!str) return ''; return String(str).replace(/\w\S*/g, function(w){return w.charAt(0).toUpperCase()+w.substr(1).toLowerCase();}); }
+function escapeHtml(str) { if(!str) return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function qbv(record, fieldId) { if(!record||!record[fieldId]) return null; var v=record[fieldId]; if(typeof v==='object'&&v!==null){if(v.value!==undefined){var val=v.value;if(typeof val==='object'&&val!==null)return val.name||val.email||JSON.stringify(val);return val;}return v.name||v.email||JSON.stringify(v);}return v; }
+function qbUserName(record, fieldId) { if(!record||!record[fieldId]) return ''; var v=record[fieldId]; if(typeof v==='object'&&v!==null){if(v.value&&typeof v.value==='object')return v.value.name||v.value.email||'';if(v.value!==undefined)return String(v.value);return v.name||v.email||'';}return String(v); }
+function fmtDate(d) { if(!d) return '-'; var dt=new Date(d+'T12:00:00'); return isNaN(dt)?d:dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+function fmtDateTime(d) { if(!d) return '-'; var dt=new Date(d); return isNaN(dt)?d:dt.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+function todayStr() { var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+function getHeaders() {
+  return { 'QB-Realm-Hostname': QB.realm, 'Authorization': 'QB-USER-TOKEN ' + QB.token, 'Content-Type': 'application/json' };
+}
+
+function apiQuery(tableId, fields, where, top) {
+  var body = { from: tableId, select: fields };
+  if (where) body.where = where;
+  if (top) body.options = { top: top };
+  return fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST', headers: getHeaders(), body: JSON.stringify(body)
+  }).then(function(resp) {
+    if (!resp.ok) throw new Error('API error: ' + resp.status);
+    return resp.json();
+  }).then(function(json) { return json.data || []; });
+}
+
+/* ===== STATE ===== */
+var allTickets = [];
+var currentView = 'summary';
+var selectedTicket = null;
+var searchTerm = '';
+var currentUser = '';
+var currentUserDetected = false;
+var filterScope = 'all';
+var filterPriority = 'all';
+var listContext = null;
+var activePivot = 'assigned';
+
+/* ===== AUTO-DETECT CURRENT USER ===== */
+function detectCurrentUser() {
+  // Use QB Classic API_GetUserInfo via session cookie (works when embedded in QB)
+  return fetch('https://' + QB.realm + '/db/main?a=API_GetUserInfo&fmt=structured', {
+    method: 'GET',
+    credentials: 'include'
+  })
+  .then(function(resp) {
+    if (!resp.ok) throw new Error('Not in QB context');
+    return resp.text();
+  })
+  .then(function(xml) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(xml, 'text/xml');
+    var errcode = doc.querySelector('errcode');
+    if (errcode && errcode.textContent !== '0') throw new Error('QB auth error');
+    var firstName = doc.querySelector('firstName');
+    var lastName = doc.querySelector('lastName');
+    if (firstName && lastName) {
+      var name = firstName.textContent.trim() + ' ' + lastName.textContent.trim();
+      if (name.trim()) {
+        currentUser = name.trim();
+        currentUserDetected = true;
+        filterScope = 'mine';
+        console.log('Auto-detected user: ' + currentUser);
+        return;
+      }
+    }
+    throw new Error('Could not parse user info');
+  })
+  .catch(function(e) {
+    console.log('User auto-detect failed (not in QB context?): ' + e.message);
+    // Fall back: check localStorage
+    var saved = localStorage.getItem('qbskin_user');
+    if (saved) {
+      currentUser = saved;
+      filterScope = 'mine';
+    }
+  });
+}
+
+/* ===== DATA LOADING ===== */
+function loadAllTickets() {
+  showLoading(true);
+  apiQuery(QB.ticketsTable, TICKET_FIELDS,
+    "{'91'.XEX.'Completed'}AND{'91'.XEX.'Closed'}AND{'91'.XEX.'Complete'}AND{'166'.XEX.'true'}", 500)
+  .then(function(data) {
+    allTickets = data;
+    extractUsers();
+    updateKPIs();
+    renderFilters();
+    renderSummary();
+    showLoading(false);
+  })
+  .catch(function(e) {
+    console.error('Load error:', e);
+    showError('Failed to load tickets: ' + e.message);
+    showLoading(false);
+  });
+}
+
+/* ===== USER LIST ===== */
+var allUsers = [];
+function extractUsers() {
+  var names = {};
+  allTickets.forEach(function(t) {
+    var creator = qbUserName(t, 4);
+    var assignee = qbv(t, 67) || '';
+    if (creator) names[creator.trim()] = true;
+    if (assignee) names[String(assignee).trim()] = true;
+  });
+  allUsers = Object.keys(names).filter(function(n){return n;}).sort();
+}
+
+function showUserModal() {
+  var list = document.getElementById('userList');
+  var html = '';
+  allUsers.forEach(function(name) {
+    var initials = name.split(' ').map(function(w){return w[0]||'';}).join('').substring(0, 2).toUpperCase();
+    var sel = name === currentUser ? ' selected' : '';
+    html += '<button class="user-option' + sel + '" onclick="selectUser(\'' + escapeHtml(name.replace(/'/g, "\\'")) + '\')">' +
+      '<span class="user-avatar">' + escapeHtml(initials) + '</span>' +
+      escapeHtml(name) + '</button>';
+  });
+  if (!allUsers.length) html = '<div class="empty-state">No users found.</div>';
+  list.innerHTML = html;
+  document.getElementById('userModalOverlay').classList.add('show');
+  document.getElementById('userModal').classList.add('show');
+}
+
+function hideUserModal() {
+  document.getElementById('userModalOverlay').classList.remove('show');
+  document.getElementById('userModal').classList.remove('show');
+}
+
+function selectUser(name) {
+  currentUser = name;
+  localStorage.setItem('qbskin_user', name);
+  filterScope = 'mine';
+  hideUserModal();
+  updateKPIs(); renderFilters(); renderSummary();
+}
+
+/* ===== URGENCY BUCKETING ===== */
+function getTicketDue(t) { return qbv(t, 95) || qbv(t, 52) || ''; }
+
+function getBucket(t) {
+  var due = getTicketDue(t);
+  if (!due) return 'futuredue';
+  var dueDate = due.split('T')[0];
+  var today = todayStr();
+  if (dueDate < today) return 'pastdue';
+  if (dueDate === today) return 'duetoday';
+  return 'futuredue';
+}
+
+/* ===== COMPUTED STATUS ===== */
+function getComputedStatus(t) {
+  var bucket = getBucket(t);
+  if (bucket === 'pastdue') return { label: 'Past Due', cls: 'pastdue' };
+  if (bucket === 'duetoday') return { label: 'Due Today', cls: 'duetoday' };
+  // Future due: check raw status for "follow up"
+  var rawStatus = (qbv(t, 91) || '').toLowerCase();
+  if (rawStatus.indexOf('follow') >= 0) return { label: 'Follow Up Scheduled', cls: 'followupscheduled' };
+  return { label: 'On Track', cls: 'ontrack' };
+}
+
+/* ===== FILTERING ===== */
+function getFilteredTickets() {
+  var tickets = allTickets;
+
+  if (filterScope === 'mine' && currentUser) {
+    var cu = currentUser.toLowerCase();
+    tickets = tickets.filter(function(t) {
+      var creator = qbUserName(t, 4).toLowerCase();
+      var assignee = (qbv(t, 67) || '').toString().toLowerCase();
+      return creator.indexOf(cu) >= 0 || cu.indexOf(creator.split(' ')[0]) >= 0 ||
+             assignee.indexOf(cu) >= 0 || cu.indexOf(assignee.split(' ')[0]) >= 0;
+    });
+  }
+
+  if (filterPriority !== 'all') {
+    tickets = tickets.filter(function(t) {
+      var p = (qbv(t, 87) || 'normal').toLowerCase();
+      return p.indexOf(filterPriority) >= 0;
+    });
+  }
+
+  if (searchTerm) {
+    var q = searchTerm.toLowerCase();
+    tickets = tickets.filter(function(t) {
+      var title = (qbv(t, 19) || '').toLowerCase();
+      var project = (qbv(t, 27) || '').toLowerCase();
+      var assignee = (qbv(t, 67) || '').toString().toLowerCase();
+      var creator = qbUserName(t, 4).toLowerCase();
+      return title.indexOf(q) >= 0 || project.indexOf(q) >= 0 || assignee.indexOf(q) >= 0 || creator.indexOf(q) >= 0;
+    });
+  }
+
+  return tickets;
+}
+
+/* ===== KPI CALCULATION ===== */
+function updateKPIs() {
+  var tickets = getFilteredTickets();
+  var overdue = 0, dueToday = 0, futureDue = 0;
+  tickets.forEach(function(t) {
+    var b = getBucket(t);
+    if (b === 'pastdue') overdue++;
+    else if (b === 'duetoday') dueToday++;
+    else futureDue++;
+  });
+  document.getElementById('kpiAll').textContent = tickets.length;
+  document.getElementById('kpiOverdue').textContent = overdue;
+  document.getElementById('kpiDueToday').textContent = dueToday;
+  document.getElementById('kpiFutureDue').textContent = futureDue;
+
+  // Update drawer badge
+  var badge = document.getElementById('ticketBadge');
+  if (badge) {
+    if (overdue > 0) { badge.textContent = overdue; badge.style.display = 'inline-flex'; }
+    else { badge.style.display = 'none'; }
+  }
+
+  // Make KPI chips tappable (overdue + due today drill down)
+  var kpiChips = document.querySelectorAll('.kpi-chip');
+  kpiChips.forEach(function(chip) {
+    var kpi = chip.getAttribute('data-kpi');
+    if (kpi === 'overdue' || kpi === 'duetoday') {
+      chip.style.cursor = 'pointer';
+      chip.onclick = function() { drillDownKPI(kpi); };
+    } else {
+      chip.style.cursor = 'default';
+      chip.onclick = null;
+    }
+  });
+}
+
+function drillDownKPI(kpi) {
+  var bucketMap = { overdue: 'pastdue', duetoday: 'duetoday' };
+  var labelMap = { overdue: 'Past Due', duetoday: 'Due Today' };
+  listContext = { userName: null, bucket: bucketMap[kpi], tableType: 'kpi', kpiLabel: labelMap[kpi] };
+  navigateView('list');
+  renderTicketList();
+}
+
+/* ===== FILTERS RENDER ===== */
+function renderFilters() {
+  var r1 = document.getElementById('filterRow1');
+  var mineLabel = currentUserDetected ? 'Mine' : (currentUser ? 'Mine (' + currentUser.split(' ')[0] + ')' : 'Mine');
+  r1.innerHTML =
+    '<div class="filter-row">' +
+    '<button class="qf-chip' + (filterScope === 'all' ? ' active' : '') + '" onclick="setScope(\'all\')">All</button>' +
+    '<button class="qf-chip' + (filterScope === 'mine' ? ' active' : '') + '" onclick="setScope(\'mine\')">' + escapeHtml(mineLabel) + '</button>' +
+    '<button class="qf-chip" onclick="showUserModal()">Select User</button>' +
+    '</div>';
+
+  var r2 = document.getElementById('filterRow2');
+  r2.innerHTML =
+    '<div class="filter-row">' +
+    '<button class="qf-chip' + (filterPriority === 'all' ? ' active' : '') + '" onclick="setPriority(\'all\')">All</button>' +
+    '<button class="qf-chip' + (filterPriority === 'high' ? ' active' : '') + '" onclick="setPriority(\'high\')">High</button>' +
+    '<button class="qf-chip' + (filterPriority === 'medium' ? ' active' : '') + '" onclick="setPriority(\'medium\')">Medium</button>' +
+    '<button class="qf-chip' + (filterPriority === 'low' ? ' active' : '') + '" onclick="setPriority(\'low\')">Low</button>' +
+    '</div>';
+}
+
+function setScope(val) {
+  if (val === 'mine' && !currentUser) { showUserModal(); return; }
+  filterScope = val;
+  updateKPIs(); renderFilters(); renderSummary();
+}
+
+function setPriority(val) {
+  filterPriority = val;
+  updateKPIs(); renderFilters(); renderSummary();
+}
+
+/* ===== SUMMARY TABLES (Level 0) ===== */
+function setPivot(pivot) {
+  activePivot = pivot;
+  document.querySelectorAll('.pivot-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelector('.pivot-btn[onclick*="' + pivot + '"]').classList.add('active');
+  renderSummary();
+}
+
+function getGroupKey(t, pivot) {
+  if (pivot === 'assigned') return (qbv(t, 67) || '').toString().trim() || 'Unassigned';
+  if (pivot === 'requested') return qbUserName(t, 4).trim() || 'Unknown';
+  if (pivot === 'issue') return (qbv(t, 50) || '').toString().trim() || 'No Issue';
+  if (pivot === 'category') return (qbv(t, 47) || '').toString().trim() || 'No Category';
+  if (pivot === 'state') {
+    // QB address field returns object — extract state
+    var addr = t[41];
+    if (addr && typeof addr === 'object') {
+      var v = addr.value;
+      if (v && typeof v === 'object') return (v.state || v.province || '').trim() || 'No State';
+      if (typeof v === 'string') return v; // fallback
+    }
+    return (qbv(t, 41) || '').toString().trim() || 'No State';
+  }
+  if (pivot === 'coordinator') return (qbv(t, 85) || '').toString().trim() || 'No Coordinator';
+  if (pivot === 'status') return (qbv(t, 36) || '').toString().trim() || 'No Status';
+  if (pivot === 'epc') return (qbv(t, 37) || '').toString().trim() || 'No EPC';
+  if (pivot === 'disposition') return (qbv(t, 108) || '').toString().trim() || 'Open';
+  if (pivot === 'blocker') return (qbv(t, 163) || false) ? 'Blocker' : 'Non-Blocker';
+  if (pivot === 'closer') return (qbv(t, 44) || '').toString().trim() || 'No Closer';
+  return 'Unknown';
+}
+
+var PIVOT_LABELS = {
+  assigned: 'ASSIGNED TO', requested: 'REQUESTED BY', issue: 'TICKET ISSUE',
+  category: 'CATEGORY', state: 'STATE', coordinator: 'COORDINATOR',
+  status: 'PROJECT STATUS', epc: 'EPC', disposition: 'DISPOSITION',
+  blocker: 'BLOCKER', closer: 'CLOSER'
+};
+var PIVOT_COL_HEADERS = {
+  assigned: 'Name', requested: 'Name', issue: 'Issue', category: 'Category',
+  state: 'State', coordinator: 'Coordinator', status: 'Status', epc: 'EPC',
+  disposition: 'Disposition', blocker: 'Type', closer: 'Closer'
+};
+
+function renderSummary() {
+  var tickets = getFilteredTickets();
+  var container = document.getElementById('summaryContent');
+
+  if (!tickets.length) {
+    container.innerHTML = '<div class="empty-state">No open tickets match the current filters.</div>';
+    return;
+  }
+
+  var dataMap = {};
+  tickets.forEach(function(t) {
+    var key = getGroupKey(t, activePivot);
+    var bucket = getBucket(t);
+    if (!dataMap[key]) dataMap[key] = { pastdue: [], duetoday: [], futuredue: [], all: [] };
+    dataMap[key][bucket].push(t);
+    dataMap[key].all.push(t);
+  });
+
+  container.innerHTML = buildSummaryTable(PIVOT_LABELS[activePivot] || 'GROUP', dataMap, activePivot, PIVOT_COL_HEADERS[activePivot] || 'Name');
+}
+
+function buildSummaryTable(label, dataMap, tableType, colHeader) {
+  var sorted = Object.keys(dataMap).sort(function(a, b) { return dataMap[b].all.length - dataMap[a].all.length; });
+
+  var totalPD = 0, totalDT = 0, totalFD = 0, totalAll = 0;
+  sorted.forEach(function(name) {
+    totalPD += dataMap[name].pastdue.length;
+    totalDT += dataMap[name].duetoday.length;
+    totalFD += dataMap[name].futuredue.length;
+    totalAll += dataMap[name].all.length;
+  });
+
+  var tableId = 'summaryTable_' + tableType;
+  var html = '<div class="section-label" onclick="toggleSummaryTable(\'' + tableId + '\')">' +
+    '<span>' + label + '</span><span class="collapse-arrow" id="arrow_' + tableId + '">&#9660;</span></div>';
+  html += '<div class="summary-table-wrap" id="' + tableId + '"><table class="summary-table">';
+  html += '<thead><tr><th>' + (colHeader || 'Name') + '</th><th>Past Due</th><th>Today</th><th>Future</th><th>Total</th></tr></thead>';
+  html += '<tbody>';
+
+  sorted.forEach(function(name) {
+    var d = dataMap[name];
+    var pd = d.pastdue.length;
+    var dt = d.duetoday.length;
+    var fd = d.futuredue.length;
+    var tot = d.all.length;
+    var eName = escapeHtml(name);
+    var safeName = name.replace(/'/g, "\\'");
+
+    html += '<tr>';
+    html += '<td title="' + eName + '">' + eName + '</td>';
+    html += '<td class="' + (pd > 0 ? 'past-due tappable' : '') + '"' +
+      (pd > 0 ? ' onclick="drillDown(\'' + safeName + '\',\'pastdue\',\'' + tableType + '\')"' : '') +
+      '>' + (pd || '-') + '</td>';
+    html += '<td class="' + (dt > 0 ? 'due-today tappable' : '') + '"' +
+      (dt > 0 ? ' onclick="drillDown(\'' + safeName + '\',\'duetoday\',\'' + tableType + '\')"' : '') +
+      '>' + (dt || '-') + '</td>';
+    html += '<td class="' + (fd > 0 ? 'tappable' : '') + '"' +
+      (fd > 0 ? ' onclick="drillDown(\'' + safeName + '\',\'futuredue\',\'' + tableType + '\')"' : '') +
+      '>' + (fd || '-') + '</td>';
+    html += '<td class="' + (tot > 0 ? 'tappable' : '') + '"' +
+      (tot > 0 ? ' onclick="drillDown(\'' + safeName + '\',\'all\',\'' + tableType + '\')"' : '') +
+      '>' + tot + '</td>';
+    html += '</tr>';
+  });
+
+  html += '<tr class="totals-row">';
+  html += '<td>Totals</td>';
+  html += '<td class="' + (totalPD > 0 ? 'past-due' : '') + '">' + (totalPD || '-') + '</td>';
+  html += '<td class="' + (totalDT > 0 ? 'due-today' : '') + '">' + (totalDT || '-') + '</td>';
+  html += '<td>' + (totalFD || '-') + '</td>';
+  html += '<td>' + totalAll + '</td>';
+  html += '</tr>';
+
+  html += '</tbody></table></div>';
+  return html;
+}
+
+/* ===== DRILL DOWN (Level 1) ===== */
+function drillDown(userName, bucket, tableType) {
+  listContext = { userName: userName, bucket: bucket, tableType: tableType };
+  navigateView('list');
+  renderTicketList();
+}
+
+function renderTicketList() {
+  var ctx = listContext;
+  if (!ctx) return;
+  var container = document.getElementById('ticketListContent');
+  var tickets = getFilteredTickets();
+  var filtered;
+
+  if (ctx.tableType === 'kpi') {
+    filtered = tickets.filter(function(t) { return getBucket(t) === ctx.bucket; });
+  } else {
+    filtered = tickets.filter(function(t) {
+      var name = getGroupKey(t, ctx.tableType);
+      return name === ctx.userName;
+    });
+    if (ctx.bucket !== 'all') {
+      filtered = filtered.filter(function(t) { return getBucket(t) === ctx.bucket; });
+    }
+  }
+
+  if (!filtered.length) {
+    container.innerHTML = '<div class="empty-state">No tickets found.</div>';
+    return;
+  }
+
+  if (ctx.bucket === 'all') {
+    var groups = { pastdue: [], duetoday: [], futuredue: [] };
+    filtered.forEach(function(t) { groups[getBucket(t)].push(t); });
+
+    var html = '';
+    var cfg = [
+      { key: 'pastdue', label: 'Past Due', cls: 'overdue' },
+      { key: 'duetoday', label: 'Due Today', cls: 'today' },
+      { key: 'futuredue', label: 'Future Due', cls: 'futuredue' }
+    ];
+    cfg.forEach(function(g) {
+      if (!groups[g.key].length) return;
+      var groupId = 'group_' + g.key;
+      html += '<div class="group-header ' + g.cls + '" onclick="toggleGroupCards(\'' + groupId + '\')">' +
+        '<span class="collapse-arrow" id="arrow_' + groupId + '">&#9660;</span> ' + g.label +
+        ' <span class="group-count">' + groups[g.key].length + '</span></div>';
+      html += '<div class="group-cards" id="' + groupId + '">';
+      groups[g.key].forEach(function(t) { html += renderTicketCard(t); });
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  } else {
+    var bucketLabels = { pastdue: 'Past Due', duetoday: 'Due Today', futuredue: 'Future Due' };
+    var bucketCls = { pastdue: 'overdue', duetoday: 'today', futuredue: 'futuredue' };
+    var groupId = 'group_single';
+    var html = '<div class="group-header ' + (bucketCls[ctx.bucket] || '') + '" onclick="toggleGroupCards(\'' + groupId + '\')">' +
+      '<span class="collapse-arrow" id="arrow_' + groupId + '">&#9660;</span> ' +
+      (bucketLabels[ctx.bucket] || 'Tickets') +
+      ' <span class="group-count">' + filtered.length + '</span></div>';
+    html += '<div class="group-cards" id="' + groupId + '">';
+    filtered.forEach(function(t) { html += renderTicketCard(t); });
+    html += '</div>';
+    container.innerHTML = html;
+  }
+}
+
+function renderTicketCard(t) {
+  var title = titleCase(qbv(t, 19) || qbv(t, 50) || 'Untitled');
+  var priority = (qbv(t, 87) || 'Normal').toLowerCase();
+  var category = qbv(t, 47) || '';
+  var projectName = qbv(t, 27) || '';
+  var assignee = (qbv(t, 67) || '').toString().trim();
+  var due = getTicketDue(t);
+  var dueStr = fmtDate(due ? due.split('T')[0] : '');
+  var created = qbv(t, 23) || qbv(t, 1) || '';
+  var bucket = getBucket(t);
+  var computed = getComputedStatus(t);
+
+  var borderCls = 'border-normal';
+  if (priority.indexOf('high') >= 0) borderCls = 'border-high';
+  else if (priority.indexOf('medium') >= 0 || priority.indexOf('med') >= 0) borderCls = 'border-medium';
+  else if (priority.indexOf('low') >= 0) borderCls = 'border-low';
+
+  var pills = '<span class="status-pill ' + computed.cls + '">' + escapeHtml(computed.label) + '</span>';
+  var dataIdx = allTickets.indexOf(t);
+
+  // Days past due badge
+  var pastDueBadge = '';
+  if (due && bucket === 'pastdue') {
+    var dueDate = new Date(due.split('T')[0] + 'T12:00:00');
+    var todayDate = new Date(todayStr() + 'T12:00:00');
+    var diffDays = Math.floor((todayDate - dueDate) / (1000 * 60 * 60 * 24));
+    if (diffDays > 0) {
+      pastDueBadge = '<span class="past-due-badge">' + diffDays + 'd overdue</span>';
+    }
+  }
+
+  // Ticket age (days since created)
+  var ageBadge = '';
+  if (created) {
+    var createdDate = new Date(created);
+    var now = new Date(todayStr() + 'T12:00:00');
+    var ageDays = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
+    if (ageDays > 0) {
+      ageBadge = '<span style="font-size:10px;color:' + (ageDays > 14 ? 'var(--danger)' : ageDays > 7 ? 'var(--warning)' : 'var(--muted)') + ';font-weight:600">' + ageDays + 'd old</span>';
+    }
+  }
+
+  return '<div class="record-card ' + borderCls + (bucket === 'pastdue' ? ' overdue-tint' : '') + '"' +
+    ' onclick="openTicketDetail(' + dataIdx + ')">' +
+    '<div class="card-header"><div class="card-title">' + escapeHtml(title) + '</div>' +
+    '<div class="card-pills">' + pills + '</div></div>' +
+    (assignee ? '<div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px">' + escapeHtml(assignee) + '</div>' : '') +
+    '<div class="card-sub"><span>' + dueStr + '</span>' +
+    (pastDueBadge ? '<span>' + pastDueBadge + '</span>' : '') +
+    (ageBadge ? '<span>' + ageBadge + '</span>' : '') +
+    (category ? '<span>' + escapeHtml(category) + '</span>' : '') +
+    (projectName ? '<span>' + escapeHtml(projectName) + '</span>' : '') +
+    '</div></div>';
+}
+
+/* ===== TICKET DETAIL (Level 2) ===== */
+function openTicketDetail(idx) {
+  selectedTicket = allTickets[idx];
+  if (!selectedTicket) return;
+  navigateView('detail');
+  renderTicketDetail(selectedTicket);
+}
+
+function renderTicketDetail(t) {
+  var container = document.getElementById('ticketDetailContent');
+  var rid = qbv(t, 3);
+  var title = titleCase(qbv(t, 19) || 'Untitled');
+  var desc = qbv(t, 20) || '';
+  var rawStatus = qbv(t, 91) || 'Open';
+  var computed = getComputedStatus(t);
+  var priority = qbv(t, 87) || 'Normal';
+  var category = qbv(t, 47) || '';
+  var issue = qbv(t, 50) || '';
+  var assignee = qbv(t, 67) || '';
+  var creator = qbUserName(t, 4);
+  var projectName = qbv(t, 27) || '';
+  var due = getTicketDue(t);
+  var created = qbv(t, 23) || qbv(t, 1) || '';
+  var coordinator = qbv(t, 85) || '';
+  var disposition = qbv(t, 108) || '';
+  var projectId = qbv(t, 26);
+  var viewUrl = qbv(t, 109);
+  var qbUrl = viewUrl || ('https://kin.quickbase.com/db/bstdqwrkg?a=dr&rid=' + rid);
+
+  var statusHtml = '<span class="status-pill ' + computed.cls + '" style="font-size:13px;padding:4px 10px;">' + escapeHtml(computed.label) + '</span>';
+
+  var html = '<div class="detail-card">' +
+    '<div class="detail-title">' + escapeHtml(title) + '</div>' +
+    (desc ? '<div class="detail-desc">' + escapeHtml(desc) + '</div>' : '') +
+    '<div class="card-row"><span class="label">Status</span><span class="val">' + statusHtml + '</span></div>' +
+    '<div class="card-row"><span class="label">QB Status</span><span class="val">' + escapeHtml(rawStatus) + '</span></div>' +
+    '<div class="card-row"><span class="label">Priority</span><span class="val">' + escapeHtml(priority) + '</span></div>' +
+    '<div class="card-row"><span class="label">Category</span><span class="val">' + escapeHtml(category || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Ticket Issue</span><span class="val">' + escapeHtml(issue || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Assigned To</span><span class="val">' + escapeHtml(assignee || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Requested By</span><span class="val">' + escapeHtml(creator || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Project</span><span class="val">' + escapeHtml(projectName || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Due Date</span><span class="val">' + fmtDate(due ? due.split('T')[0] : '') + '</span></div>' +
+    '<div class="card-row"><span class="label">Created</span><span class="val">' + fmtDateTime(created) + '</span></div>' +
+    '<div class="card-row"><span class="label">Coordinator</span><span class="val">' + escapeHtml(coordinator || '-') + '</span></div>' +
+    '<div class="card-row"><span class="label">Disposition</span><span class="val">' + escapeHtml(disposition || '-') + '</span></div>' +
+    '<a class="qb-open-btn" href="' + escapeHtml(qbUrl) + '" target="_blank">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>' +
+      'Open in QuickBase</a>' +
+    '</div>';
+
+  if (projectId) {
+    html += '<div class="related-header" onclick="toggleRelatedTasks()">' +
+      '<span class="arrow" id="relatedArrow">&#9654;</span> Related Field Tasks' +
+      '</div><div class="related-tasks-list" id="relatedTasksList">' +
+      '<div class="empty-state">Loading tasks...</div></div>';
+  }
+
+  container.innerHTML = html;
+
+  if (projectId) {
+    apiQuery(QB.arrivyTable, ARRIVY_FIELDS, "{'6'.EX.'" + projectId + "'}", 50)
+    .then(function(tasks) {
+      var list = document.getElementById('relatedTasksList');
+      if (!list) return;
+      if (tasks.length === 0) { list.innerHTML = '<div class="empty-state">No related field tasks</div>'; return; }
+      var sorted = tasks.sort(function(a, b) { return (qbv(b, 115) || '').localeCompare(qbv(a, 115) || ''); });
+      var thtml = '';
+      sorted.forEach(function(task) {
+        var tmpl = qbv(task, 56) || 'Unknown';
+        var schedDate = qbv(task, 115);
+        var taskStatus = qbv(task, 85) || '';
+        var crew = qbv(task, 268) || '';
+        var dateStr = schedDate ? fmtDate(schedDate.split('T')[0]) : '';
+        var statusCls = taskStatus.toLowerCase().replace(/\s+/g, '');
+        thtml += '<div class="record-card" style="cursor:pointer">' +
+          '<div class="card-header"><div class="card-title">' + escapeHtml(tmpl) + '</div>' +
+          '<span class="status-pill ' + statusCls + '">' + escapeHtml(taskStatus) + '</span></div>' +
+          '<div class="card-sub">' +
+          (dateStr ? '<span>' + dateStr + '</span>' : '') +
+          (crew ? '<span>' + escapeHtml(crew) + '</span>' : '') +
+          '</div></div>';
+      });
+      list.innerHTML = thtml;
+      list.classList.add('open');
+      var arrow = document.getElementById('relatedArrow');
+      if (arrow) arrow.classList.add('open');
+    })
+    .catch(function() {
+      var list = document.getElementById('relatedTasksList');
+      if (list) list.innerHTML = '<div class="empty-state">Could not load related tasks</div>';
+    });
+  }
+}
+
+function toggleRelatedTasks() {
+  var list = document.getElementById('relatedTasksList');
+  var arrow = document.getElementById('relatedArrow');
+  if (list) list.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open');
+}
+
+function toggleSummaryTable(tableId) {
+  var table = document.getElementById(tableId);
+  var arrow = document.getElementById('arrow_' + tableId);
+  if (table) table.classList.toggle('collapsed');
+  if (arrow) arrow.classList.toggle('collapsed');
+}
+
+function toggleGroupCards(groupId) {
+  var group = document.getElementById(groupId);
+  var arrow = document.getElementById('arrow_' + groupId);
+  if (group) group.classList.toggle('collapsed');
+  if (arrow) arrow.classList.toggle('collapsed');
+}
+
+/* ===== VIEW NAVIGATION ===== */
+function navigateView(view) {
+  currentView = view;
+  var backBtn = document.getElementById('backBtn');
+  var titleEl = document.getElementById('headerTitle');
+  var kpiStrip = document.getElementById('kpiStrip');
+  var filterSection = document.getElementById('filterSection');
+
+  document.querySelectorAll('.view-panel').forEach(function(p) { p.classList.remove('active'); });
+
+  if (view === 'summary') {
+    document.getElementById('viewSummary').classList.add('active');
+    backBtn.style.display = 'none';
+    titleEl.textContent = 'Tickets';
+    kpiStrip.style.display = '';
+    filterSection.style.display = '';
+  } else if (view === 'list') {
+    document.getElementById('viewTicketList').classList.add('active');
+    backBtn.style.display = 'flex';
+    var bucketLabels = { pastdue: 'Past Due', duetoday: 'Due Today', futuredue: 'Future Due', all: 'All' };
+    if (listContext && listContext.tableType === 'kpi') {
+      titleEl.textContent = listContext.kpiLabel || 'Tickets';
+    } else {
+      titleEl.textContent = (listContext ? listContext.userName + ' \u2014 ' + (bucketLabels[listContext.bucket] || 'All') : 'Tickets');
+    }
+    kpiStrip.style.display = 'none';
+    filterSection.style.display = 'none';
+  } else if (view === 'detail') {
+    document.getElementById('viewTicketDetail').classList.add('active');
+    backBtn.style.display = 'flex';
+    titleEl.textContent = titleCase(qbv(selectedTicket, 19) || 'Ticket Detail');
+    kpiStrip.style.display = 'none';
+    filterSection.style.display = 'none';
+  }
+
+  document.getElementById('scrollArea').scrollTop = 0;
+}
+
+function goBack() {
+  if (currentView === 'detail') {
+    if (listContext) { navigateView('list'); renderTicketList(); }
+    else { navigateView('summary'); }
+  } else if (currentView === 'list') {
+    navigateView('summary');
+  }
+}
+
+/* ===== DRAWER ===== */
+function toggleDrawer() {
+  var drawer = document.getElementById('sideDrawer');
+  var overlay = document.getElementById('drawerOverlay');
+  var isOpen = drawer.classList.contains('open');
+  if (isOpen) { drawer.classList.remove('open'); overlay.classList.remove('open'); }
+  else { drawer.classList.add('open'); overlay.classList.add('open'); }
+}
+
+/* ===== SEARCH ===== */
+function toggleSearch() {
+  var bar = document.getElementById('searchBar');
+  var isOpen = bar.classList.contains('open');
+  bar.classList.toggle('open');
+  if (!isOpen) {
+    document.getElementById('searchInput').focus();
+  } else {
+    document.getElementById('searchInput').value = '';
+    searchTerm = '';
+    if (currentView === 'summary') { updateKPIs(); renderSummary(); }
+    else if (currentView === 'list') { renderTicketList(); }
+  }
+}
+
+function handleSearch(val) {
+  searchTerm = val.trim();
+  if (currentView === 'summary') { updateKPIs(); renderSummary(); }
+  else if (currentView === 'list') { renderTicketList(); }
+}
+
+/* ===== LOADING/ERROR ===== */
+function showLoading(show) {
+  document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
+}
+
+function showError(msg) {
+  var banner = document.getElementById('errorBanner');
+  document.getElementById('errorText').textContent = msg;
+  banner.classList.add('show');
+}
+
+/* ===== INIT ===== */
+document.addEventListener('DOMContentLoaded', function() {
+  // Detect current user first, then load tickets
+  detectCurrentUser().then(function() {
+    renderFilters();
+    loadAllTickets();
+  });
+});
+</script>
+</body>
+</html>

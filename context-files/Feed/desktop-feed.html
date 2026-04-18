@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>The Editorial Muse | Project Feed</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-container": "#e7e8e8",
+                        "on-tertiary-fixed": "#2a1100",
+                        "on-tertiary": "#fff0e8",
+                        "background": "#f6f6f6",
+                        "error": "#b31b25",
+                        "secondary-dim": "#4e5050",
+                        "surface-container-highest": "#dbdddd",
+                        "tertiary-fixed-dim": "#fb8300",
+                        "on-error": "#ffefee",
+                        "outline": "#757777",
+                        "tertiary": "#904800",
+                        "primary": "#b6004f",
+                        "surface-container-high": "#e1e3e3",
+                        "primary-dim": "#a00045",
+                        "secondary": "#5a5c5c",
+                        "outline-variant": "#acadad",
+                        "on-tertiary-fixed-variant": "#5c2c00",
+                        "surface-container-low": "#f0f1f1",
+                        "on-secondary": "#f2f3f3",
+                        "on-secondary-container": "#505252",
+                        "on-primary-fixed": "#000000",
+                        "tertiary-dim": "#7e3e00",
+                        "error-dim": "#9f0519",
+                        "tertiary-container": "#ff9742",
+                        "tertiary-fixed": "#ff9742",
+                        "surface-tint": "#b6004f",
+                        "primary-fixed-dim": "#ff5486",
+                        "error-container": "#fb5151",
+                        "surface": "#f6f6f6",
+                        "inverse-surface": "#0c0f0f",
+                        "surface-dim": "#d2d5d5",
+                        "on-background": "#2d2f2f",
+                        "inverse-primary": "#ff4c83",
+                        "on-primary": "#ffeff0",
+                        "primary-container": "#ff7196",
+                        "on-surface-variant": "#5a5c5c",
+                        "on-secondary-fixed": "#3e4040",
+                        "on-primary-fixed-variant": "#5e0025",
+                        "inverse-on-surface": "#9c9d9d",
+                        "on-primary-container": "#4d001d",
+                        "on-secondary-fixed-variant": "#5a5c5c",
+                        "surface-bright": "#f6f6f6",
+                        "secondary-fixed-dim": "#d4d4d4",
+                        "primary-fixed": "#ff7196",
+                        "on-surface": "#2d2f2f",
+                        "secondary-container": "#e2e2e2",
+                        "surface-variant": "#dbdddd",
+                        "surface-container-lowest": "#ffffff",
+                        "on-tertiary-container": "#4f2500",
+                        "secondary-fixed": "#e2e2e2",
+                        "on-error-container": "#570008"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "1.5rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .signature-gradient {
+            background: linear-gradient(135deg, #B6004F 0%, #FF9742 100%);
+        }
+        .glass-header {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(20px);
+        }
+        .soft-shadow {
+            box-shadow: 0px 20px 40px rgba(45, 47, 47, 0.06);
+        }
+    </style>
+</head>
+<body class="bg-surface font-body text-on-surface">
+<!-- SideNavBar Shell -->
+<aside class="fixed left-0 top-0 h-full w-64 bg-slate-50 dark:bg-slate-900 flex flex-col py-8 px-6 z-50">
+<div class="mb-10">
+<h1 class="text-2xl font-black bg-gradient-to-r from-[#B6004F] to-[#FF9742] bg-clip-text text-transparent">The Muse CRM</h1>
+<p class="text-[0.6875rem] uppercase tracking-[0.05em] font-medium text-slate-500 mt-1">Editorial Workspace</p>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:bg-slate-100 transition-colors duration-200 rounded-xl group" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-sm font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-pink-600 font-semibold border-r-4 border-pink-600 bg-slate-100 rounded-l-xl" href="#">
+<span class="material-symbols-outlined" data-icon="folder_copy">folder_copy</span>
+<span class="text-sm">Projects</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:bg-slate-100 transition-colors duration-200 rounded-xl" href="#">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+<span class="text-sm font-medium">Clients</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:bg-slate-100 transition-colors duration-200 rounded-xl" href="#">
+<span class="material-symbols-outlined" data-icon="leaderboard">leaderboard</span>
+<span class="text-sm font-medium">Analytics</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:bg-slate-100 transition-colors duration-200 rounded-xl" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="text-sm font-medium">Settings</span>
+</a>
+</nav>
+<button class="mt-auto signature-gradient text-on-primary py-4 px-6 rounded-xl font-bold text-sm transition-transform active:scale-95">
+            New Project
+        </button>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex min-h-screen">
+<!-- Central Project Feed -->
+<div class="flex-1 max-w-4xl mx-auto px-8 py-12">
+<header class="mb-12">
+<h2 class="text-[2.75rem] font-black tracking-tight leading-none mb-2">Project Feed</h2>
+<p class="text-secondary text-sm">Curating the latest architectural milestones and design evolutions.</p>
+</header>
+<!-- Feed Items -->
+<div class="space-y-16">
+<!-- Project Card 1 -->
+<article class="group">
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden soft-shadow transition-transform duration-300 hover:scale-[1.01]">
+<!-- Profile Header -->
+<div class="flex items-center justify-between p-6">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-surface-container overflow-hidden">
+<img alt="Curator Avatar" class="w-full h-full object-cover" data-alt="professional portrait of a creative director in a minimalist studio setting with soft natural lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAWk1hrL6udhiWO8-R2jVcP5T7eN34zGptjvUVzLuqwtPadkczKFyAIjRlSXEXcb_HB86QFE3_JNS0C1F_Y3W90LkkOkw3I_mF69Cje5I_fg0nvKDor2VkEvz80Jx_CAJEjt_U_CUCPqq0IKZbR5jmvel3NwXNJvVaq93SLD8-wfkjn36TV8fT4UEPgIQkCB4kq0-o-MnMhHAr8-sU0AmNMaubVnx-K9523g7M5qbJ5IP-KWwm6ghIEFvlojMX0vizdljEKveUcAUg"/>
+</div>
+<div>
+<h4 class="text-sm font-bold text-on-surface">Studio Altiplano</h4>
+<p class="text-[0.6875rem] uppercase tracking-wider text-outline">High-Rise Residential</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-primary-container/20 text-on-primary-container text-[0.6875rem] font-bold rounded-full uppercase tracking-widest">Structural Finish</span>
+</div>
+<!-- Main Visual -->
+<div class="aspect-[4/5] bg-surface-container relative">
+<img alt="Project Visual" class="w-full h-full object-cover" data-alt="architectural shot of a modern brutalist concrete villa with large glass windows reflecting a sunset over a pine forest" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB-yshkdCZ2N50QB6tE2nOFAr7UBDI4TZaGORYq0P_Dv4y-dTcIC_Ex2W4o7HYjyhDyg4suyB65ElseHiRru1Oh1uwlfqP0-MLVNjVKthxAxnlE7yRrQTjXEQa4txUK0OY6FcX_SXRb5SGcYDMp9w3u4bT04VcbM67sDQGmBpT-te6nN6QflbOwDxytdAzWG8N-pDRIoZ_VoTR46qelRcD5ebIGC25UwmkILAnhgvL2ht4rZGnqqQuZUJ8YjZ3vyqOvhmXilCUo6M8"/>
+</div>
+<!-- Interaction Bar -->
+<div class="p-6">
+<div class="flex items-center justify-between mb-4">
+<div class="flex items-center gap-5">
+<button class="text-primary hover:scale-110 transition-transform">
+<span class="material-symbols-outlined" data-icon="favorite" style="font-variation-settings: 'FILL' 1;">favorite</span>
+</button>
+<button class="text-on-surface hover:scale-110 transition-transform">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+</button>
+<button class="text-on-surface hover:scale-110 transition-transform">
+<span class="material-symbols-outlined" data-icon="share">share</span>
+</button>
+</div>
+<button class="text-on-surface">
+<span class="material-symbols-outlined" data-icon="bookmark">bookmark</span>
+</button>
+</div>
+<div class="space-y-2">
+<p class="text-sm font-bold">1,204 likes</p>
+<p class="text-sm leading-relaxed"><span class="font-bold">Studio Altiplano</span> Final concrete pour completed on the Zenith Heights project. Moving into the interior curation phase next week. #Architecture #Design</p>
+<p class="text-[0.6875rem] uppercase tracking-wider text-outline mt-4">2 hours ago</p>
+</div>
+</div>
+</div>
+</article>
+<!-- Project Card 2 -->
+<article class="group">
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden soft-shadow transition-transform duration-300 hover:scale-[1.01]">
+<div class="flex items-center justify-between p-6">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-surface-container overflow-hidden">
+<img alt="Curator Avatar" class="w-full h-full object-cover" data-alt="close up headshot of a female architect with glasses, artistic studio background, warm lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAzq7ymU2V6HZU6-Lmt88hfIqiFjQqj6razf6GO0oSbP6WdsFuNIH46Cxb1Dyp0kbp2ljWhfl8VGhiTw3YIsx9rhgDXg6JOIXXBCsNybe-YzskVEAhkpz13pHGaa10OK9uyoptT4leNoG8mQWkBXsnzTnD81NI9e4PCXzKFc1H1F-cxHsUiy3uMMV039KppYYVYUJycF412Ix34_TYfU-U-fkAJlAwDfOo0vjdEv54EAHXq0fEjj82togfCMi_I20VYvvKbuEUeuVU"/>
+</div>
+<div>
+<h4 class="text-sm font-bold text-on-surface">Elena Rossi</h4>
+<p class="text-[0.6875rem] uppercase tracking-wider text-outline">Retail Experience</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-surface-container-high text-on-surface-variant text-[0.6875rem] font-bold rounded-full uppercase tracking-widest">Concept Phase</span>
+</div>
+<div class="aspect-[4/3] bg-surface-container relative">
+<img alt="Project Visual" class="w-full h-full object-cover" data-alt="interior design mood board with terracotta tiles, linen fabrics, brushed brass hardware, and dried flowers in a bright sunlit space" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAPTjLM3VgjsU8FU5EbnLzfVuTJknJQRHF1EFIzj7Tdqj8UVXLgVhGjDN2ffjYuMePDFjVBdXVDzukmdBY_IlsT_eAqNVDnUL_NpNt9fAw9frxBmRFioNWYzRsItWTFtuaGU3kNatJ-ee5ZGlBUwv23DKENvOjL1_4fNfIHBAAmR0rPKHL-R72DslHkY9gfnIiiM8KEdMRq2ImJZUDu8SCGxCRJimnpXKxhowG8E8lIWUvZTFGZ4vDGHtavTsMAgGTwuJ1wREQVI8"/>
+</div>
+<div class="p-6">
+<div class="flex items-center justify-between mb-4">
+<div class="flex items-center gap-5">
+<button class="text-on-surface hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="favorite">favorite</span>
+</button>
+<button class="text-on-surface hover:scale-110 transition-transform">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+</button>
+<button class="text-on-surface hover:scale-110 transition-transform">
+<span class="material-symbols-outlined" data-icon="share">share</span>
+</button>
+</div>
+<button class="text-on-surface">
+<span class="material-symbols-outlined" data-icon="bookmark">bookmark</span>
+</button>
+</div>
+<div class="space-y-2">
+<p class="text-sm font-bold">856 likes</p>
+<p class="text-sm leading-relaxed"><span class="font-bold">Elena Rossi</span> Material study for the Milan flagship. We are exploring the intersection of raw earth tones and polished industrial accents.</p>
+<p class="text-[0.6875rem] uppercase tracking-wider text-outline mt-4">5 hours ago</p>
+</div>
+</div>
+</div>
+</article>
+</div>
+</div>
+<!-- Right Sidebar: Project Insights -->
+<aside class="w-96 min-h-screen bg-surface-container-low p-8 hidden xl:block">
+<div class="sticky top-8 space-y-10">
+<!-- Active Pipelines Card -->
+<div class="bg-surface-container-lowest p-6 rounded-xl soft-shadow border-l-4 border-primary">
+<p class="text-[0.6875rem] font-bold uppercase tracking-widest text-primary mb-2">Active Pipelines</p>
+<h3 class="text-3xl font-black mb-1">12 Milestones</h3>
+<p class="text-xs text-secondary">Due within the next 48 hours across 4 projects.</p>
+</div>
+<!-- Quick Filters -->
+<section>
+<h5 class="text-[0.6875rem] font-bold uppercase tracking-[0.1em] text-outline mb-4">Milestone Filters</h5>
+<div class="flex flex-wrap gap-2">
+<span class="px-4 py-2 bg-primary-container text-on-primary-container text-xs font-bold rounded-full">Concept</span>
+<span class="px-4 py-2 bg-surface-container-highest text-on-surface text-xs font-medium rounded-full">Construction</span>
+<span class="px-4 py-2 bg-surface-container-highest text-on-surface text-xs font-medium rounded-full">Finishing</span>
+<span class="px-4 py-2 bg-surface-container-highest text-on-surface text-xs font-medium rounded-full">Handover</span>
+</div>
+</section>
+<!-- Recent Activity -->
+<section>
+<h5 class="text-[0.6875rem] font-bold uppercase tracking-[0.1em] text-outline mb-6">Recent Activity</h5>
+<div class="space-y-6">
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-slate-300 flex-shrink-0 overflow-hidden">
+<img alt="User" class="w-full h-full object-cover" data-alt="close up face of a smiling young male designer with trendy glasses" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVoxhiNFKOV9O3KO-9h-0TmqgmqPuti9b5rmO53GHImv70VJNm13173bxI1kFgXLUHlRawg2oy-PN8nTCTTMQp-dxLzxQ8w9JSLEuXaCIYJt0cJr5xM8TCwszg4FwdnOM0xQZ3gqUoI1q9CFOsqQvUpjsamw_b7w-VgUQA8ULwJ3hFnJ5EaRrx7yhV5Fe2IKelWbxZm_cbAsdvoEHzJpW3v04XMR1leyDEaHo8ddq9blwjUM7rFz1C-YsEl-WMEYDolZxUBXszmXY"/>
+</div>
+<div class="flex-1">
+<p class="text-xs leading-tight"><span class="font-bold">Julian Vane</span> approved the structural blueprints for <span class="font-bold text-primary">The Obsidian.</span></p>
+<span class="text-[10px] text-outline">12m ago</span>
+</div>
+</div>
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-slate-300 flex-shrink-0 overflow-hidden">
+<img alt="User" class="w-full h-full object-cover" data-alt="portrait of a focused creative woman in a white turtleneck" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDNuxbFmqfZc63ai486hO_ojYko6LWQIRd9Rp2WtXN7JxgSuVViBuUjtoRL95ieMdT0f-CX0TUMloNOZYklR6TiJRpU1bmDMuvluK1ipKAcqtpI1jR5Ai6i8ILRKtYXrnyXRkRtGGW-flb13Jmyer0LGsee6PckatCwTOnQ6cJHzXgKJYyP9rGwGFmt0cD85orZPjSpahRLC0CvZC7rhN-yY8pa6kNkmA09IWXs2FeYwUwOWBfzc3qa3JCMHgpYGKEp4Cq1DEzUE3c"/>
+</div>
+<div class="flex-1">
+<p class="text-xs leading-tight"><span class="font-bold">Sarah Chen</span> uploaded 4 new renders to <span class="font-bold text-primary">Riverside Loft.</span></p>
+<span class="text-[10px] text-outline">45m ago</span>
+</div>
+</div>
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-slate-300 flex-shrink-0 overflow-hidden">
+<img alt="User" class="w-full h-full object-cover" data-alt="mature man with grey beard in professional attire looking at camera" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDEDqZRhZ-b3TE8qUmtmWxiI3DC1KpmeBQdYFD7eRR7bXoAqaK40kMiy3-FaSxf20-xyAnsIpUVBgvZ_VosLqd3kk6sqbX_iEzY_AaGITeSMsT2aH0Iozt8rzawb2qC7G-A4V6OF3mnT6yxz8qlnGiDqz4Xh2i8wtx4u0B2GGa4nzJb8lBOhpHynZ21wVI2qK4Hq76I2T8FcHzW78aIfEBgBLXy03EsBJ2-EGfSHYiFHKc2SfQVmkxfbAzuGzIXPhAK8it5dqxrTog"/>
+</div>
+<div class="flex-1">
+<p class="text-xs leading-tight"><span class="font-bold">Marcus Thorne</span> commented on <span class="font-bold text-primary">Gilded Plaza</span> permit status.</p>
+<span class="text-[10px] text-outline">1h ago</span>
+</div>
+</div>
+</div>
+<button class="w-full mt-8 py-3 text-[0.6875rem] font-bold uppercase tracking-widest text-primary-dim hover:text-primary transition-colors">
+                        View All Activity
+                    </button>
+</section>
+<!-- Small Branding Anchor -->
+<div class="pt-10 border-t border-outline-variant/20">
+<div class="flex items-center gap-2 opacity-30 grayscale">
+<span class="text-xs font-black tracking-tighter uppercase">The Editorial Muse</span>
+<div class="h-px flex-1 bg-on-surface"></div>
+</div>
+</div>
+</div>
+</aside>
+</main>
+</body></html>
