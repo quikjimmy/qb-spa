@@ -1,0 +1,137 @@
+.agent-builder {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+.agent-builder h2 {
+  margin: 0 0 24px;
+}
+
+.agent-builder form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.agent-builder label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.label-hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.char-count {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+
+.agent-builder input[type='text'],
+.agent-builder textarea,
+.agent-builder select {
+  font-family: var(--sans);
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.agent-builder input:focus,
+.agent-builder textarea:focus,
+.agent-builder select:focus {
+  outline: 2px solid var(--text-h);
+  outline-offset: 1px;
+}
+
+.mcp-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 0;
+}
+
+.mcp-fieldset legend {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-h);
+  padding: 0 4px;
+}
+
+.fieldset-hint {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.mcp-option {
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 10px !important;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.mcp-option:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.mcp-option input[type='checkbox'] {
+  margin-top: 2px;
+}
+
+.mcp-option strong {
+  display: block;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.mcp-desc {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.builder-error {
+  color: #dc2626;
+  font-size: 13px;
+  margin: 0;
+}
+
+.builder-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.builder-actions button {
+  font-family: var(--sans);
+  font-size: 14px;
+  padding: 8px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.builder-actions button[type='submit'] {
+  background: var(--text-h);
+  color: var(--bg);
+  border-color: var(--text-h);
+}
