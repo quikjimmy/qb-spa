@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { upload } from '../lib/upload'
+import { generateThumbnail } from '../lib/media'
+import fs from 'fs'
 
 const router = Router()
 
@@ -72,10 +75,33 @@ router.get('/', (req: Request, res: Response): void => {
     }
   }
 
-  // Attach reactions to items
+  // Load media attachments for these items
+  const mediaMap: Record<number, Array<Record<string, unknown>>> = {}
+  if (itemIds.length > 0) {
+    const mPlaceholders = itemIds.map(() => '?').join(',')
+    const mediaRows = db.prepare(`
+      SELECT * FROM media_attachments WHERE feed_item_id IN (${mPlaceholders}) ORDER BY sort_order
+    `).all(...itemIds) as Array<Record<string, unknown> & { feed_item_id: number; file_name: string; thumb_file_name: string }>
+
+    for (const row of mediaRows) {
+      if (!mediaMap[row.feed_item_id]) mediaMap[row.feed_item_id] = []
+      mediaMap[row.feed_item_id]!.push({
+        id: row.id,
+        url: `/uploads/${row.file_name}`,
+        thumbUrl: row.thumb_file_name ? `/uploads/thumbs/${row.thumb_file_name}` : `/uploads/${row.file_name}`,
+        mediaType: row.media_type,
+        width: row.width,
+        height: row.height,
+        durationSec: row.duration_sec,
+      })
+    }
+  }
+
+  // Attach reactions + media to items
   const enrichedItems = (items as Array<Record<string, unknown>>).map(item => ({
     ...item,
     reactions: reactionsMap[(item as { id: number }).id] || [],
+    media: mediaMap[(item as { id: number }).id] || [],
   }))
 
   // Get distinct actors with activity counts for the story bubbles
@@ -171,6 +197,127 @@ router.post('/:id/reactions', (req: Request, res: Response): void => {
       .run(feedItemId, userId, emoji)
     res.json({ action: 'added', emoji })
   }
+})
+
+// ─── Create a post (portal user) — supports text + media ─
+
+router.post('/', upload.array('media', 10), async (req: Request, res: Response): Promise<void> => {
+  const userId = req.user!.userId
+  const { title, body, project_id, project_name, event_type } = req.body
+  const files = (req.files as Express.Multer.File[]) || []
+
+  if (!body?.trim() && !title?.trim() && files.length === 0) {
+    res.status(400).json({ error: 'Post content or media is required' })
+    return
+  }
+
+  const user = db.prepare('SELECT name, email FROM users WHERE id = ?').get(userId) as { name: string; email: string } | undefined
+  if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+  const result = db.prepare(`
+    INSERT INTO feed_items
+      (qb_source, qb_record_id, event_type, title, body, actor_name, actor_email,
+       project_id, project_name, metadata, occurred_at)
+    VALUES ('portal', NULL, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    event_type || 'user_post',
+    title?.trim() || (body?.trim() || '').slice(0, 80) || 'Post',
+    body?.trim() || '',
+    user.name,
+    user.email,
+    project_id || null,
+    project_name || null,
+    JSON.stringify({ source: 'user', userId, hasMedia: files.length > 0 }),
+  )
+
+  const feedItemId = result.lastInsertRowid as number
+
+  // Process media files
+  const insertMedia = db.prepare(`
+    INSERT INTO media_attachments
+      (feed_item_id, file_name, original_name, mime_type, size_bytes, media_type, width, height, duration_sec, thumb_file_name, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]!
+    const isVideo = file.mimetype.startsWith('video/')
+    const mediaType = isVideo ? 'video' : 'image'
+
+    let width = 0
+    let height = 0
+    let thumbFileName: string | null = null
+
+    if (!isVideo) {
+      try {
+        const thumb = await generateThumbnail(file.path)
+        width = thumb.width
+        height = thumb.height
+        thumbFileName = thumb.thumbFileName
+      } catch {
+        // Thumbnail generation failed — use original
+      }
+    }
+
+    insertMedia.run(
+      feedItemId, file.filename, file.originalname, file.mimetype,
+      file.size, mediaType, width || null, height || null,
+      null, thumbFileName, i,
+    )
+  }
+
+  // Return the created item with media
+  const item = db.prepare('SELECT * FROM feed_items WHERE id = ?').get(feedItemId) as Record<string, unknown>
+  const media = db.prepare('SELECT * FROM media_attachments WHERE feed_item_id = ?').all(feedItemId)
+    .map((m: Record<string, unknown>) => ({
+      id: m.id,
+      url: `/uploads/${m.file_name}`,
+      thumbUrl: m.thumb_file_name ? `/uploads/thumbs/${m.thumb_file_name}` : `/uploads/${m.file_name}`,
+      mediaType: m.media_type,
+      width: m.width,
+      height: m.height,
+      durationSec: m.duration_sec,
+    }))
+
+  res.status(201).json({ item: { ...item, media, reactions: [] } })
+})
+
+// ─── Agent post endpoint (API key or JWT) ────────────────
+
+router.post('/agent', (req: Request, res: Response): void => {
+  const { agent_id, agent_name, title, body, event_type, project_id, project_name, status, duration_sec, records_processed, error_message } = req.body
+
+  if (!agent_id || !title) {
+    res.status(400).json({ error: 'agent_id and title are required' })
+    return
+  }
+
+  const metadata = JSON.stringify({
+    source: 'agent',
+    agent_id,
+    status: status || 'completed',
+    duration_sec: duration_sec || null,
+    records_processed: records_processed || null,
+    error_message: error_message || null,
+  })
+
+  const result = db.prepare(`
+    INSERT INTO feed_items
+      (qb_source, qb_record_id, event_type, title, body, actor_name, actor_email,
+       project_id, project_name, metadata, occurred_at)
+    VALUES ('agent', NULL, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'))
+  `).run(
+    event_type || 'agent_run',
+    title,
+    body || '',
+    agent_name || agent_id,
+    project_id || null,
+    project_name || null,
+    metadata,
+  )
+
+  const item = db.prepare('SELECT * FROM feed_items WHERE id = ?').get(result.lastInsertRowid)
+  res.status(201).json({ item })
 })
 
 export { router as feedRouter }

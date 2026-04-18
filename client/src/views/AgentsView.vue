@@ -325,7 +325,8 @@ const agentRuns = computed(() => {
             <div v-if="agentRuns.length === 0" class="text-sm text-muted-foreground py-4 text-center">
               No recent runs for this agent.
             </div>
-            <Table v-else>
+            <!-- Desktop table -->
+            <Table v-else class="hidden sm:table">
               <TableHeader>
                 <TableRow>
                   <TableHead>Status</TableHead>
@@ -355,6 +356,25 @@ const agentRuns = computed(() => {
                 </TableRow>
               </TableBody>
             </Table>
+            <!-- Mobile cards -->
+            <div v-if="agentRuns.length" class="sm:hidden space-y-2">
+              <div v-for="run in agentRuns" :key="run.id" class="rounded-lg border bg-card p-3">
+                <div class="flex items-center justify-between">
+                  <Badge :class="[getStatus(run.status).bg, getStatus(run.status).text]" variant="secondary" class="gap-1.5 text-xs">
+                    <span :class="['size-1.5 rounded-full', getStatus(run.status).dot]" />
+                    {{ run.status }}
+                  </Badge>
+                  <span class="text-[11px] text-muted-foreground">{{ timeAgo(run.startedAt) }}</span>
+                </div>
+                <p class="text-sm mt-1.5 line-clamp-2">{{ run.summary }}</p>
+                <div class="flex gap-3 mt-1 text-[11px] text-muted-foreground">
+                  <span>{{ run.trigger }}</span>
+                  <span>{{ formatDuration(run.durationSec) }}</span>
+                  <span>{{ run.recordsProcessed }} records</span>
+                </div>
+                <p v-if="run.error" class="text-[11px] text-red-600 mt-1 truncate">{{ run.error }}</p>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </TabsContent>
@@ -406,7 +426,8 @@ const agentRuns = computed(() => {
             <CardDescription>Agents with recurring schedules and their next run times.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Table>
+            <!-- Desktop table -->
+            <Table class="hidden sm:table">
               <TableHeader>
                 <TableRow>
                   <TableHead>Agent</TableHead>
@@ -451,6 +472,29 @@ const agentRuns = computed(() => {
                 </TableRow>
               </TableBody>
             </Table>
+            <!-- Mobile cards -->
+            <div class="sm:hidden space-y-2">
+              <div v-for="agent in agents.filter(a => a.type === 'cron')" :key="agent.id" class="rounded-lg border p-3">
+                <div class="flex items-center justify-between">
+                  <p class="text-sm font-medium">{{ agent.name }}</p>
+                  <Badge :class="[getStatus(agent.status).bg, getStatus(agent.status).text]" variant="secondary" class="gap-1.5 text-xs">
+                    <span :class="['size-1.5 rounded-full', getStatus(agent.status).dot]" />
+                    {{ agent.status }}
+                  </Badge>
+                </div>
+                <p class="text-xs text-muted-foreground mt-0.5">{{ agent.schedule }}</p>
+                <div class="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
+                  <span>Last: {{ timeAgo(agent.lastRunAt) }}</span>
+                  <span>Next: {{ agent.nextRunAt ? timeAgo(agent.nextRunAt) : '—' }}</span>
+                  <div class="flex items-center gap-1 ml-auto">
+                    <div class="h-1 w-10 rounded-full bg-muted overflow-hidden">
+                      <div class="h-full rounded-full" :class="agent.successRate > 95 ? 'bg-emerald-500' : agent.successRate > 90 ? 'bg-amber-500' : 'bg-red-500'" :style="{ width: `${agent.successRate}%` }" />
+                    </div>
+                    <span class="text-[10px] font-mono">{{ agent.successRate }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
 

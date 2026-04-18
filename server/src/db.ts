@@ -109,6 +109,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_feed_project ON feed_items(project_id)
 `)
 
+// --- Media Attachments ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS media_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feed_item_id INTEGER NOT NULL REFERENCES feed_items(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+    width INTEGER,
+    height INTEGER,
+    duration_sec REAL,
+    thumb_file_name TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_media_feed ON media_attachments(feed_item_id)`)
+
 // --- Comments (portal-native, not in QB) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS comments (
@@ -167,6 +188,47 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at DESC)
 `)
+
+// --- Agent runs (execution history) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    duration_ms INTEGER,
+    projects_scanned INTEGER DEFAULT 0,
+    projects_classified INTEGER DEFAULT 0,
+    projects_skipped INTEGER DEFAULT 0,
+    tokens_in INTEGER DEFAULT 0,
+    tokens_out INTEGER DEFAULT 0,
+    cost_cents INTEGER DEFAULT 0,
+    model TEXT,
+    error TEXT
+  )
+`)
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent, started_at DESC)`)
+
+// --- Agent outputs (latest classification per project+agent) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_outputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent TEXT NOT NULL,
+    project_id INTEGER NOT NULL,
+    run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+    payload_json TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (agent, project_id)
+  )
+`)
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_outputs_project ON agent_outputs(project_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_outputs_agent ON agent_outputs(agent, generated_at DESC)`)
 
 // --- Seed default roles if they don't exist ---
 const seedRoles = db.prepare(`

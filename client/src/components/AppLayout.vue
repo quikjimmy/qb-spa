@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, provide, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
@@ -12,13 +13,18 @@ import {
 } from '@/components/ui/breadcrumb'
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
+import { usePullToRefresh } from '@/composables/usePullToRefresh'
 
 const route = useRoute()
+const mainEl = ref<HTMLElement | null>(null)
 
 const routeLabels: Record<string, string> = {
   '/': 'Home',
   '/feed': 'Feed',
   '/projects': 'Projects',
+  '/projects/inspections': 'Inspections',
+  '/projects/pto': 'PTO',
+  '/projects/pc': 'PC Dashboard',
   '/agents': 'Agents',
   '/tickets': 'Tickets',
   '/admin': 'Admin',
@@ -41,13 +47,29 @@ function getBreadcrumbs() {
   }
   return crumbs
 }
+
+// Pull-to-refresh: each view registers its refresh fn
+let registeredRefresh: (() => Promise<void>) | null = null
+
+function registerRefresh(fn: () => Promise<void>) {
+  registeredRefresh = fn
+}
+
+// Clear on route change
+watch(() => route.path, () => { registeredRefresh = null })
+
+provide('registerRefresh', registerRefresh)
+
+const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
+  if (registeredRefresh) await registeredRefresh()
+})
 </script>
 
 <template>
   <SidebarProvider>
     <AppSidebar />
     <SidebarInset>
-      <header class="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+      <header class="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 border-b px-4 bg-background">
         <SidebarTrigger class="-ml-1" />
         <Separator orientation="vertical" class="mr-2 h-4" />
         <Breadcrumb>
@@ -67,7 +89,15 @@ function getBreadcrumbs() {
           <NotificationBell />
         </div>
       </header>
-      <main class="flex-1 overflow-auto p-6">
+      <main ref="mainEl" class="flex-1 overflow-auto px-3 py-4 sm:p-6 relative">
+        <!-- Pull-to-refresh indicator -->
+        <div
+          v-if="pullDistance > 0 || isRefreshing"
+          class="flex justify-center py-2 transition-all duration-200 -mt-4 sm:-mt-6 mb-2"
+          :style="{ transform: `translateY(${Math.min(pullDistance, 60)}px)`, opacity: Math.min(pullDistance / 40, 1) }"
+        >
+          <div class="size-6 rounded-full border-2 border-muted-foreground/30 border-t-foreground" :class="isRefreshing ? 'animate-spin' : ''" />
+        </div>
         <RouterView />
       </main>
     </SidebarInset>

@@ -43,6 +43,21 @@ const router = createRouter({
           component: () => import('../views/ProjectsView.vue'),
         },
         {
+          path: 'projects/inspections',
+          name: 'inspx-dashboard',
+          component: () => import('../views/InspxDashboardView.vue'),
+        },
+        {
+          path: 'projects/pto',
+          name: 'pto-dashboard',
+          component: () => import('../views/PtoDashboardView.vue'),
+        },
+        {
+          path: 'projects/pc',
+          name: 'pc-dashboard',
+          component: () => import('../views/PcDashboardView.vue'),
+        },
+        {
           path: 'agents',
           name: 'agents',
           component: () => import('../views/AgentsView.vue'),

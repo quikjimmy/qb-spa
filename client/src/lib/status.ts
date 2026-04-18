@@ -120,6 +120,9 @@ export function getStatusConfig(status: string): StatusConfig {
     if (status.startsWith(key)) return { ...config, label: status }
   }
 
+  // Any status containing "hold" (case-insensitive) gets Hold treatment
+  if (status.toLowerCase().includes('hold')) return { ...statuses['Hold']!, label: status }
+
   return { ...fallback, label: status }
 }
 

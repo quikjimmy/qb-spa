@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useTicketBadgesStore } from '@/stores/ticketBadges'
 import {
   Sidebar,
   SidebarContent,
@@ -13,8 +14,16 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
   SidebarRail,
 } from '@/components/ui/sidebar'
+import {
+  CollapsibleRoot as Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from 'reka-ui'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,6 +35,9 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 
 const route = useRoute()
 const auth = useAuthStore()
+const ticketBadges = useTicketBadgesStore()
+
+onMounted(() => ticketBadges.startPolling())
 
 const initials = computed(() => {
   if (!auth.user?.name) return '?'
@@ -37,13 +49,24 @@ const initials = computed(() => {
     .slice(0, 2)
 })
 
-const navItems = [
+const navTop = [
   { label: 'Home', to: '/', icon: 'home' },
   { label: 'Feed', to: '/feed', icon: 'feed' },
-  { label: 'Projects', to: '/projects', icon: 'folder' },
+]
+
+const navBottom = [
   { label: 'Agents', to: '/agents', icon: 'bot' },
   { label: 'Tickets', to: '/tickets', icon: 'ticket' },
 ]
+
+const projectSubItems = [
+  { label: 'All Projects', to: '/projects' },
+  { label: 'PC Dashboard', to: '/projects/pc' },
+  { label: 'Inspections', to: '/projects/inspections' },
+  { label: 'PTO', to: '/projects/pto' },
+]
+
+const projectsOpen = computed(() => route.path.startsWith('/projects'))
 
 const adminItems = [
   { label: 'Users & Roles', to: '/admin', icon: 'users' },
@@ -78,18 +101,61 @@ function isActive(path: string) {
         <SidebarGroupLabel>Navigation</SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
-            <SidebarMenuItem v-for="item in navItems" :key="item.to">
-              <SidebarMenuButton
-                as-child
-                :is-active="isActive(item.to)"
-              >
+            <!-- Home, Feed -->
+            <SidebarMenuItem v-for="item in navTop" :key="item.to">
+              <SidebarMenuButton as-child :is-active="isActive(item.to)">
                 <RouterLink :to="item.to">
                   <svg v-if="item.icon === 'home'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
                   <svg v-if="item.icon === 'feed'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
-                  <svg v-if="item.icon === 'folder'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+                  <span>{{ item.label }}</span>
+                </RouterLink>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+
+            <!-- Projects (collapsible with sub-menu) -->
+            <Collapsible as-child :default-open="projectsOpen">
+              <SidebarMenuItem>
+                <CollapsibleTrigger as-child>
+                  <SidebarMenuButton :is-active="projectsOpen">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+                    <span class="flex-1">Projects</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform duration-200" :class="projectsOpen ? 'rotate-90' : ''"><path d="m9 18 6-6-6-6"/></svg>
+                  </SidebarMenuButton>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <SidebarMenuSub>
+                    <SidebarMenuSubItem v-for="sub in projectSubItems" :key="sub.to">
+                      <SidebarMenuSubButton as-child :is-active="route.path === sub.to">
+                        <RouterLink :to="sub.to">{{ sub.label }}</RouterLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                  </SidebarMenuSub>
+                </CollapsibleContent>
+              </SidebarMenuItem>
+            </Collapsible>
+
+            <!-- Agents, Tickets -->
+            <SidebarMenuItem v-for="item in navBottom" :key="item.to">
+              <SidebarMenuButton as-child :is-active="isActive(item.to)">
+                <RouterLink :to="item.to">
                   <svg v-if="item.icon === 'bot'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
                   <svg v-if="item.icon === 'ticket'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
-                  <span>{{ item.label }}</span>
+                  <span class="flex-1">{{ item.label }}</span>
+                  <template v-if="item.to === '/tickets'">
+                    <span class="inline-flex items-center gap-0.5 ml-auto">
+                      <span
+                        class="min-w-[18px] h-[18px] px-1 rounded-l-full text-[10px] font-bold inline-flex items-center justify-center"
+                        :class="ticketBadges.overdue > 0 ? 'bg-red-500 text-white' : 'bg-sidebar-accent text-sidebar-foreground/40'"
+                        title="Past due"
+                      >{{ ticketBadges.overdue }}</span>
+                      <span class="text-[8px] text-sidebar-foreground/20">|</span>
+                      <span
+                        class="min-w-[18px] h-[18px] px-1 rounded-r-full text-[10px] font-bold inline-flex items-center justify-center"
+                        :class="ticketBadges.dueToday > 0 ? 'bg-amber-400 text-white' : 'bg-sidebar-accent text-sidebar-foreground/40'"
+                        title="Due today"
+                      >{{ ticketBadges.dueToday }}</span>
+                    </span>
+                  </template>
                 </RouterLink>
               </SidebarMenuButton>
             </SidebarMenuItem>

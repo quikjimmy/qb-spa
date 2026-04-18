@@ -1,4 +1,4 @@
-<script setup lang="ts">
+1<script setup lang="ts">
 import { ref, computed, inject, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
@@ -47,6 +47,7 @@ interface Project {
   next_task_type: string
   next_task_date: string
   is_favorite: boolean
+  open_tickets?: number
 }
 
 interface FilterOption { value: string; count: number }
@@ -64,6 +65,13 @@ const f = ref({ status: '', coordinator: '', state: '', closer: '', office: '', 
 const activeKpi = ref('')
 const filters = ref<Filters>({ statuses: [], offices: [], coordinators: [], states: [], closers: [], lenders: [], epcs: [] })
 const cacheInfo = ref<{ total: number; last_refresh: string } | null>(null)
+
+interface HoldClassification { category: string; subcategory: string; confidence: number; one_line_reason: string; suggested_next_action: string; last_movement_days: number; days_on_hold?: number }
+const holdClassifications = ref<Record<number, HoldClassification>>({})
+const classifierRunning = ref(false)
+const aiExpanded = ref<Record<number, boolean>>({})
+function toggleAi(e: Event, projectId: number) { e.stopPropagation(); aiExpanded.value = { ...aiExpanded.value, [projectId]: !aiExpanded.value[projectId] } }
+function isStuck(c: HoldClassification): boolean { return (c.last_movement_days ?? 0) >= 3 }
 
 interface KpiItem { count: number; kw: number; pct?: number }
 const kpi = ref<{
@@ -135,6 +143,27 @@ async function loadProjects() {
 }
 
 async function refreshCache() { refreshing.value = true; try { await fetch('/api/projects/refresh', { method: 'POST', headers: hdrs() }); await loadProjects() } finally { refreshing.value = false } }
+
+async function loadHoldClassifications() {
+  if (!auth.isAdmin) return
+  try {
+    const res = await fetch('/api/agents/outputs?agent=hold-classifier&limit=500', { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json() as { outputs: Array<{ project_id: number; payload: HoldClassification }> }
+    const map: Record<number, HoldClassification> = {}
+    for (const o of data.outputs) map[o.project_id] = o.payload
+    holdClassifications.value = map
+  } catch { /* ignore */ }
+}
+
+async function runHoldClassifier() {
+  if (classifierRunning.value) return
+  classifierRunning.value = true
+  try {
+    await fetch('/api/agents/hold-classifier/run', { method: 'POST', headers: hdrs() })
+    await loadHoldClassifications()
+  } finally { classifierRunning.value = false }
+}
 function onSearch() { if (searchTimeout) clearTimeout(searchTimeout); searchTimeout = setTimeout(() => loadProjects(), 200) }
 function clearFilters() { search.value = ''; showFavorites.value = false; activeKpi.value = ''; f.value = { status: '', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' }; loadProjects() }
 
@@ -148,8 +177,16 @@ function openProject(rid: number) {
 }
 function setFilter(key: keyof typeof f.value, val: string) { f.value[key] = val === '__all__' ? '' : val; loadProjects() }
 
-const drawerFilterCount = computed(() => { let c = 0; if (f.value.closer) c++; if (f.value.office) c++; if (f.value.lender) c++; if (f.value.dateFrom || f.value.dateTo) c++; return c })
+const drawerFilterCount = computed(() => { let c = 0; if (f.value.status) c++; if (f.value.coordinator) c++; if (f.value.state) c++; if (f.value.epc && f.value.epc !== 'Kin Home') c++; if (f.value.closer) c++; if (f.value.office) c++; if (f.value.lender) c++; if (f.value.dateFrom || f.value.dateTo) c++; return c })
 const hasFilters = computed(() => search.value || showFavorites.value || activeKpi.value || f.value.status || f.value.coordinator || f.value.state || drawerFilterCount.value > 0)
+
+const statusOrder = ['Active', 'Hold', 'On Hold', 'Pending Cancel', 'Cancelled', 'Completed', 'Complete', 'Completed | Paid', 'Rejected', 'Lost', 'ROR', 'Surrendered']
+const sortedStatuses = computed(() => {
+  const all = filters.value.statuses.map((s: { value: string }) => s.value)
+  const ordered = statusOrder.filter(s => all.includes(s))
+  const rest = all.filter((s: string) => !statusOrder.includes(s)).sort()
+  return [...ordered, ...rest]
+})
 
 async function toggleFavorite(e: Event, projectId: number) {
   e.stopPropagation()
@@ -201,28 +238,34 @@ function shortTaskType(t: string): string {
 }
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() }); registerRefresh?.(() => loadProjects()) })
+onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() }); loadHoldClassifications(); registerRefresh?.(() => loadProjects()) })
 </script>
 
 <template>
   <div class="grid gap-2 sm:gap-3">
-    <!-- Header -->
-    <div class="flex items-center justify-between gap-3">
-      <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
-      <Button v-if="auth.isAdmin" variant="outline" size="sm" class="shrink-0" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Refreshing...' : 'Refresh' }}</Button>
+    <!-- Header (sticky so count stays visible on scroll) -->
+    <div class="sticky top-0 z-20 bg-background flex items-center justify-between gap-3 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
+      <div class="flex items-baseline gap-2 min-w-0">
+        <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
+        <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ total.toLocaleString() }}</span>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="classifierRunning" @click="runHoldClassifier" :title="classifierRunning ? 'Classifying holds...' : 'Re-run Hold classifier'">{{ classifierRunning ? 'Classifying...' : 'Classify holds' }}</Button>
+        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Refreshing...' : 'Refresh' }}</Button>
+      </div>
     </div>
 
     <!-- KPI strip -->
     <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
       <button v-for="chip in [
-        { key: 'preInstall', label: 'Pre-Install', count: kpi.preInstall.count, kw: kpi.preInstall.kw, color: 'text-blue-600', bar: 'bg-blue-500' },
-        { key: 'hold', label: 'Hold (' + kpi.hold.pct + '%)', count: kpi.hold.count, kw: kpi.hold.kw, color: 'text-amber-600', bar: 'bg-amber-400' },
-        { key: 'futureInstall', label: 'Future Install', count: kpi.futureInstall.count, kw: kpi.futureInstall.kw, color: 'text-teal-600', bar: 'bg-teal-500' },
+        { key: 'preInstall', label: 'Pre-Inst', count: kpi.preInstall.count, kw: kpi.preInstall.kw, color: 'text-blue-600', bar: 'bg-blue-500' },
+        { key: 'hold', label: 'Hold ' + kpi.hold.pct + '%', count: kpi.hold.count, kw: kpi.hold.kw, color: 'text-amber-600', bar: 'bg-amber-400' },
+        { key: 'futureInstall', label: 'F. Install', count: kpi.futureInstall.count, kw: kpi.futureInstall.kw, color: 'text-teal-600', bar: 'bg-teal-500' },
         { key: 'wip', label: 'WIP', count: kpi.wip.count, kw: kpi.wip.kw, color: 'text-violet-600', bar: 'bg-violet-500' },
         { key: 'needInspx', label: 'Need INSPX', count: kpi.needInspx.count, kw: kpi.needInspx.kw, color: 'text-orange-600', bar: 'bg-orange-500' },
         { key: 'needPto', label: 'Need PTO', count: kpi.needPto.count, kw: kpi.needPto.kw, color: 'text-emerald-600', bar: 'bg-emerald-500' },
       ]" :key="chip.key"
-        class="flex-none rounded-xl px-3 py-2 min-w-[95px] sm:min-w-[110px] text-left transition-all active:scale-[0.97]"
+        class="flex-none rounded-xl px-3 py-2 w-[105px] sm:w-[115px] text-left transition-all active:scale-[0.97]"
         :class="activeKpi === chip.key ? 'bg-card shadow-md' : 'bg-card/60 hover:bg-card'"
         @click="setKpiFilter(chip.key)"
       >
@@ -232,37 +275,35 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
           <span class="text-lg sm:text-xl font-extrabold" :class="chip.color">{{ chip.count }}</span>
           <span class="text-[10px] font-bold" :class="chip.color"> / {{ Math.round(chip.kw).toLocaleString() }} kW</span>
         </p>
-        <p v-if="chip.sub" class="text-[9px] text-muted-foreground mt-0.5">{{ chip.sub }}</p>
       </button>
     </div>
 
-    <!-- Search -->
-    <div class="relative">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-      <Input v-model="search" @input="onSearch" placeholder="Search name, address, email, phone..." class="pl-9 h-9" />
-    </div>
-
-    <!-- Fast filters -->
-    <div class="flex gap-2 flex-wrap items-center">
-      <button class="inline-flex items-center rounded-md border px-2 h-8 text-xs transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites; loadProjects()">
+    <!-- Search + filter toggle -->
+    <div class="flex gap-2 items-center">
+      <div class="relative flex-1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <Input v-model="search" @input="onSearch" placeholder="Search name, address, email, phone..." class="pl-8 pr-8 h-8 text-xs" />
+        <button v-if="search" @click="search = ''; loadProjects()" class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" title="Clear search">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <button class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites; loadProjects()" title="Favorites">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="showFavorites ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
       </button>
-      <Select :model-value="f.status || '__all__'" @update:model-value="(v: string) => setFilter('status', v)"><SelectTrigger class="h-8 w-auto min-w-[90px] text-xs"><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="__all__">All statuses</SelectItem><SelectItem v-for="s in filters.statuses" :key="s.value" :value="s.value">{{ s.value }} <span class="text-muted-foreground ml-1">({{ s.count }})</span></SelectItem></SelectContent></Select>
-      <Select :model-value="f.coordinator || '__all__'" @update:model-value="(v: string) => setFilter('coordinator', v)"><SelectTrigger class="h-8 w-auto min-w-[90px] text-xs"><SelectValue placeholder="PC" /></SelectTrigger><SelectContent><SelectItem value="__all__">All PCs</SelectItem><SelectItem v-for="c in filters.coordinators" :key="c.value" :value="c.value">{{ c.value }} <span class="text-muted-foreground ml-1">({{ c.count }})</span></SelectItem></SelectContent></Select>
-      <Select :model-value="f.state || '__all__'" @update:model-value="(v: string) => setFilter('state', v)"><SelectTrigger class="h-8 w-auto min-w-[80px] text-xs"><SelectValue placeholder="State" /></SelectTrigger><SelectContent><SelectItem value="__all__">All states</SelectItem><SelectItem v-for="s in filters.states" :key="s.value" :value="s.value">{{ s.value }} <span class="text-muted-foreground ml-1">({{ s.count }})</span></SelectItem></SelectContent></Select>
-
-      <Select :model-value="f.epc || '__all__'" @update:model-value="(v: string) => setFilter('epc', v)"><SelectTrigger class="h-8 w-auto min-w-[80px] text-xs"><SelectValue placeholder="EPC" /></SelectTrigger><SelectContent><SelectItem value="__all__">All EPCs</SelectItem><SelectItem v-for="e in filters.epcs" :key="e.value" :value="e.value">{{ e.value }} <span class="text-muted-foreground ml-1">({{ e.count }})</span></SelectItem></SelectContent></Select>
-      <button class="inline-flex items-center gap-1 rounded-md border px-2.5 h-8 text-xs transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>
-        <span class="hidden sm:inline">More</span>
-        <span v-if="drawerFilterCount > 0" class="size-4 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center font-bold">{{ drawerFilterCount }}</span>
+      <button class="relative inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer" title="Filters">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        <span v-if="drawerFilterCount > 0" class="absolute -top-1 -right-1 size-4 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center font-bold">{{ drawerFilterCount }}</span>
       </button>
-      <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground" @click="clearFilters">Clear</button>
+      <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground shrink-0" @click="clearFilters">Clear</button>
     </div>
 
     <!-- Filter drawer -->
     <div v-if="showDrawer" class="rounded-xl border bg-card overflow-hidden">
       <div class="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Status</Label><Select :model-value="f.status || '__all__'" @update:model-value="(v: string) => setFilter('status', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All statuses" /></SelectTrigger><SelectContent><SelectItem value="__all__">All statuses</SelectItem><SelectItem v-for="s in sortedStatuses" :key="s" :value="s">{{ s }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">PC</Label><Select :model-value="f.coordinator || '__all__'" @update:model-value="(v: string) => setFilter('coordinator', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All PCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All PCs</SelectItem><SelectItem v-for="c in filters.coordinators" :key="c.value" :value="c.value">{{ c.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label><Select :model-value="f.state || '__all__'" @update:model-value="(v: string) => setFilter('state', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All states" /></SelectTrigger><SelectContent><SelectItem value="__all__">All states</SelectItem><SelectItem v-for="s in filters.states" :key="s.value" :value="s.value">{{ s.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">EPC</Label><Select :model-value="f.epc || '__all__'" @update:model-value="(v: string) => setFilter('epc', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All EPCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All EPCs</SelectItem><SelectItem v-for="e in filters.epcs" :key="e.value" :value="e.value">{{ e.value }}</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Closer</Label><Select :model-value="f.closer || '__all__'" @update:model-value="(v: string) => setFilter('closer', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All closers</SelectItem><SelectItem v-for="c in filters.closers" :key="c.value" :value="c.value">{{ c.value }} ({{ c.count }})</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Sales Office</Label><Select :model-value="f.office || '__all__'" @update:model-value="(v: string) => setFilter('office', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All offices</SelectItem><SelectItem v-for="o in filters.offices" :key="o.value" :value="o.value">{{ o.value }} ({{ o.count }})</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Lender</Label><Select :model-value="f.lender || '__all__'" @update:model-value="(v: string) => setFilter('lender', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All lenders</SelectItem><SelectItem v-for="l in filters.lenders" :key="l.value" :value="l.value">{{ l.value }} ({{ l.count }})</SelectItem></SelectContent></Select></div>
@@ -300,30 +341,30 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
         <!-- ── Mobile card (matches qb-skin quick glance) ── -->
         <div class="sm:hidden px-3 py-3">
           <!-- Row 1: Star + Title + Pills -->
-          <div class="flex items-start gap-2">
-            <button class="mt-0.5 shrink-0" @click="toggleFavorite($event, p.record_id)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2" :class="p.is_favorite ? '' : 'text-muted-foreground/25'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <div class="flex items-center gap-1.5">
+            <button class="shrink-0" @click="toggleFavorite($event, p.record_id)">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2.5" :class="p.is_favorite ? '' : 'text-muted-foreground/70'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             </button>
-            <p class="text-[15px] font-semibold flex-1 min-w-0 truncate">{{ p.customer_name || 'Unnamed' }}</p>
+            <p class="text-[12px] font-semibold flex-1 min-w-0 truncate">{{ p.customer_name || 'Unnamed' }}</p>
             <div class="flex gap-1 shrink-0 items-center">
-              <span v-if="p.state" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
-              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
+              <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
+              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
             </div>
           </div>
 
           <!-- Row 2: Subtitle (date · kW · closer · lender) -->
-          <p class="text-[11px] text-muted-foreground mt-1 ml-[22px] truncate">
+          <p class="text-[10px] text-muted-foreground mt-0.5 truncate">
             {{ fmtDate(p.sales_date) }}<template v-if="p.system_size_kw"> · {{ p.system_size_kw.toFixed(1) }} kW</template><template v-if="p.closer"> · {{ p.closer }}</template><template v-if="p.lender"> · {{ p.lender }}</template>
           </p>
 
           <!-- Row 3: Next task -->
-          <div v-if="nextTask(p)" class="flex justify-between items-center mt-0.5 ml-[22px] text-[13px]">
+          <div v-if="nextTask(p)" class="flex justify-between items-center text-[10px]">
             <span class="text-muted-foreground">Next</span>
             <span class="font-medium">{{ nextTask(p) }}</span>
           </div>
 
           <!-- Row 5: Milestone tracker (full dots + labels) -->
-          <div class="mt-2 pt-2 ml-[22px] border-t border-border/50">
+          <div class="mt-2 pt-2 border-t border-border/50 flex items-start justify-between gap-2">
             <div class="flex items-start">
               <template v-for="(ms, i) in getMilestones(p)" :key="ms.key">
                 <div v-if="i > 0" class="mt-[8px] shrink-0" :class="getMilestones(p)[i-1]!.state === 'done' ? 'bg-emerald-400' : 'bg-[#e2e8f0]'" style="width:6px;height:2px" />
@@ -350,29 +391,52 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
                 </div>
               </template>
             </div>
+            <div v-if="p.open_tickets && p.open_tickets > 0" class="flex items-center gap-1 text-muted-foreground shrink-0" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
+              <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
+            </div>
+          </div>
+
+          <!-- AI: hold classifier (collapsible) -->
+          <div v-if="holdClassifications[p.record_id]" class="mt-1.5 pt-1.5 border-t border-dashed border-border/60">
+            <button @click="toggleAi($event, p.record_id)" class="flex items-center gap-1.5 text-[10px] w-full text-left min-w-0">
+              <span class="flex items-center gap-1 shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="url(#aig-m)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="aig-m" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#6366f1"/></linearGradient></defs><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+                <span class="text-[9px] font-semibold tracking-widest bg-gradient-to-r from-violet-500 to-indigo-500 bg-clip-text text-transparent">AI</span>
+              </span>
+              <span v-if="isStuck(holdClassifications[p.record_id]!)" class="size-1.5 rounded-full bg-red-500 animate-pulse shrink-0" :title="`Stuck ${holdClassifications[p.record_id]!.last_movement_days}d`" />
+              <span class="font-medium text-foreground truncate flex-1 min-w-0">{{ holdClassifications[p.record_id]!.category }} · {{ holdClassifications[p.record_id]!.subcategory }}</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground shrink-0 transition-transform" :class="aiExpanded[p.record_id] ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div v-if="aiExpanded[p.record_id]" class="mt-1 pl-[14px] text-[10px] space-y-0.5">
+              <div class="flex gap-3 text-muted-foreground">
+                <span v-if="holdClassifications[p.record_id]!.days_on_hold != null"><span>On hold</span> <span class="font-medium text-foreground">{{ holdClassifications[p.record_id]!.days_on_hold }}d</span></span>
+                <span><span>Last note</span> <span class="font-medium" :class="isStuck(holdClassifications[p.record_id]!) ? 'text-red-600' : 'text-foreground'">{{ holdClassifications[p.record_id]!.last_movement_days }}d ago</span></span>
+              </div>
+              <p class="text-foreground">{{ holdClassifications[p.record_id]!.suggested_next_action }}</p>
+              <p class="text-muted-foreground italic">{{ holdClassifications[p.record_id]!.one_line_reason }}</p>
+            </div>
           </div>
         </div>
 
         <!-- ── Desktop card ── -->
         <div class="hidden sm:block px-4 py-3">
           <div class="flex gap-3">
-            <!-- Star -->
-            <button class="mt-1 shrink-0" @click="toggleFavorite($event, p.record_id)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2" :class="p.is_favorite ? '' : 'text-muted-foreground/25 group-hover:text-muted-foreground/50'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-            </button>
-
             <!-- Left: name, address, meta rows -->
             <div class="flex-1 min-w-0">
-              <!-- Row 1: Name + pills -->
-              <div class="flex items-center gap-2">
-                <p class="text-sm font-semibold truncate group-hover:text-primary transition-colors">{{ p.customer_name || 'Unnamed' }}</p>
-                <span v-if="p.state" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
+              <!-- Row 1: Star + Name + pills -->
+              <div class="flex items-center gap-1.5">
+                <button class="shrink-0" @click="toggleFavorite($event, p.record_id)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2.5" :class="p.is_favorite ? '' : 'text-muted-foreground/70 group-hover:text-muted-foreground'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                </button>
+                <p class="text-[12px] font-semibold truncate group-hover:text-primary transition-colors">{{ p.customer_name || 'Unnamed' }}</p>
+                <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
               </div>
               <!-- Row 2: Address -->
-              <p class="text-[11px] text-muted-foreground truncate mt-0.5">{{ p.customer_address }}</p>
+              <p class="text-[10px] text-muted-foreground truncate mt-0.5">{{ p.customer_address }}</p>
               <!-- Row 3: Key-value pairs -->
-              <div class="flex gap-x-5 mt-1 text-[12px]">
+              <div class="flex gap-x-5 mt-1 text-[10px]">
                 <div v-if="p.coordinator" class="flex gap-1.5"><span class="text-muted-foreground">PC</span><span class="font-medium">{{ p.coordinator }}</span></div>
                 <div v-if="p.closer" class="flex gap-1.5"><span class="text-muted-foreground">Closer</span><span class="font-medium truncate max-w-[120px]">{{ p.closer }}</span></div>
                 <div v-if="p.lender" class="flex gap-1.5"><span class="text-muted-foreground">Lender</span><span class="font-medium truncate max-w-[120px]">{{ p.lender }}</span></div>
@@ -381,8 +445,8 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
               </div>
             </div>
 
-            <!-- Right: Milestone tracker -->
-            <div class="shrink-0 flex flex-col items-end gap-1.5 pt-0.5 min-w-[200px]">
+            <!-- Right: Milestone tracker + AI read -->
+            <div class="shrink-0 flex flex-col items-end gap-0.5 pt-0.5 min-w-[200px] max-w-[320px]">
               <!-- Dot tracker with labels -->
               <div class="flex items-start gap-0">
                 <template v-for="(ms, i) in getMilestones(p)" :key="ms.key">
@@ -400,10 +464,36 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
                   </div>
                 </template>
               </div>
-              <!-- Next task -->
-              <div class="text-[10px] text-muted-foreground text-right">
-                <p v-if="nextTask(p)" class="font-medium text-foreground">{{ nextTask(p) }}</p>
-                <p v-else-if="has(p.pto_approved)">PTO: <span class="font-medium text-foreground">{{ fmtDate(p.pto_approved) }}</span></p>
+              <!-- Next task + tickets -->
+              <div class="flex items-center justify-end gap-2 text-[10px] text-muted-foreground">
+                <div class="text-right">
+                  <p v-if="nextTask(p)"><span class="text-muted-foreground">Next</span> <span class="font-medium text-foreground">{{ nextTask(p) }}</span></p>
+                  <p v-else-if="has(p.pto_approved)">PTO: <span class="font-medium text-foreground">{{ fmtDate(p.pto_approved) }}</span></p>
+                </div>
+                <div v-if="p.open_tickets && p.open_tickets > 0" class="flex items-center gap-1" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
+                  <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
+                </div>
+              </div>
+              <!-- AI: hold classifier (collapsible) -->
+              <div v-if="holdClassifications[p.record_id]" class="mt-1.5 pt-1.5 border-t border-dashed border-border/60 w-full self-end">
+                <button @click="toggleAi($event, p.record_id)" class="flex items-center gap-1.5 text-[10px] w-full text-left min-w-0">
+                  <span class="flex items-center gap-1 shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="url(#aig-d)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="aig-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#6366f1"/></linearGradient></defs><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+                    <span class="text-[9px] font-semibold tracking-widest bg-gradient-to-r from-violet-500 to-indigo-500 bg-clip-text text-transparent">AI</span>
+                  </span>
+                  <span v-if="isStuck(holdClassifications[p.record_id]!)" class="size-1.5 rounded-full bg-red-500 animate-pulse shrink-0" :title="`Stuck ${holdClassifications[p.record_id]!.last_movement_days}d`" />
+                  <span class="font-medium text-foreground truncate flex-1 min-w-0 text-right">{{ holdClassifications[p.record_id]!.category }} · {{ holdClassifications[p.record_id]!.subcategory }}</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground shrink-0 transition-transform" :class="aiExpanded[p.record_id] ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="aiExpanded[p.record_id]" class="mt-1 text-[10px] space-y-0.5 text-right">
+                  <div class="flex gap-3 text-muted-foreground justify-end">
+                    <span v-if="holdClassifications[p.record_id]!.days_on_hold != null"><span>On hold</span> <span class="font-medium text-foreground">{{ holdClassifications[p.record_id]!.days_on_hold }}d</span></span>
+                    <span><span>Last note</span> <span class="font-medium" :class="isStuck(holdClassifications[p.record_id]!) ? 'text-red-600' : 'text-foreground'">{{ holdClassifications[p.record_id]!.last_movement_days }}d ago</span></span>
+                  </div>
+                  <p class="text-foreground">{{ holdClassifications[p.record_id]!.suggested_next_action }}</p>
+                  <p class="text-muted-foreground italic">{{ holdClassifications[p.record_id]!.one_line_reason }}</p>
+                </div>
               </div>
             </div>
           </div>

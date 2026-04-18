@@ -3,3 +3,6 @@ dist
 .env
 *.db
 .DS_Store
+server/uploads/
+*.db-shm
+*.db-wal

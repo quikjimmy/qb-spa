@@ -43,7 +43,10 @@ function has(v: string): boolean {
 }
 
 function isPast(dateStr: string): boolean {
-  try { return new Date(dateStr + 'T23:59:59') < new Date() } catch { return false }
+  if (!dateStr || dateStr.length < 10) return false
+  // Parse as local date to avoid UTC offset shifting the day
+  const d = dateStr.length === 10 ? new Date(dateStr + 'T23:59:59') : new Date(dateStr)
+  return d < new Date()
 }
 
 export function computeMilestones(p: ProjectMilestoneFields): MilestoneStep[] {

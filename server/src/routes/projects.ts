@@ -45,6 +45,15 @@ db.exec(`
     inspection_passed TEXT,
     pto_submitted TEXT,
     pto_approved TEXT,
+    epc TEXT,
+    nem_user TEXT,
+    inspx_first_time_pass INTEGER,
+    inspx_pass_fail TEXT,
+    inspx_fail_date TEXT,
+    inspx_count INTEGER DEFAULT 0,
+    inspx_passed_count INTEGER DEFAULT 0,
+    next_task_type TEXT,
+    next_task_date TEXT,
     cached_at TEXT NOT NULL DEFAULT (datetime('now'))
   )
 `)
@@ -85,7 +94,13 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 491, col: 'inspection_passed' },
   { fid: 537, col: 'pto_submitted' },
   { fid: 538, col: 'pto_approved' },
-  { fid: 189, col: 'state' },
+  { fid: 606, col: 'epc' },
+  { fid: 1743, col: 'nem_user' },
+  { fid: 1757, col: 'inspx_first_time_pass' },
+  { fid: 571, col: 'inspx_pass_fail' },
+  { fid: 1469, col: 'inspx_fail_date' },
+  { fid: 1410, col: 'inspx_count' },
+  { fid: 1073, col: 'inspx_passed_count' },
 ]
 
 const selectFids = fieldMap.map(f => f.fid)
@@ -118,6 +133,7 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
       body: JSON.stringify({
         from: 'br9kwm8na',
         select: selectFids,
+        where: "{'622'.EX.'false'}",
         options: { skip, top: batchSize },
       }),
     })
@@ -135,7 +151,9 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
     skip += batchSize
   }
 
-  // Write to cache in a transaction — columns must match fieldMap order
+  // Clear old cache and write fresh data
+  db.prepare('DELETE FROM project_cache').run()
+
   const cols = fieldMap.map(f => f.col).join(', ')
   const placeholders = fieldMap.map(() => '?').join(', ')
   const upsert = db.prepare(`
@@ -150,11 +168,60 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
 
       const values = fieldMap.map(f => {
         if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
+        if (f.col === 'inspx_first_time_pass') return val(record, f.fid) === 'true' ? 1 : 0
+        if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
+        if (f.col === 'inspx_pass_fail') { const v = record[String(f.fid)]?.value; return Array.isArray(v) ? v.join(', ') : val(record, f.fid) }
+        // User fields return { name, email, id } — extract name
+        if (f.col === 'nem_user') {
+          const raw = record[String(f.fid)]?.value
+          if (raw && typeof raw === 'object' && 'name' in (raw as Record<string, unknown>)) return (raw as { name: string }).name
+        }
         return val(record, f.fid)
       })
       upsert.run(...values)
     }
   })()
+
+  // Fetch upcoming Arrivy tasks and attach next task to each project
+  try {
+    const today = new Date().toISOString().split('T')[0]!
+    const taskRes = await fetch('https://api.quickbase.com/v1/records/query', {
+      method: 'POST',
+      headers: {
+        'QB-Realm-Hostname': realm,
+        'Authorization': `QB-USER-TOKEN ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'bvbqgs5yc',
+        select: [3, 6, 56, 85, 115],
+        where: `{'115'.AF.'${today}'}AND{'85'.XEX.'Complete'}AND{'85'.XEX.'Completed'}AND{'85'.XEX.'Cancelled'}`,
+        sortBy: [{ fieldId: 115, order: 'ASC' }],
+        options: { top: 1000 },
+      }),
+    })
+
+    if (taskRes.ok) {
+      const taskData = await taskRes.json()
+      // Group by project, keep earliest per project
+      const nextByProject = new Map<number, { type: string; date: string }>()
+      for (const t of taskData.data || []) {
+        const projId = parseInt(val(t, 6))
+        if (!projId || nextByProject.has(projId)) continue
+        nextByProject.set(projId, {
+          type: val(t, 56),
+          date: val(t, 115),
+        })
+      }
+
+      const updateTask = db.prepare('UPDATE project_cache SET next_task_type = ?, next_task_date = ? WHERE record_id = ?')
+      db.transaction(() => {
+        for (const [projId, task] of nextByProject) {
+          updateTask.run(task.type, task.date, projId)
+        }
+      })()
+    }
+  } catch { /* Arrivy task fetch failed — non-critical */ }
 
   return { total: allRecords.length, duration: Date.now() - start }
 }
@@ -170,6 +237,7 @@ router.get('/', (req: Request, res: Response): void => {
   const coordinator = req.query['coordinator'] as string | undefined
   const state = req.query['state'] as string | undefined
   const closer = req.query['closer'] as string | undefined
+  const epc = req.query['epc'] as string | undefined
   const lender = req.query['lender'] as string | undefined
   const salesFrom = req.query['sales_from'] as string | undefined
   const salesTo = req.query['sales_to'] as string | undefined
@@ -177,6 +245,8 @@ router.get('/', (req: Request, res: Response): void => {
   const surveyTo = req.query['survey_to'] as string | undefined
   const installFrom = req.query['install_from'] as string | undefined
   const installTo = req.query['install_to'] as string | undefined
+  const pipeline = req.query['pipeline'] as string | undefined
+  const sort = req.query['sort'] as string | undefined
   const favoritesOnly = req.query['favorites'] === '1'
   const limit = Math.min(parseInt(req.query['limit'] as string) || 100, 500)
   const offset = parseInt(req.query['offset'] as string) || 0
@@ -223,6 +293,7 @@ router.get('/', (req: Request, res: Response): void => {
   if (state) { where += ' AND state = ?'; params.push(state) }
   if (closer) { where += ' AND closer = ?'; params.push(closer) }
   if (lender) { where += ' AND lender = ?'; params.push(lender) }
+  if (epc) { where += ' AND epc = ?'; params.push(epc) }
   if (salesFrom) { where += " AND sales_date >= ?"; params.push(salesFrom) }
   if (salesTo) { where += " AND sales_date <= ?"; params.push(salesTo) }
   if (surveyFrom) { where += " AND survey_scheduled >= ?"; params.push(surveyFrom) }
@@ -230,10 +301,34 @@ router.get('/', (req: Request, res: Response): void => {
   if (installFrom) { where += " AND install_scheduled >= ?"; params.push(installFrom) }
   if (installTo) { where += " AND install_scheduled <= ?"; params.push(installTo) }
 
+  // Pipeline KPI filter — use client's local date if provided, fall back to server UTC
+  const clientToday = req.query['today'] as string | undefined
+  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  const hasV = (col: string) => `(${col} IS NOT NULL AND ${col} != '' AND ${col} != '0')`
+  const noV = (col: string) => `(${col} IS NULL OR ${col} = '' OR ${col} = '0')`
+  if (pipeline === 'preInstall') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${noV('install_scheduled')} AND ${noV('install_completed')}`
+  } else if (pipeline === 'hold') {
+    where += ` AND LOWER(status) LIKE '%hold%' AND ${noV('install_scheduled')}`
+  } else if (pipeline === 'futureInstall') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled >= '${today}' AND ${noV('install_completed')}`
+  } else if (pipeline === 'wip') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled <= '${today}T23:59:59' AND ${noV('install_completed')}`
+  } else if (pipeline === 'needInspx') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_completed')} AND ${noV('inspection_passed')}`
+  } else if (pipeline === 'needPto') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('inspection_passed')} AND ${noV('pto_approved')}`
+  }
+
+  // Sort
+  let orderBy = 'record_id DESC'
+  if (sort === 'sales_asc') orderBy = 'sales_date ASC, record_id DESC'
+  else if (sort === 'sales_desc') orderBy = 'sales_date DESC, record_id DESC'
+
   const items = db.prepare(`
     SELECT * FROM project_cache
     ${where}
-    ORDER BY record_id DESC
+    ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset)
 
@@ -269,9 +364,68 @@ router.get('/', (req: Request, res: Response): void => {
     `SELECT lender as value, COUNT(*) as count FROM project_cache WHERE lender != '' GROUP BY lender ORDER BY count DESC`
   ).all() as Array<{ value: string; count: number }>
 
+  const epcs = db.prepare(
+    `SELECT epc as value, COUNT(*) as count FROM project_cache WHERE epc != '' GROUP BY epc ORDER BY count DESC`
+  ).all() as Array<{ value: string; count: number }>
+
   const cacheInfo = db.prepare(
     'SELECT COUNT(*) as total, MAX(cached_at) as last_refresh FROM project_cache'
   ).get() as { total: number; last_refresh: string }
+
+  // KPI pipeline categories (computed from the filtered set, excluding status filter so KPIs show across all statuses)
+  // Build a base where that includes all filters EXCEPT status
+  let kpiWhere = 'WHERE 1=1'
+  const kpiParams: unknown[] = []
+  if (favoritesOnly && favSet.size > 0) { kpiWhere += ` AND record_id IN (${[...favSet].map(() => '?').join(',')})`; kpiParams.push(...favSet) }
+  if (q) { kpiWhere += ` AND (LOWER(customer_name) LIKE ? OR LOWER(customer_address) LIKE ? OR LOWER(email) LIKE ? OR REPLACE(REPLACE(phone,'-',''),' ','') LIKE ? OR CAST(record_id AS TEXT) LIKE ?)`; const like = `%${q}%`; const phoneLike = `%${q.replace(/[-\s()]/g, '')}%`; kpiParams.push(like, like, like, phoneLike, like) }
+  if (office) { kpiWhere += ' AND sales_office = ?'; kpiParams.push(office) }
+  if (coordinator) { kpiWhere += ' AND coordinator = ?'; kpiParams.push(coordinator) }
+  if (state) { kpiWhere += ' AND state = ?'; kpiParams.push(state) }
+  if (closer) { kpiWhere += ' AND closer = ?'; kpiParams.push(closer) }
+  if (lender) { kpiWhere += ' AND lender = ?'; kpiParams.push(lender) }
+  if (epc) { kpiWhere += ' AND epc = ?'; kpiParams.push(epc) }
+
+  // today already declared above for pipeline filter
+
+  const activeHoldBase = `${kpiWhere} AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%')`
+  const futureOrToday = (col: string) => `${hasV(col)} AND ${col} >= '${today}'`
+  const pastOrToday = (col: string) => `${hasV(col)} AND ${col} <= '${today}T23:59:59'`
+
+  function kpiCount(extraWhere: string): { count: number; kw: number } {
+    const row = db.prepare(`SELECT COUNT(*) as c, COALESCE(SUM(system_size_kw),0) as kw FROM project_cache ${extraWhere}`).get(...kpiParams) as { c: number; kw: number }
+    return { count: row.c, kw: Math.round(row.kw * 10) / 10 }
+  }
+
+  // Pre-Install: active/hold, no future install date, not install completed
+  const preInstall = kpiCount(`${activeHoldBase} AND ${noV('install_scheduled')} AND ${noV('install_completed')}`)
+
+  // Hold: status contains 'hold', no future install
+  const holdBase = `${kpiWhere} AND LOWER(status) LIKE '%hold%'`
+  const hold = kpiCount(`${holdBase} AND ${noV('install_scheduled')}`)
+
+  // Total active+hold for hold % calculation
+  const totalActiveHold = kpiCount(activeHoldBase)
+
+  // Future Install: install_scheduled in the future
+  const futureInstall = kpiCount(`${activeHoldBase} AND ${futureOrToday('install_scheduled')} AND ${noV('install_completed')}`)
+
+  // In Progress (WIP): install date today or past, not install completed
+  const wip = kpiCount(`${activeHoldBase} AND ${pastOrToday('install_scheduled')} AND ${noV('install_completed')}`)
+
+  // Need Inspection: install completed, no inspection passed
+  const needInspx = kpiCount(`${activeHoldBase} AND ${hasV('install_completed')} AND ${noV('inspection_passed')}`)
+
+  // Need PTO: inspection passed, no PTO approved
+  const needPto = kpiCount(`${activeHoldBase} AND ${hasV('inspection_passed')} AND ${noV('pto_approved')}`)
+
+  const kpi = {
+    preInstall,
+    hold: { ...hold, pct: preInstall.count > 0 ? Math.round((hold.count / preInstall.count) * 100) : 0 },
+    futureInstall,
+    wip,
+    needInspx,
+    needPto,
+  }
 
   // Tag favorites
   const enriched = (items as Array<Record<string, unknown>>).map(item => ({
@@ -282,6 +436,7 @@ router.get('/', (req: Request, res: Response): void => {
   res.json({
     projects: enriched,
     total: countResult.count,
+    kpi,
     limit,
     offset,
     filters: {
@@ -291,6 +446,7 @@ router.get('/', (req: Request, res: Response): void => {
       offices,
       closers,
       lenders,
+      epcs,
     },
     cache: cacheInfo,
   })
