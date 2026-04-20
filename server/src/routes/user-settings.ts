@@ -43,39 +43,45 @@ router.get('/ollama', (req: Request, res: Response): void => {
 
 // PUT /api/user-settings/ollama — set/update key + base_url
 router.put('/ollama', (req: Request, res: Response): void => {
-  const { api_key, base_url } = req.body as { api_key?: string; base_url?: string }
-  const userId = req.user!.userId
-  const url = (base_url || '').trim() || 'https://ollama.com'
+  try {
+    const { api_key, base_url } = req.body as { api_key?: string; base_url?: string }
+    const userId = req.user!.userId
+    const url = (base_url || '').trim() || 'https://ollama.com'
 
-  if (api_key !== undefined && api_key !== null) {
-    if (typeof api_key !== 'string') { res.status(400).json({ error: 'api_key must be a string' }); return }
-    const trimmed = api_key.trim()
-    if (trimmed === '') {
-      // blank key submitted with an update — clear it
-      db.prepare(
-        `INSERT INTO user_ollama_config (user_id, api_key_encrypted, base_url, updated_at)
-         VALUES (?, NULL, ?, datetime('now'))
-         ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=NULL, base_url=excluded.base_url, updated_at=datetime('now')`
-      ).run(userId, url)
+    if (api_key !== undefined && api_key !== null) {
+      if (typeof api_key !== 'string') { res.status(400).json({ error: 'api_key must be a string' }); return }
+      const trimmed = api_key.trim()
+      if (trimmed === '') {
+        // blank key submitted with an update — clear it
+        db.prepare(
+          `INSERT INTO user_ollama_config (user_id, api_key_encrypted, base_url, updated_at)
+           VALUES (?, NULL, ?, datetime('now'))
+           ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=NULL, base_url=excluded.base_url, updated_at=datetime('now')`
+        ).run(userId, url)
+      } else {
+        const encrypted = encryptSecret(trimmed)
+        db.prepare(
+          `INSERT INTO user_ollama_config (user_id, api_key_encrypted, base_url, updated_at)
+           VALUES (?, ?, ?, datetime('now'))
+           ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=excluded.api_key_encrypted, base_url=excluded.base_url, updated_at=datetime('now')`
+        ).run(userId, encrypted, url)
+      }
     } else {
-      const encrypted = encryptSecret(trimmed)
+      // Only base_url change
       db.prepare(
-        `INSERT INTO user_ollama_config (user_id, api_key_encrypted, base_url, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=excluded.api_key_encrypted, base_url=excluded.base_url, updated_at=datetime('now')`
-      ).run(userId, encrypted, url)
+        `INSERT INTO user_ollama_config (user_id, base_url, updated_at)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET base_url=excluded.base_url, updated_at=datetime('now')`
+      ).run(userId, url)
     }
-  } else {
-    // Only base_url change
-    db.prepare(
-      `INSERT INTO user_ollama_config (user_id, base_url, updated_at)
-       VALUES (?, ?, datetime('now'))
-       ON CONFLICT(user_id) DO UPDATE SET base_url=excluded.base_url, updated_at=datetime('now')`
-    ).run(userId, url)
-  }
 
-  const row = getOllamaRow(userId)
-  res.json(publicShape(row))
+    const row = getOllamaRow(userId)
+    res.json(publicShape(row))
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[user-settings/ollama PUT]', msg)
+    res.status(500).json({ error: msg })
+  }
 })
 
 // DELETE /api/user-settings/ollama — clear key

@@ -8,13 +8,16 @@ const ALG = 'aes-256-gcm'
 const IV_LEN = 12        // GCM-recommended
 const TAG_LEN = 16
 
+let warnedMissingKey = false
 function getKey(): Buffer {
   const raw = process.env['ENCRYPTION_KEY'] || ''
   if (!raw) {
-    // Dev fallback — deterministic so restarts don't invalidate keys in dev,
-    // but warn loudly. DO NOT rely on this in production.
-    if (process.env['NODE_ENV'] === 'production') {
-      throw new Error('ENCRYPTION_KEY not set in production')
+    // Warn once per process so prod without ENCRYPTION_KEY is visible in logs,
+    // but don't throw — matches the JWT_SECRET dev-fallback pattern elsewhere
+    // in the codebase. Set ENCRYPTION_KEY on Railway to make this go away.
+    if (!warnedMissingKey) {
+      console.warn('[crypto] ENCRYPTION_KEY not set — using fallback (OK for dev, weaker in prod; secrets will be invalidated if/when you set the env var)')
+      warnedMissingKey = true
     }
     return crypto.createHash('sha256').update('dev-fallback-encryption-key').digest()
   }

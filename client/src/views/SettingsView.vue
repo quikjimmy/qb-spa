@@ -24,6 +24,8 @@ const ollama = ref<OllamaConfig | null>(null)
 const baseUrl = ref('')
 const newKey = ref('')
 const savingKey = ref(false)
+const saveError = ref('')
+const justSaved = ref(false)
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; models?: string[]; error?: string } | null>(null)
 
@@ -40,6 +42,8 @@ async function loadOllama() {
 
 async function saveOllama() {
   savingKey.value = true
+  saveError.value = ''
+  justSaved.value = false
   testResult.value = null
   try {
     const body: Record<string, string> = { base_url: baseUrl.value.trim() }
@@ -47,10 +51,17 @@ async function saveOllama() {
     const res = await fetch('/api/user-settings/ollama', {
       method: 'PUT', headers: hdrs(), body: JSON.stringify(body),
     })
+    const data = await res.json().catch(() => ({}))
     if (res.ok) {
-      ollama.value = await res.json()
+      ollama.value = data
       newKey.value = ''
+      justSaved.value = true
+      setTimeout(() => { justSaved.value = false }, 1800)
+    } else {
+      saveError.value = data.error || `Save failed (HTTP ${res.status})`
     }
+  } catch (e) {
+    saveError.value = e instanceof Error ? e.message : 'Save failed'
   } finally { savingKey.value = false }
 }
 
@@ -65,10 +76,12 @@ async function testConnection() {
   testResult.value = null
   try {
     const res = await fetch('/api/user-settings/ollama/test', { method: 'POST', headers: hdrs() })
-    const data = await res.json()
-    testResult.value = data
+    const data = await res.json().catch(() => ({}))
+    testResult.value = { ok: !!data.ok, models: data.sample, error: data.error || (res.ok ? undefined : `HTTP ${res.status}`) }
     // re-load config so last-tested fields update
     await loadOllama()
+  } catch (e) {
+    testResult.value = { ok: false, error: e instanceof Error ? e.message : 'Test failed' }
   } finally { testing.value = false }
 }
 
@@ -136,11 +149,14 @@ onMounted(() => { loadOllama(); loadDepartments() })
           </div>
         </div>
 
-        <div class="flex gap-2 flex-wrap">
-          <Button :disabled="savingKey" @click="saveOllama">{{ savingKey ? 'Saving…' : 'Save' }}</Button>
+        <div class="flex gap-2 flex-wrap items-center">
+          <Button :disabled="savingKey" @click="saveOllama">
+            {{ savingKey ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save' }}
+          </Button>
           <Button variant="outline" :disabled="!ollama?.connected || testing" @click="testConnection">
             {{ testing ? 'Testing…' : 'Test Connection' }}
           </Button>
+          <p v-if="saveError" class="text-sm text-destructive">{{ saveError }}</p>
         </div>
 
         <!-- Test result -->
