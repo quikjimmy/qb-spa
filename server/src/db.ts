@@ -21,6 +21,16 @@ db.exec(`
   )
 `)
 
+// Idempotent additive migration: reset_token + reset_expires_at.
+// SQLite doesn't support `ADD COLUMN IF NOT EXISTS`, so guard via info query.
+{
+  const cols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('reset_token')) db.exec(`ALTER TABLE users ADD COLUMN reset_token TEXT`)
+  if (!names.has('reset_expires_at')) db.exec(`ALTER TABLE users ADD COLUMN reset_expires_at TEXT`)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token) WHERE reset_token IS NOT NULL`)
+}
+
 // --- Roles ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS roles (

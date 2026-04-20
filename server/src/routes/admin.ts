@@ -161,6 +161,23 @@ router.put('/users/:id/roles', (req: Request, res: Response): void => {
   res.json({ roles: updatedRoles.map(r => r.name) })
 })
 
+router.post('/users/:id/password-reset', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const user = db.prepare('SELECT id, email FROM users WHERE id = ?').get(userId) as { id: number; email: string } | undefined
+  if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+  const token = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  db.prepare('UPDATE users SET reset_token = ?, reset_expires_at = ? WHERE id = ?').run(token, expiresAt, userId)
+
+  // Build URL from the request itself so it matches whatever origin the admin is using
+  // (works for local dev AND prod behind a proxy via x-forwarded-host).
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host
+  const resetUrl = `${proto}://${host}/reset/${token}`
+  res.json({ ok: true, url: resetUrl, email: user.email, expires_at: expiresAt })
+})
+
 router.put('/users/:id/active', (req: Request, res: Response): void => {
   const userId = parseInt(req.params['id']!, 10)
   const { is_active } = req.body

@@ -20,6 +20,11 @@ const router = createRouter({
       name: 'invite',
       component: () => import('../views/InviteView.vue'),
     },
+    {
+      path: '/reset/:token',
+      name: 'reset',
+      component: () => import('../views/ResetView.vue'),
+    },
 
     // App shell — sidebar layout
     {

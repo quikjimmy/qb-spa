@@ -233,4 +233,54 @@ router.post('/invite/:token', (req: Request, res: Response): void => {
   })
 })
 
+// ── Password reset (admin-initiated) ─────────────────────
+
+// Validate a reset token (GET so the frontend can check before showing the form)
+router.get('/reset/:token', (req: Request, res: Response): void => {
+  const user = db.prepare(
+    'SELECT id, email, name, reset_expires_at FROM users WHERE reset_token = ?'
+  ).get(req.params['token']) as { id: number; email: string; name: string; reset_expires_at: string } | undefined
+
+  if (!user) { res.status(404).json({ error: 'Invalid reset link' }); return }
+  if (!user.reset_expires_at || new Date(user.reset_expires_at) < new Date()) {
+    res.status(410).json({ error: 'Reset link has expired' }); return
+  }
+  res.json({ email: user.email, name: user.name })
+})
+
+// Apply the reset — user sets a new password.
+router.post('/reset/:token', (req: Request, res: Response): void => {
+  const { password } = req.body
+  if (!password || password.length < 6) {
+    res.status(400).json({ error: 'Password must be at least 6 characters' }); return
+  }
+
+  const user = db.prepare(
+    'SELECT id, email, name, reset_expires_at, is_active FROM users WHERE reset_token = ?'
+  ).get(req.params['token']) as { id: number; email: string; name: string; reset_expires_at: string; is_active: number } | undefined
+
+  if (!user) { res.status(404).json({ error: 'Invalid reset link' }); return }
+  if (!user.reset_expires_at || new Date(user.reset_expires_at) < new Date()) {
+    res.status(410).json({ error: 'Reset link has expired' }); return
+  }
+  if (!user.is_active) { res.status(403).json({ error: 'Account is deactivated' }); return }
+
+  const passwordHash = bcrypt.hashSync(password, 10)
+  db.prepare(
+    'UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires_at = NULL WHERE id = ?'
+  ).run(passwordHash, user.id)
+
+  const roles = getUserRoles(user.id)
+  const token = jwt.sign(
+    { userId: user.id, email: user.email, roles },
+    getJwtSecret(),
+    { expiresIn: '7d' }
+  )
+
+  res.json({
+    token,
+    user: { id: user.id, email: user.email, name: user.name, roles },
+  })
+})
+
 export { router as authRouter }

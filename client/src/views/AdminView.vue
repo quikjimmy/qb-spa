@@ -227,6 +227,35 @@ async function toggleUserActive(user: PortalUser) {
   await loadUsers()
 }
 
+// ─── Password reset ──────────────────────────────────────
+const resetDialog = ref(false)
+const resetResult = ref<{ url: string; email: string; expires_at: string } | null>(null)
+const resetCopied = ref(false)
+
+async function sendPasswordReset(user: PortalUser) {
+  const res = await fetch(`/api/admin/users/${user.id}/password-reset`, {
+    method: 'POST', headers: hdrs(),
+  })
+  if (!res.ok) {
+    alert('Failed to create reset link')
+    return
+  }
+  resetResult.value = await res.json()
+  resetCopied.value = false
+  resetDialog.value = true
+}
+
+async function copyResetLink() {
+  if (!resetResult.value) return
+  try {
+    await navigator.clipboard.writeText(resetResult.value.url)
+    resetCopied.value = true
+    setTimeout(() => { resetCopied.value = false }, 1500)
+  } catch {
+    // clipboard denied (older browsers / insecure context) — user can manually copy
+  }
+}
+
 // ─── Departments ─────────────────────────────────────────
 async function loadDepartments() {
   const res = await fetch('/api/admin/departments', { headers: hdrs() })
@@ -867,6 +896,9 @@ onMounted(async () => {
                         </Button>
                         <Button variant="ghost" size="sm" @click="openEditDepartments(u)">
                           Edit depts
+                        </Button>
+                        <Button variant="ghost" size="sm" @click="sendPasswordReset(u)">
+                          Send reset
                         </Button>
                         <Button
                           :variant="u.is_active ? 'ghost' : 'outline'"
@@ -1697,6 +1729,32 @@ onMounted(async () => {
         <DialogFooter>
           <Button variant="outline" @click="editDialog = false">Cancel</Button>
           <Button @click="saveUserRoles">Save Roles</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Password Reset Link Dialog -->
+    <Dialog v-model:open="resetDialog">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Password reset link</DialogTitle>
+          <DialogDescription v-if="resetResult">
+            Share this link with <span class="font-medium text-foreground">{{ resetResult.email }}</span>.
+            They'll pick a new password and be signed in automatically.
+          </DialogDescription>
+        </DialogHeader>
+        <div v-if="resetResult" class="grid gap-3 py-2">
+          <div class="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs break-all select-all">
+            {{ resetResult.url }}
+          </div>
+          <p class="text-[11px] text-muted-foreground">
+            Expires {{ new Date(resetResult.expires_at).toLocaleString() }}.
+            Sending a new link invalidates this one.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="resetDialog = false">Close</Button>
+          <Button @click="copyResetLink">{{ resetCopied ? 'Copied ✓' : 'Copy link' }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
