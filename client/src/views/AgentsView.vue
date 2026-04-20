@@ -115,6 +115,38 @@ const myAgentStatusStyle: Record<string, string> = {
   retired: 'bg-muted text-muted-foreground/60',
 }
 
+// ─── Run once ────────────────────────────────────────────
+interface RunOutcome {
+  ok: boolean
+  output?: string
+  error?: string
+  model?: string
+  tokens_in?: number
+  tokens_out?: number
+  duration_ms?: number
+}
+const runningId = ref<number | null>(null)
+const runOutcomes = ref<Record<number, RunOutcome>>({})
+const openResultId = ref<number | null>(null)
+
+async function runAgentOnce(a: UserAgent) {
+  runningId.value = a.id
+  try {
+    const res = await fetch(`/api/user-agents/${a.id}/run-once`, { method: 'POST', headers: hdrs() })
+    const data = await res.json().catch(() => ({} as RunOutcome))
+    runOutcomes.value = { ...runOutcomes.value, [a.id]: data }
+    openResultId.value = a.id
+    // refresh counters so the UI shows the newly-bumped usage
+    await Promise.all([loadMyAgents(), loadMyBudget()])
+  } finally { runningId.value = null }
+}
+
+function fmtDuration(ms?: number) {
+  if (ms == null) return ''
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
 onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget(); loadMyDepartments() })
 
 // ─── Mock data shaped around what OpenClaw / an orchestrator would provide ───
@@ -470,11 +502,37 @@ const agentRuns = computed(() => {
                 Used: {{ a.tokens_used_month.toLocaleString() }}
               </p>
               <div class="flex gap-1.5 flex-wrap pt-1">
-                <Button v-if="a.status === 'draft'" size="sm" @click="submitAgent(a)">Submit for review</Button>
+                <Button v-if="['draft','approved'].includes(a.status)" size="sm" :disabled="runningId === a.id" @click="runAgentOnce(a)">
+                  {{ runningId === a.id ? 'Running…' : 'Run once' }}
+                </Button>
+                <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="submitAgent(a)">Submit for review</Button>
                 <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="deleteAgent(a)">Delete</Button>
                 <Button v-if="a.status === 'approved'" size="sm" variant="outline" @click="pauseAgent(a)">Pause</Button>
                 <Button v-if="a.status === 'paused'" size="sm" @click="resumeAgent(a)">Resume</Button>
                 <Button v-if="['approved','paused'].includes(a.status)" size="sm" variant="ghost" @click="retireAgent(a)">Retire</Button>
+                <Button v-if="runOutcomes[a.id]" size="sm" variant="ghost"
+                  @click="openResultId = openResultId === a.id ? null : a.id">
+                  {{ openResultId === a.id ? 'Hide result' : 'Show result' }}
+                </Button>
+              </div>
+
+              <!-- Run result panel -->
+              <div v-if="openResultId === a.id && runOutcomes[a.id]" class="mt-3 rounded-lg border p-3 space-y-2 text-sm"
+                :class="runOutcomes[a.id]!.ok ? 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900' : 'bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-900'">
+                <div v-if="runOutcomes[a.id]!.ok" class="space-y-2">
+                  <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-800 dark:text-emerald-300">
+                    <span>Output</span>
+                    <span class="font-mono normal-case">{{ runOutcomes[a.id]!.model }}</span>
+                    <span class="ml-auto text-muted-foreground tabular-nums">
+                      {{ runOutcomes[a.id]!.tokens_in }} in · {{ runOutcomes[a.id]!.tokens_out }} out · {{ fmtDuration(runOutcomes[a.id]!.duration_ms) }}
+                    </span>
+                  </div>
+                  <pre class="text-sm whitespace-pre-wrap font-sans text-foreground">{{ runOutcomes[a.id]!.output }}</pre>
+                </div>
+                <div v-else class="space-y-1">
+                  <p class="font-medium text-red-800 dark:text-red-300">✗ Run failed</p>
+                  <p class="text-[12px] text-red-700 dark:text-red-400">{{ runOutcomes[a.id]!.error }}</p>
+                </div>
               </div>
             </CardContent>
           </Card>

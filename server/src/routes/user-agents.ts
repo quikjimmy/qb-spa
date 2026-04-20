@@ -1,7 +1,9 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
-import { LLM_OPTIONS, isValidLlm, llmAvailableForTier } from '../lib/llm-options'
+import { LLM_OPTIONS, isValidLlm, llmAvailableForTier, ollamaModelFor } from '../lib/llm-options'
+import { decryptSecret } from '../lib/crypto'
+import { ollamaChat } from '../agents/ollamaChat'
 
 const router = Router()
 
@@ -219,6 +221,107 @@ router.delete('/:id', (req: Request, res: Response): void => {
   }
   db.prepare(`DELETE FROM user_agents WHERE id = ?`).run(id)
   res.json({ ok: true })
+})
+
+// ── Run Once ─────────────────────────────────────────────
+// Sends the agent's objective straight to Ollama as a single user message,
+// returns the response + token counts, logs to agent_runs, and increments
+// both the per-agent and per-user token counters. Soft-capped output so a
+// runaway prompt can't drain the whole budget in a single click.
+
+router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> => {
+  const id = parseInt(String(req.params['id']), 10)
+  const userId = req.user!.userId
+
+  const agent = db.prepare(`SELECT * FROM user_agents WHERE id = ?`).get(id) as UserAgentRow | undefined
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+  if (agent.user_id !== userId) { res.status(403).json({ error: 'Not your agent' }); return }
+  if (!['draft', 'approved'].includes(agent.status)) {
+    res.status(400).json({ error: `Agents in status '${agent.status}' cannot be run.` }); return
+  }
+
+  // Budget checks — both the agent cap and the user-wide cap must allow the run.
+  ensureUserBudget(userId)
+  const userBudget = db.prepare(
+    `SELECT monthly_token_cap, tokens_used_month FROM user_budgets WHERE user_id = ?`
+  ).get(userId) as { monthly_token_cap: number; tokens_used_month: number }
+  if (agent.tokens_used_month >= agent.monthly_token_cap) {
+    res.status(403).json({ error: `Agent has hit its monthly cap (${agent.monthly_token_cap.toLocaleString()} tokens).` }); return
+  }
+  if (userBudget.tokens_used_month >= userBudget.monthly_token_cap) {
+    res.status(403).json({ error: `Your account has hit its monthly cap (${userBudget.monthly_token_cap.toLocaleString()} tokens).` }); return
+  }
+
+  // Load + decrypt the user's Ollama key.
+  const cfg = db.prepare(
+    `SELECT api_key_encrypted, base_url FROM user_ollama_config WHERE user_id = ?`
+  ).get(userId) as { api_key_encrypted: string | null; base_url: string } | undefined
+  if (!cfg || !cfg.api_key_encrypted) {
+    res.status(400).json({ error: 'No Ollama key configured. Set one in Settings first.', needs_key: true }); return
+  }
+  let apiKey: string
+  try { apiKey = decryptSecret(cfg.api_key_encrypted) }
+  catch { res.status(500).json({ error: 'Stored key could not be decrypted — re-enter it in Settings.' }); return }
+
+  const modelName = ollamaModelFor(agent.llm)
+  if (!modelName) { res.status(400).json({ error: `Unknown LLM '${agent.llm}' — edit the agent and pick one from the list.` }); return }
+
+  // Register the run row up-front so we can track in-progress + failures.
+  const runInsert = db.prepare(
+    `INSERT INTO agent_runs (agent, trigger, status, model) VALUES (?, 'manual', 'running', ?)`
+  ).run(`user-agent-${agent.id}`, modelName)
+  const runId = Number(runInsert.lastInsertRowid)
+
+  const result = await ollamaChat({
+    baseUrl: cfg.base_url || 'https://ollama.com',
+    apiKey,
+    model: modelName,
+    messages: [
+      { role: 'system', content: `You are a user-built agent. Your objective: ${agent.objective}` },
+      { role: 'user', content: agent.objective },
+    ],
+    maxOutputTokens: 500,
+    timeoutMs: 30_000,
+  })
+
+  if (!result.ok) {
+    db.prepare(
+      `UPDATE agent_runs SET status='failed', finished_at=datetime('now'),
+              duration_ms=?, error=? WHERE id = ?`
+    ).run(result.duration_ms ?? 0, (result.error || '').slice(0, 1000), runId)
+    res.status(200).json({ ok: false, error: result.error, run_id: runId })
+    return
+  }
+
+  const tokensIn = result.tokens_in || 0
+  const tokensOut = result.tokens_out || 0
+  const totalTokens = tokensIn + tokensOut
+
+  const commit = db.transaction(() => {
+    db.prepare(
+      `UPDATE agent_runs SET status='completed', finished_at=datetime('now'),
+              duration_ms=?, tokens_in=?, tokens_out=? WHERE id = ?`
+    ).run(result.duration_ms ?? 0, tokensIn, tokensOut, runId)
+    db.prepare(
+      `UPDATE user_agents SET tokens_used_month = tokens_used_month + ?,
+              updated_at=datetime('now') WHERE id = ?`
+    ).run(totalTokens, agent.id)
+    db.prepare(
+      `UPDATE user_budgets SET tokens_used_month = tokens_used_month + ?,
+              updated_at=datetime('now') WHERE user_id = ?`
+    ).run(totalTokens, userId)
+  })
+  commit()
+
+  res.json({
+    ok: true,
+    run_id: runId,
+    output: result.output,
+    model: modelName,
+    tokens_in: tokensIn,
+    tokens_out: tokensOut,
+    duration_ms: result.duration_ms,
+  })
 })
 
 export { router as userAgentsRouter }
