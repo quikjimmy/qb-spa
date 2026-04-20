@@ -51,6 +51,34 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_oc_touchpoint ON outreach_completed_cache(touchpoint_name)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_oc_coordinator ON outreach_completed_cache(project_coordinator)`)
 
+// ── Post-POS adders cache (report 35 on bsaycczmf) ──────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS adder_notify_cache (
+    record_id INTEGER PRIMARY KEY,
+    project_rid INTEGER,
+    customer_name TEXT,
+    product_category TEXT,
+    product_name TEXT,
+    qty REAL,
+    adder_total REAL,
+    adder_status TEXT,
+    ops_approval_status TEXT,
+    whos_paying TEXT,
+    project_status TEXT,
+    project_closer TEXT,
+    project_coordinator TEXT,
+    customer_state TEXT,
+    date_created TEXT,
+    sales_notified_date TEXT,
+    sla_start_date TEXT,
+    sla_timer_days REAL,
+    rep_notified_date TEXT,
+    cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_adder_coordinator ON adder_notify_cache(project_coordinator)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_adder_closer ON adder_notify_cache(project_closer)`)
+
 const OUTREACH_TABLE = 'btvik5kwi'
 
 // Field IDs from actual QB reports
@@ -256,6 +284,28 @@ router.get('/', (req: Request, res: Response): void => {
      ORDER BY pc.nem_submitted ASC`
   ).all(...(coordinator ? [coordinator] : [])) as Array<Record<string, unknown>>
 
+  // PTO records whose blocker reason mentions "unresponsive customer(s)" —
+  // surface them inside the Unresponsive Customers panel.
+  const ptoUnresponsiveRows = (() => {
+    try {
+      const coordClause = coordinator ? `AND pc.coordinator = ?` : ''
+      const params: unknown[] = coordinator ? [coordinator] : []
+      return db.prepare(
+        `SELECT p.record_id, p.project_rid, p.project_name AS customer_name,
+                COALESCE(pc.coordinator, '') AS project_coordinator,
+                p.state AS project_state, p.blockers, p.pto_status
+         FROM pto_cache p
+         LEFT JOIN project_cache pc ON pc.record_id = p.project_rid
+         WHERE LOWER(p.blockers) LIKE '%unresponsive customer%'
+           ${coordClause}
+         ORDER BY p.record_id DESC`
+      ).all(...params) as Array<Record<string, unknown>>
+    } catch {
+      // pto_cache might not exist yet
+      return []
+    }
+  })()
+
   // Filter options
   const coordRows = db.prepare(`SELECT DISTINCT project_coordinator AS v FROM outreach_cache WHERE project_coordinator != '' ORDER BY v`).all() as Array<{ v: string }>
   const stateRows = db.prepare(`SELECT DISTINCT project_state AS v FROM outreach_cache WHERE project_state != '' ORDER BY v`).all() as Array<{ v: string }>
@@ -263,13 +313,28 @@ router.get('/', (req: Request, res: Response): void => {
 
   const cacheRow = db.prepare('SELECT COUNT(*) AS total, MAX(cached_at) AS last_refresh FROM outreach_cache').get() as { total: number; last_refresh: string }
 
+  const outreachUnresponsive = (coordinator
+    ? unresponsiveRows.filter(r => String(r.project_coordinator || '') === coordinator)
+    : unresponsiveRows
+  ).map(r => ({ ...r, source: 'outreach' as const }))
+
+  const ptoUnresponsive = ptoUnresponsiveRows.map(r => ({
+    record_id: Number(r.record_id) || 0,
+    project_rid: Number(r.project_rid) || 0,
+    customer_name: String(r.customer_name || ''),
+    project_coordinator: String(r.project_coordinator || ''),
+    project_state: String(r.project_state || ''),
+    touchpoint_name: 'PTO Blocker',
+    blockers: String(r.blockers || ''),
+    pto_status: String(r.pto_status || ''),
+    source: 'pto_blocker' as const,
+  }))
+
   res.json({
     kpi,
     groups,
     exceptions: {
-      unresponsive: coordinator
-        ? unresponsiveRows.filter(r => String(r.project_coordinator || '') === coordinator)
-        : unresponsiveRows,
+      unresponsive: [...outreachUnresponsive, ...ptoUnresponsive],
       blockedNem,
     },
     filters: {
@@ -475,6 +540,104 @@ router.get('/analytics', (req: Request, res: Response): void => {
     volume,
     drillData,
   })
+})
+
+// ── Post-POS adders: QB report 35 on adders table (bsaycczmf) ──
+const ADDERS_TABLE = 'bsaycczmf'
+const ADDERS_REPORT_ID = '35'
+
+const adderFMap: Array<{ fid: number; col: string }> = [
+  { fid: 3, col: 'record_id' },
+  { fid: 10, col: 'project_rid' },
+  { fid: 31, col: 'customer_name' },
+  { fid: 17, col: 'product_category' },
+  { fid: 56, col: 'product_name' },
+  { fid: 7, col: 'qty' },
+  { fid: 9, col: 'adder_total' },
+  { fid: 20, col: 'adder_status' },
+  { fid: 23, col: 'ops_approval_status' },
+  { fid: 14, col: 'whos_paying' },
+  { fid: 39, col: 'project_status' },
+  { fid: 52, col: 'project_closer' },
+  { fid: 171, col: 'project_coordinator' },
+  { fid: 72, col: 'customer_state' },
+  { fid: 1, col: 'date_created' },
+  { fid: 142, col: 'sales_notified_date' },
+  { fid: 167, col: 'sla_start_date' },
+  { fid: 170, col: 'sla_timer_days' },
+  { fid: 209, col: 'rep_notified_date' },
+]
+
+async function refreshAddersCache(): Promise<{ total: number; duration: number }> {
+  const start = Date.now()
+  const { realm, token } = getQbConfig()
+
+  const res = await fetch(
+    `https://api.quickbase.com/v1/reports/${ADDERS_REPORT_ID}/run?tableId=${ADDERS_TABLE}`,
+    {
+      method: 'POST',
+      headers: {
+        'QB-Realm-Hostname': realm,
+        'Authorization': `QB-USER-TOKEN ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    }
+  )
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`QB adders report failed (${res.status}): ${text}`)
+  }
+
+  const data = await res.json()
+  const records: Array<Record<string, { value: unknown }>> = data.data || []
+
+  db.prepare('DELETE FROM adder_notify_cache').run()
+
+  const cols = adderFMap.map(f => f.col).join(', ')
+  const placeholders = adderFMap.map(() => '?').join(', ')
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO adder_notify_cache (${cols}, cached_at) VALUES (${placeholders}, datetime('now'))`
+  )
+
+  db.transaction(() => {
+    for (const record of records) {
+      const rid = parseInt(val(record, 3))
+      if (!rid) continue
+      const values = adderFMap.map(f => {
+        if (f.col === 'record_id' || f.col === 'project_rid') return parseInt(val(record, f.fid)) || null
+        if (f.col === 'qty' || f.col === 'adder_total' || f.col === 'sla_timer_days') return parseFloat(val(record, f.fid)) || null
+        return val(record, f.fid)
+      })
+      insert.run(...values)
+    }
+  })()
+
+  return { total: records.length, duration: Date.now() - start }
+}
+
+router.post('/refresh-adders', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await refreshAddersCache()
+    res.json({ ok: true, ...result })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.get('/adders', (req: Request, res: Response): void => {
+  const coordinator = req.query['coordinator'] as string | undefined
+  const params: unknown[] = []
+  let where = ''
+  if (coordinator) { where = 'WHERE project_coordinator = ?'; params.push(coordinator) }
+  const rows = db.prepare(
+    `SELECT * FROM adder_notify_cache ${where} ORDER BY sla_timer_days DESC, date_created ASC`
+  ).all(...params)
+  const cache = db.prepare(
+    `SELECT COUNT(*) AS total, MAX(cached_at) AS last_refresh FROM adder_notify_cache`
+  ).get() as { total: number; last_refresh: string }
+  res.json({ rows, cache })
 })
 
 export { router as pcDashboardRouter }

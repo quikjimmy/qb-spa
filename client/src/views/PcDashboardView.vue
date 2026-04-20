@@ -41,6 +41,18 @@ interface OutreachRecord {
   is_unresponsive: number
 }
 
+interface UnresponsiveRow {
+  record_id: number
+  project_rid?: number
+  customer_name: string
+  touchpoint_name: string
+  project_coordinator: string
+  project_state: string
+  blockers?: string
+  pto_status?: string
+  source: 'outreach' | 'pto_blocker'
+}
+
 interface BlockedNem {
   record_id: number
   customer_name: string
@@ -52,11 +64,33 @@ interface BlockedNem {
   status: string
 }
 
+interface AdderNotify {
+  record_id: number
+  project_rid: number
+  customer_name: string
+  product_category: string
+  product_name: string
+  qty: number | null
+  adder_total: number | null
+  adder_status: string
+  ops_approval_status: string
+  whos_paying: string
+  project_status: string
+  project_closer: string
+  project_coordinator: string
+  customer_state: string
+  date_created: string
+  sales_notified_date: string
+  sla_start_date: string
+  sla_timer_days: number | null
+  rep_notified_date: string
+}
+
 const loading = ref(true)
 const refreshing = ref(false)
 const kpi = ref<Record<string, number>>({})
 const groups = ref<Record<string, OutreachRecord[]>>({})
-const unresponsive = ref<OutreachRecord[]>([])
+const unresponsive = ref<UnresponsiveRow[]>([])
 const blockedNem = ref<BlockedNem[]>([])
 const filterOptions = ref<{ coordinators: string[]; states: string[]; lenders: string[] }>({ coordinators: [], states: [], lenders: [] })
 const cacheInfo = ref<{ total: number; last_refresh: string } | null>(null)
@@ -69,7 +103,10 @@ const search = ref('')
 const showFilters = ref(false)
 const showAnalytics = ref(false)
 const expandedStages = ref<Record<string, boolean>>({})
-const expandedExceptions = ref<Record<string, boolean>>({ unresponsive: false, blockedNem: false })
+const expandedExceptions = ref<Record<string, boolean>>({ unresponsive: false, blockedNem: false, adders: false })
+const adders = ref<AdderNotify[]>([])
+const addersCache = ref<{ total: number; last_refresh: string } | null>(null)
+const addersRefreshing = ref(false)
 
 const useBizDays = ref(false)
 const dayUnit = computed(() => useBizDays.value ? 'biz days' : 'days')
@@ -165,6 +202,28 @@ async function refreshCache() {
     await fetch('/api/pc-dashboard/refresh', { method: 'POST', headers: hdrs() })
     await loadData()
   } finally { refreshing.value = false }
+}
+
+async function loadAdders() {
+  const params = new URLSearchParams()
+  if (viewMode.value === 'personal' && auth.user?.name) params.set('coordinator', auth.user.name)
+  else if (fCoordinator.value) params.set('coordinator', fCoordinator.value)
+  try {
+    const res = await fetch(`/api/pc-dashboard/adders?${params}`, { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      adders.value = data.rows || []
+      addersCache.value = data.cache
+    }
+  } catch { /* ignore */ }
+}
+
+async function refreshAdders() {
+  addersRefreshing.value = true
+  try {
+    await fetch('/api/pc-dashboard/refresh-adders', { method: 'POST', headers: hdrs() })
+    await loadAdders()
+  } finally { addersRefreshing.value = false }
 }
 
 const activeKpi = ref('')
@@ -279,6 +338,15 @@ const volumeChart = computed(() => {
       label: { show: true, position: 'top' as const, fontSize: 9, formatter: (p: any) => {
         const bucket = v[p.dataIndex]; return `${bucket.avg}d`
       }},
+      labelLayout: { hideOverlap: true },
+    }, {
+      type: 'bar' as const, data: v.map(b => b.count),
+      barGap: '-100%' as const, silent: true, barMaxWidth: 28,
+      itemStyle: { color: 'transparent' },
+      label: {
+        show: true, position: 'insideBottom' as const, fontSize: 9, fontWeight: 600,
+        color: '#fff', formatter: (p: any) => `${v[p.dataIndex].count}`,
+      },
     }],
     graphic: v.length > 0 ? [{
       type: 'text' as const, left: 'center' as const, bottom: 5,
@@ -300,8 +368,22 @@ const timeToEventChart = computed(() => {
     xAxis: { type: 'value' as const, name: dayUnit.value, nameLocation: 'middle' as const, nameGap: 20 },
     yAxis: { type: 'category' as const, data: data.map(d => d.coordinator), axisLabel: { fontSize: 10 } },
     series: [
-      { name: 'Avg', type: 'bar' as const, data: data.map(d => d.avg), itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] }, barMaxWidth: 16 },
-      { name: 'P90', type: 'bar' as const, data: data.map(d => d.p90), itemStyle: { color: '#93c5fd', borderRadius: [0, 4, 4, 0] }, barMaxWidth: 16 },
+      {
+        name: 'Avg', type: 'bar' as const, data: data.map(d => d.avg),
+        itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] }, barMaxWidth: 16,
+        label: {
+          show: true, position: 'insideLeft' as const, fontSize: 9, fontWeight: 600,
+          color: '#fff', formatter: (p: any) => `${p.value}`,
+        },
+      },
+      {
+        name: 'P90', type: 'bar' as const, data: data.map(d => d.p90),
+        itemStyle: { color: '#93c5fd', borderRadius: [0, 4, 4, 0] }, barMaxWidth: 16,
+        label: {
+          show: true, position: 'insideLeft' as const, fontSize: 9, fontWeight: 600,
+          color: '#1e3a8a', formatter: (p: any) => `${p.value}`,
+        },
+      },
     ],
   }
 })
@@ -319,7 +401,8 @@ function onChartClick(params: any) {
 watch([viewMode, fCoordinator, useBizDays, activePerfMilestone], () => { if (showAnalytics.value) loadAnalytics() })
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadData(); registerRefresh?.(() => loadData()) })
+onMounted(() => { loadData(); loadAdders(); registerRefresh?.(async () => { await loadData(); await loadAdders() }) })
+watch([viewMode, fCoordinator], () => { loadAdders() })
 </script>
 
 <template>
@@ -481,10 +564,11 @@ onMounted(() => { loadData(); registerRefresh?.(() => loadData()) })
 
     <!-- Stage-grouped sections -->
     <template v-else>
-      <div v-for="stage in STAGE_ORDER" :key="stage">
+      <div class="space-y-2">
+      <template v-for="stage in STAGE_ORDER" :key="stage">
         <div v-if="(kpi[stage] || 0) > 0 || (filteredGroups[stage] || []).length > 0" class="space-y-1">
           <!-- Stage header -->
-          <button class="flex items-center gap-2 w-full py-1.5" @click="toggleStage(stage)">
+          <button class="flex items-center gap-2 w-full h-9" @click="toggleStage(stage)">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground shrink-0 transition-transform" :class="expandedStages[stage] ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
             <div class="h-[3px] w-3 rounded-full shrink-0" :class="chipFor(stage).bar" />
             <span class="text-[11px] font-semibold uppercase tracking-widest" :class="chipFor(stage).color">{{ stage }}</span>
@@ -532,6 +616,7 @@ onMounted(() => { loadData(); registerRefresh?.(() => loadData()) })
             <p v-if="(filteredGroups[stage] || []).length === 0" class="text-[11px] text-muted-foreground pl-6 py-1">No records match search.</p>
           </div>
         </div>
+      </template>
       </div>
 
       <!-- ── Exception panels ── -->
@@ -549,11 +634,17 @@ onMounted(() => { loadData(); registerRefresh?.(() => loadData()) })
             </div>
           </button>
           <div v-if="expandedExceptions.unresponsive" class="border-t divide-y">
-            <div v-for="r in unresponsive" :key="r.record_id" class="px-4 py-2 flex items-center gap-3 text-[11px]">
-              <p class="font-medium flex-1 min-w-0 truncate">{{ r.customer_name }}</p>
-              <span class="text-muted-foreground">{{ r.touchpoint_name }}</span>
-              <span class="text-muted-foreground">{{ r.project_coordinator }}</span>
-              <span v-if="r.project_state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ r.project_state }}</span>
+            <div v-for="r in unresponsive" :key="`${r.source}-${r.record_id}`" class="px-4 py-2 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 text-[11px]">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <p class="font-medium truncate">{{ r.customer_name }}</p>
+                  <span v-if="r.source === 'pto_blocker'" class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">PTO</span>
+                </div>
+                <p v-if="r.source === 'pto_blocker' && r.blockers" class="text-[10px] text-red-600 mt-0.5 line-clamp-1">{{ r.blockers }}</p>
+              </div>
+              <span class="text-muted-foreground shrink-0">{{ r.touchpoint_name }}</span>
+              <span class="text-muted-foreground shrink-0">{{ r.project_coordinator }}</span>
+              <span v-if="r.project_state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.project_state }}</span>
             </div>
           </div>
         </div>
@@ -578,6 +669,42 @@ onMounted(() => { loadData(); registerRefresh?.(() => loadData()) })
               <span class="text-[10px] text-muted-foreground">NEM {{ fmtDate(r.nem_submitted) }}</span>
               <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(r.status).bg, getStatusConfig(r.status).text]">{{ r.status }}</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Post-POS Adders — Sales Rep Notification -->
+        <div v-if="adders.length > 0" class="rounded-xl border bg-card overflow-hidden">
+          <button class="flex items-center justify-between w-full px-4 py-2.5" @click="toggleException('adders')">
+            <div class="flex items-center gap-2">
+              <span class="size-2 rounded-full bg-rose-500" />
+              <span class="text-[11px] font-semibold uppercase tracking-widest text-rose-700">Adders — Notify Sales Rep</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <Badge variant="secondary" class="text-[10px]">{{ adders.length }}</Badge>
+              <button v-if="auth.isAdmin" class="text-[10px] text-muted-foreground hover:text-foreground" :disabled="addersRefreshing" @click.stop="refreshAdders">{{ addersRefreshing ? '…' : 'Sync' }}</button>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground transition-transform" :class="expandedExceptions.adders ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </button>
+          <div v-if="expandedExceptions.adders" class="border-t divide-y">
+            <a v-for="r in adders" :key="r.record_id"
+              :href="`https://kin.quickbase.com/db/bsaycczmf?a=dr&rid=${r.record_id}`" target="_blank"
+              class="px-4 py-2 flex items-center gap-3 text-[11px] hover:bg-muted/40 transition-colors"
+            >
+              <div class="flex-1 min-w-0">
+                <p class="font-medium truncate">{{ r.customer_name || 'Unnamed' }}</p>
+                <p class="text-[10px] text-muted-foreground truncate mt-0.5">
+                  {{ r.product_name || r.product_category }}
+                  <template v-if="r.qty"> · Qty {{ r.qty }}</template>
+                  <template v-if="r.project_closer"> · Rep {{ r.project_closer }}</template>
+                </p>
+              </div>
+              <span v-if="r.customer_state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.customer_state }}</span>
+              <span v-if="r.adder_total" class="text-[10px] font-semibold tabular-nums shrink-0">${{ Math.round(r.adder_total).toLocaleString() }}</span>
+              <span v-if="r.sla_timer_days != null" class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold shrink-0 tabular-nums"
+                :class="r.sla_timer_days > 7 ? 'bg-red-100 text-red-700' : r.sla_timer_days > 3 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'">
+                {{ r.sla_timer_days }}d SLA
+              </span>
+            </a>
           </div>
         </div>
       </div>

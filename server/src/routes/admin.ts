@@ -528,4 +528,42 @@ router.post('/impersonate-query', async (req: Request, res: Response): Promise<v
   }
 })
 
+// ── Data cache status ────────────────────────────────────
+// Lists each SQLite cache that mirrors QB data, with row count + last sync.
+
+interface CacheInfo {
+  key: string
+  label: string
+  description: string
+  table: string
+  refreshPath: string
+  total: number
+  last_refresh: string | null
+}
+
+const CACHE_REGISTRY: Array<Omit<CacheInfo, 'total' | 'last_refresh'>> = [
+  { key: 'projects', label: 'Projects', description: 'Master project cache (statuses, milestones, dates)', table: 'project_cache', refreshPath: '/api/projects/refresh' },
+  { key: 'pc_outreach', label: 'PC Outreach', description: 'Open outreach touchpoints (PC Dashboard)', table: 'outreach_cache', refreshPath: '/api/pc-dashboard/refresh' },
+  { key: 'pc_outreach_completed', label: 'PC Outreach – Completed', description: 'Completed outreach for performance analytics', table: 'outreach_completed_cache', refreshPath: '/api/pc-dashboard/refresh-analytics' },
+  { key: 'pc_adders', label: 'Adders – Notify Sales Rep', description: 'Post-POS adders (QB report 35 on bsaycczmf)', table: 'adder_notify_cache', refreshPath: '/api/pc-dashboard/refresh-adders' },
+  { key: 'pto', label: 'PTO', description: 'PTO workflow records (PTO Dashboard)', table: 'pto_cache', refreshPath: '/api/pto/refresh' },
+  { key: 'inspx', label: 'INSPX', description: 'Inspection workflow records', table: 'inspx_cache', refreshPath: '/api/analytics/inspx/refresh' },
+  { key: 'tickets', label: 'Tickets', description: 'Ticket/blocker cache', table: 'ticket_cache', refreshPath: '/api/tickets/refresh' },
+]
+
+router.get('/caches', (_req: Request, res: Response): void => {
+  const caches: CacheInfo[] = CACHE_REGISTRY.map(c => {
+    try {
+      const row = db.prepare(
+        `SELECT COUNT(*) AS total, MAX(cached_at) AS last_refresh FROM ${c.table}`
+      ).get() as { total: number; last_refresh: string | null }
+      return { ...c, total: row.total, last_refresh: row.last_refresh }
+    } catch {
+      // Table doesn't exist yet (never initialized) — report zero
+      return { ...c, total: 0, last_refresh: null }
+    }
+  })
+  res.json({ caches })
+})
+
 export { router as adminRouter }

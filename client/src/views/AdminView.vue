@@ -425,6 +425,68 @@ const syncing = ref(false)
 const syncResult = ref<SyncResult | null>(null)
 const syncError = ref('')
 
+// ─── Data Caches ─────────────────────────────────────────
+interface DataCache {
+  key: string
+  label: string
+  description: string
+  table: string
+  refreshPath: string
+  total: number
+  last_refresh: string | null
+}
+const caches = ref<DataCache[]>([])
+const cachesLoading = ref(false)
+const cacheBusy = ref<Record<string, boolean>>({})
+const cacheError = ref<Record<string, string>>({})
+
+async function loadCaches() {
+  cachesLoading.value = true
+  try {
+    const res = await fetch('/api/admin/caches', { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      caches.value = data.caches || []
+    }
+  } finally { cachesLoading.value = false }
+}
+
+async function refreshDataCache(c: DataCache) {
+  cacheBusy.value = { ...cacheBusy.value, [c.key]: true }
+  cacheError.value = { ...cacheError.value, [c.key]: '' }
+  try {
+    const res = await fetch(c.refreshPath, { method: 'POST', headers: hdrs() })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      cacheError.value = { ...cacheError.value, [c.key]: body.error || `HTTP ${res.status}` }
+    }
+    await loadCaches()
+  } catch (e) {
+    cacheError.value = { ...cacheError.value, [c.key]: e instanceof Error ? e.message : String(e) }
+  } finally {
+    cacheBusy.value = { ...cacheBusy.value, [c.key]: false }
+  }
+}
+
+async function refreshAllCaches() {
+  for (const c of caches.value) {
+    await refreshDataCache(c)
+  }
+}
+
+function fmtCacheTime(iso: string | null): string {
+  if (!iso) return 'Never'
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
+  if (isNaN(d.getTime())) return iso
+  const mins = Math.round((Date.now() - d.getTime()) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.round(hrs / 24)
+  return `${days}d ago`
+}
+
 async function runFullSync() {
   syncing.value = true
   syncResult.value = null
@@ -459,7 +521,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -860,6 +922,67 @@ onMounted(async () => {
 
         <!-- ════════════ QB SYNC TAB ════════════ -->
         <TabsContent value="qb-sync" class="grid gap-6">
+          <!-- Data Caches -->
+          <Card>
+            <CardHeader>
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <CardTitle>Data Caches</CardTitle>
+                  <CardDescription>
+                    Local SQLite mirrors of QuickBase data that power each dashboard.
+                    Sync each cache individually, or refresh all at once.
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  :disabled="cachesLoading || Object.values(cacheBusy).some(Boolean)"
+                  @click="refreshAllCaches"
+                >
+                  {{ Object.values(cacheBusy).some(Boolean) ? 'Syncing…' : 'Sync All' }}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Dataset</TableHead>
+                    <TableHead>Table</TableHead>
+                    <TableHead class="text-right">Records</TableHead>
+                    <TableHead>Last sync</TableHead>
+                    <TableHead class="w-24"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="c in caches" :key="c.key">
+                    <TableCell>
+                      <p class="font-medium">{{ c.label }}</p>
+                      <p class="text-xs text-muted-foreground">{{ c.description }}</p>
+                      <p v-if="cacheError[c.key]" class="text-xs text-red-600 mt-1">{{ cacheError[c.key] }}</p>
+                    </TableCell>
+                    <TableCell class="font-mono text-xs text-muted-foreground">{{ c.table }}</TableCell>
+                    <TableCell class="text-right tabular-nums">{{ c.total.toLocaleString() }}</TableCell>
+                    <TableCell class="text-xs text-muted-foreground">{{ fmtCacheTime(c.last_refresh) }}</TableCell>
+                    <TableCell class="text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        :disabled="!!cacheBusy[c.key]"
+                        @click="refreshDataCache(c)"
+                      >
+                        {{ cacheBusy[c.key] ? '…' : 'Sync' }}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow v-if="caches.length === 0 && !cachesLoading">
+                    <TableCell colspan="5" class="text-center text-muted-foreground py-6">No caches registered.</TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Sync from QuickBase</CardTitle>
