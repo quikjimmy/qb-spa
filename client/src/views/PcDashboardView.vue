@@ -677,7 +677,7 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
           <button class="flex items-center justify-between w-full px-4 py-2.5" @click="toggleException('adders')">
             <div class="flex items-center gap-2">
               <span class="size-2 rounded-full bg-rose-500" />
-              <span class="text-[11px] font-semibold uppercase tracking-widest text-rose-700">Adders — Notify Sales Rep</span>
+              <span class="text-[11px] font-semibold uppercase tracking-widest text-rose-700">Adders</span>
             </div>
             <div class="flex items-center gap-2">
               <Badge variant="secondary" class="text-[10px]">{{ adders.length }}</Badge>

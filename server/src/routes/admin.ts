@@ -545,7 +545,7 @@ const CACHE_REGISTRY: Array<Omit<CacheInfo, 'total' | 'last_refresh'>> = [
   { key: 'projects', label: 'Projects', description: 'Master project cache (statuses, milestones, dates)', table: 'project_cache', refreshPath: '/api/projects/refresh' },
   { key: 'pc_outreach', label: 'PC Outreach', description: 'Open outreach touchpoints (PC Dashboard)', table: 'outreach_cache', refreshPath: '/api/pc-dashboard/refresh' },
   { key: 'pc_outreach_completed', label: 'PC Outreach – Completed', description: 'Completed outreach for performance analytics', table: 'outreach_completed_cache', refreshPath: '/api/pc-dashboard/refresh-analytics' },
-  { key: 'pc_adders', label: 'Adders – Notify Sales Rep', description: 'Post-POS adders (QB report 35 on bsaycczmf)', table: 'adder_notify_cache', refreshPath: '/api/pc-dashboard/refresh-adders' },
+  { key: 'pc_adders', label: 'Adders', description: 'Post-POS adders pending sales-rep notification (bsaycczmf)', table: 'adder_notify_cache', refreshPath: '/api/pc-dashboard/refresh-adders' },
   { key: 'pto', label: 'PTO', description: 'PTO workflow records (PTO Dashboard)', table: 'pto_cache', refreshPath: '/api/pto/refresh' },
   { key: 'inspx', label: 'INSPX', description: 'Inspection workflow records', table: 'inspx_cache', refreshPath: '/api/analytics/inspx/refresh' },
   { key: 'tickets', label: 'Tickets', description: 'Ticket/blocker cache', table: 'ticket_cache', refreshPath: '/api/tickets/refresh' },

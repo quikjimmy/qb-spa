@@ -1,13 +1,114 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
+
+// ─── User-created agents (real data) ─────────────────────
+interface UserAgent {
+  id: number
+  user_id: number
+  name: string
+  objective: string
+  llm: string
+  monthly_token_cap: number
+  tokens_used_month: number
+  tier: 'ollama-free' | 'company'
+  status: 'draft' | 'submitted' | 'approved' | 'paused' | 'retired'
+  department: string | null
+  submission_note: string | null
+  created_at: string
+  updated_at: string
+}
+interface LlmOption { id: string; label: string; availableTiers: string[] }
+interface UserBudget { monthly_token_cap: number; tokens_used_month: number; tier: string; updated_at: string }
+
+const myAgents = ref<UserAgent[]>([])
+const llmOptions = ref<LlmOption[]>([])
+const myBudget = ref<UserBudget | null>(null)
+
+async function loadMyAgents() {
+  const res = await fetch('/api/user-agents/mine', { headers: hdrs() })
+  if (res.ok) myAgents.value = (await res.json()).rows || []
+}
+async function loadLlms() {
+  const res = await fetch('/api/user-agents/llms', { headers: hdrs() })
+  if (res.ok) llmOptions.value = (await res.json()).options || []
+}
+async function loadMyBudget() {
+  const res = await fetch('/api/user-agents/my-budget', { headers: hdrs() })
+  if (res.ok) myBudget.value = (await res.json()).budget || null
+}
+
+const creatingAgent = ref(false)
+const newAgent = ref({ name: '', objective: '', llm: '', department: '' })
+function resetNew() { newAgent.value = { name: '', objective: '', llm: '', department: '' } }
+
+async function createAgent() {
+  if (!newAgent.value.name.trim() || !newAgent.value.objective.trim() || !newAgent.value.llm) return
+  creatingAgent.value = true
+  try {
+    const res = await fetch('/api/user-agents', {
+      method: 'POST', headers: hdrs(), body: JSON.stringify(newAgent.value),
+    })
+    if (res.ok) { resetNew(); await loadMyAgents() }
+  } finally { creatingAgent.value = false }
+}
+
+async function submitAgent(a: UserAgent) {
+  const note = window.prompt('Optional note for admin reviewer:') || ''
+  const res = await fetch(`/api/user-agents/${a.id}/submit`, {
+    method: 'POST', headers: hdrs(), body: JSON.stringify({ submission_note: note }),
+  })
+  if (res.ok) await loadMyAgents()
+}
+
+async function pauseAgent(a: UserAgent) {
+  await fetch(`/api/user-agents/${a.id}/pause`, { method: 'POST', headers: hdrs() })
+  await loadMyAgents()
+}
+async function resumeAgent(a: UserAgent) {
+  await fetch(`/api/user-agents/${a.id}/resume`, { method: 'POST', headers: hdrs() })
+  await loadMyAgents()
+}
+async function retireAgent(a: UserAgent) {
+  if (!window.confirm(`Retire "${a.name}"? This is permanent.`)) return
+  await fetch(`/api/user-agents/${a.id}/retire`, { method: 'POST', headers: hdrs() })
+  await loadMyAgents()
+}
+async function deleteAgent(a: UserAgent) {
+  if (!window.confirm(`Delete draft "${a.name}"?`)) return
+  await fetch(`/api/user-agents/${a.id}`, { method: 'DELETE', headers: hdrs() })
+  await loadMyAgents()
+}
+
+const availableLlmsForFreeTier = computed(() =>
+  llmOptions.value.filter(o => o.availableTiers.includes('ollama-free'))
+)
+
+const myAgentStatusStyle: Record<string, string> = {
+  draft: 'bg-muted text-muted-foreground',
+  submitted: 'bg-amber-100 text-amber-700',
+  approved: 'bg-emerald-100 text-emerald-700',
+  paused: 'bg-violet-100 text-violet-700',
+  retired: 'bg-muted text-muted-foreground/60',
+}
+
+onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget() })
 
 // ─── Mock data shaped around what OpenClaw / an orchestrator would provide ───
 
@@ -257,12 +358,111 @@ const agentRuns = computed(() => {
       </Card>
     </div>
 
-    <Tabs default-value="agents">
+    <Tabs default-value="my-agents">
       <TabsList>
-        <TabsTrigger value="agents">Agents</TabsTrigger>
+        <TabsTrigger value="my-agents">My Agents</TabsTrigger>
+        <TabsTrigger value="agents">System</TabsTrigger>
         <TabsTrigger value="runs">Task Runs</TabsTrigger>
         <TabsTrigger value="schedules">Schedules</TabsTrigger>
       </TabsList>
+
+      <!-- ═══ My Agents ═══ -->
+      <TabsContent value="my-agents" class="mt-6 grid gap-4">
+        <!-- Per-user budget -->
+        <Card v-if="myBudget">
+          <CardContent class="pt-6 flex items-baseline gap-4 flex-wrap">
+            <div class="flex-1 min-w-0">
+              <p class="text-sm text-muted-foreground">Your monthly token budget</p>
+              <p class="text-xs text-muted-foreground mt-0.5">
+                Tier: <span class="font-semibold capitalize">{{ myBudget.tier.replace('-', ' ') }}</span>.
+                Aggregate across all your agents. Approved agents draw from the company pool instead.
+              </p>
+            </div>
+            <div class="text-right">
+              <p class="text-2xl font-semibold tabular-nums">{{ myBudget.tokens_used_month.toLocaleString() }}<span class="text-sm text-muted-foreground"> / {{ myBudget.monthly_token_cap.toLocaleString() }}</span></p>
+              <p class="text-[10px] text-muted-foreground">tokens used this month</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- Create new -->
+        <Card>
+          <CardHeader>
+            <CardTitle class="text-base">Create a new agent</CardTitle>
+            <CardDescription class="text-xs">
+              Draft runs against your ollama-free tier. Submit for review to deploy company-wide with a higher cap.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="grid gap-3">
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div class="space-y-1.5">
+                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Name</Label>
+                <Input v-model="newAgent.name" placeholder="e.g. Permit follow-up reminder" maxlength="120" />
+              </div>
+              <div class="space-y-1.5">
+                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">LLM</Label>
+                <Select v-model="newAgent.llm">
+                  <SelectTrigger><SelectValue placeholder="Pick an LLM" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="o in availableLlmsForFreeTier" :key="o.id" :value="o.id">{{ o.label }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div class="space-y-1.5">
+              <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Objective</Label>
+              <textarea v-model="newAgent.objective" rows="3" maxlength="2000"
+                class="w-full rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                placeholder="What should this agent do? Tight and purposeful — one job per agent."></textarea>
+            </div>
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div class="space-y-1.5">
+                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Department (optional)</Label>
+                <Input v-model="newAgent.department" placeholder="PC, INSPX, PTO, …" maxlength="60" />
+              </div>
+            </div>
+            <div class="flex justify-end">
+              <Button :disabled="creatingAgent || !newAgent.name.trim() || !newAgent.objective.trim() || !newAgent.llm" @click="createAgent">
+                {{ creatingAgent ? 'Saving…' : 'Save Draft' }}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <!-- My agents list -->
+        <div v-if="myAgents.length === 0" class="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">
+          You haven't created any agents yet.
+        </div>
+        <div v-else class="grid gap-3">
+          <Card v-for="a in myAgents" :key="a.id">
+            <CardContent class="pt-6 space-y-2">
+              <div class="flex items-baseline gap-2 flex-wrap">
+                <p class="font-semibold">{{ a.name }}</p>
+                <span v-if="a.department" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ a.department }}</span>
+                <span class="text-[10px] font-mono text-muted-foreground ml-auto">{{ a.llm }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
+                  :class="myAgentStatusStyle[a.status]">
+                  {{ a.status }}
+                </span>
+              </div>
+              <p class="text-sm text-muted-foreground whitespace-pre-wrap">{{ a.objective }}</p>
+              <p v-if="a.submission_note" class="text-[11px] italic text-muted-foreground">Note: {{ a.submission_note }}</p>
+              <p class="text-[10px] text-muted-foreground">
+                Tier: <span class="font-semibold">{{ a.tier }}</span> ·
+                Cap: {{ a.monthly_token_cap.toLocaleString() }} tok/mo ·
+                Used: {{ a.tokens_used_month.toLocaleString() }}
+              </p>
+              <div class="flex gap-1.5 flex-wrap pt-1">
+                <Button v-if="a.status === 'draft'" size="sm" @click="submitAgent(a)">Submit for review</Button>
+                <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="deleteAgent(a)">Delete</Button>
+                <Button v-if="a.status === 'approved'" size="sm" variant="outline" @click="pauseAgent(a)">Pause</Button>
+                <Button v-if="a.status === 'paused'" size="sm" @click="resumeAgent(a)">Resume</Button>
+                <Button v-if="['approved','paused'].includes(a.status)" size="sm" variant="ghost" @click="retireAgent(a)">Retire</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </TabsContent>
 
       <!-- ═══ Agents ═══ -->
       <TabsContent value="agents" class="mt-6 grid gap-4">

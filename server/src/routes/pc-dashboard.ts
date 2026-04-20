@@ -542,9 +542,11 @@ router.get('/analytics', (req: Request, res: Response): void => {
   })
 })
 
-// ── Post-POS adders: QB report 35 on adders table (bsaycczmf) ──
+// ── Adders (post-POS, pending rep notification) — table bsaycczmf ──
+// Filter mirrors QB report 35: SLA Start Date is populated AND Rep Notified Date is empty.
+// Using a direct records/query (not the report-run endpoint) so the filter is explicit,
+// debuggable, and doesn't silently drift when the QB-side report definition changes.
 const ADDERS_TABLE = 'bsaycczmf'
-const ADDERS_REPORT_ID = '35'
 
 const adderFMap: Array<{ fid: number; col: string }> = [
   { fid: 3, col: 'record_id' },
@@ -568,30 +570,45 @@ const adderFMap: Array<{ fid: number; col: string }> = [
   { fid: 209, col: 'rep_notified_date' },
 ]
 
-async function refreshAddersCache(): Promise<{ total: number; duration: number }> {
+async function refreshAddersCache(): Promise<{ total: number; duration: number; fetched: number }> {
   const start = Date.now()
   const { realm, token } = getQbConfig()
 
-  const res = await fetch(
-    `https://api.quickbase.com/v1/reports/${ADDERS_REPORT_ID}/run?tableId=${ADDERS_TABLE}`,
-    {
+  // SLA Start Date set AND Rep Notified Date empty
+  const where = `{'167'.XEX.''}AND{'209'.EX.''}`
+
+  let allRecords: Array<Record<string, { value: unknown }>> = []
+  let skip = 0
+  const batchSize = 1000
+
+  while (true) {
+    const res = await fetch('https://api.quickbase.com/v1/records/query', {
       method: 'POST',
       headers: {
         'QB-Realm-Hostname': realm,
         'Authorization': `QB-USER-TOKEN ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        from: ADDERS_TABLE,
+        select: adderFMap.map(f => f.fid),
+        where,
+        sortBy: [{ fieldId: 170, order: 'DESC' }, { fieldId: 1, order: 'ASC' }],
+        options: { skip, top: batchSize },
+      }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`QB adders query failed (${res.status}): ${text}`)
     }
-  )
 
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`QB adders report failed (${res.status}): ${text}`)
+    const data = await res.json()
+    const records = data.data || []
+    allRecords = allRecords.concat(records)
+    if (records.length < batchSize) break
+    skip += batchSize
   }
-
-  const data = await res.json()
-  const records: Array<Record<string, { value: unknown }>> = data.data || []
 
   db.prepare('DELETE FROM adder_notify_cache').run()
 
@@ -601,8 +618,9 @@ async function refreshAddersCache(): Promise<{ total: number; duration: number }
     `INSERT OR REPLACE INTO adder_notify_cache (${cols}, cached_at) VALUES (${placeholders}, datetime('now'))`
   )
 
+  let written = 0
   db.transaction(() => {
-    for (const record of records) {
+    for (const record of allRecords) {
       const rid = parseInt(val(record, 3))
       if (!rid) continue
       const values = adderFMap.map(f => {
@@ -611,10 +629,11 @@ async function refreshAddersCache(): Promise<{ total: number; duration: number }
         return val(record, f.fid)
       })
       insert.run(...values)
+      written++
     }
   })()
 
-  return { total: records.length, duration: Date.now() - start }
+  return { total: written, fetched: allRecords.length, duration: Date.now() - start }
 }
 
 router.post('/refresh-adders', async (_req: Request, res: Response): Promise<void> => {

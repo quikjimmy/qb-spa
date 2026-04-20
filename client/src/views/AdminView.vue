@@ -514,6 +514,98 @@ async function runFullSync() {
 
 const router = useRouter()
 
+// ─── App Feedback triage ─────────────────────────────────
+interface FeedbackRow {
+  id: number
+  user_id: number
+  user_name: string | null
+  user_email: string | null
+  path: string
+  category: string | null
+  body: string
+  status: string
+  triaged_by: number | null
+  triaged_by_name: string | null
+  triaged_at: string | null
+  triage_note: string | null
+  created_at: string
+}
+const feedbackRows = ref<FeedbackRow[]>([])
+const feedbackCounts = ref<Record<string, number>>({})
+const feedbackFilter = ref<string>('new')
+
+async function loadFeedback() {
+  const q = feedbackFilter.value === 'all' ? '' : `?status=${feedbackFilter.value}`
+  const res = await fetch(`/api/feedback${q}`, { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json()
+  feedbackRows.value = data.rows || []
+  const counts: Record<string, number> = {}
+  for (const c of (data.counts || [])) counts[c.status] = c.n
+  feedbackCounts.value = counts
+}
+
+async function setFeedbackStatus(id: number, status: string) {
+  await fetch(`/api/feedback/${id}`, {
+    method: 'PATCH', headers: hdrs(), body: JSON.stringify({ status }),
+  })
+  await loadFeedback()
+}
+
+function fmtFeedbackTime(iso: string): string {
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+// ─── User-agent review ───────────────────────────────────
+interface UserAgentRow {
+  id: number
+  user_id: number
+  owner_name: string | null
+  owner_email: string | null
+  name: string
+  objective: string
+  llm: string
+  monthly_token_cap: number
+  tokens_used_month: number
+  tier: string
+  status: string
+  department: string | null
+  submission_note: string | null
+  approved_by: number | null
+  approved_at: string | null
+  created_at: string
+  updated_at: string
+}
+const agentRows = ref<UserAgentRow[]>([])
+const agentCounts = ref<Record<string, number>>({})
+const agentFilter = ref<string>('submitted')
+
+async function loadUserAgents() {
+  const q = agentFilter.value === 'all' ? '' : `?status=${agentFilter.value}`
+  const res = await fetch(`/api/user-agents${q}`, { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json()
+  agentRows.value = data.rows || []
+  const counts: Record<string, number> = {}
+  for (const c of (data.counts || [])) counts[c.status] = c.n
+  agentCounts.value = counts
+}
+
+async function approveAgent(id: number) {
+  await fetch(`/api/user-agents/${id}/approve`, { method: 'POST', headers: hdrs() })
+  await loadUserAgents()
+}
+
+async function rejectAgent(id: number) {
+  const note = window.prompt('Reason for rejection (visible to owner):') || ''
+  await fetch(`/api/user-agents/${id}/reject`, {
+    method: 'POST', headers: hdrs(), body: JSON.stringify({ note }),
+  })
+  await loadUserAgents()
+}
+
 onMounted(async () => {
   if (!auth.user) await auth.fetchUser()
   if (!auth.isAdmin) {
@@ -521,7 +613,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -545,6 +637,8 @@ onMounted(async () => {
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="roles">Roles</TabsTrigger>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
+          <TabsTrigger value="feedback">Feedback</TabsTrigger>
+          <TabsTrigger value="agent-review">Agent Review</TabsTrigger>
           <TabsTrigger value="qb-sync">QB Sync</TabsTrigger>
           <TabsTrigger value="test-user">Test as User</TabsTrigger>
         </TabsList>
@@ -916,6 +1010,122 @@ onMounted(async () => {
                   </TableRow>
                 </TableBody>
               </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- ════════════ FEEDBACK TAB ════════════ -->
+        <TabsContent value="feedback" class="grid gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>App Feedback Queue</CardTitle>
+              <CardDescription>
+                Everything submitted through the floating Feedback button. Triage to triaged → in_build → shipped,
+                or dismiss. Chat with Claude to turn triaged items into build proposals.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="s in ['new','triaged','in_build','shipped','dismissed','all']" :key="s"
+                  class="inline-flex items-center gap-1.5 rounded-md border px-2.5 h-7 text-[11px] font-medium transition-colors capitalize"
+                  :class="feedbackFilter === s ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+                  @click="feedbackFilter = s; loadFeedback()"
+                >
+                  {{ s.replace('_',' ') }}
+                  <span v-if="s !== 'all' && feedbackCounts[s]" class="text-[10px] opacity-70">{{ feedbackCounts[s] }}</span>
+                </button>
+              </div>
+
+              <div v-if="feedbackRows.length === 0" class="text-sm text-muted-foreground py-6 text-center">
+                No feedback in this bucket.
+              </div>
+
+              <div v-else class="space-y-2">
+                <div v-for="r in feedbackRows" :key="r.id" class="rounded-lg border bg-card p-3 space-y-2">
+                  <div class="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
+                    <span class="font-mono bg-muted px-1.5 py-0.5 rounded">{{ r.path }}</span>
+                    <span v-if="r.category" class="capitalize px-1.5 py-0.5 rounded bg-muted">{{ r.category }}</span>
+                    <span>{{ r.user_name || r.user_email || `user ${r.user_id}` }}</span>
+                    <span>·</span>
+                    <span>{{ fmtFeedbackTime(r.created_at) }}</span>
+                    <span class="ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
+                      :class="r.status === 'new' ? 'bg-blue-100 text-blue-700'
+                        : r.status === 'triaged' ? 'bg-amber-100 text-amber-700'
+                        : r.status === 'in_build' ? 'bg-violet-100 text-violet-700'
+                        : r.status === 'shipped' ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-muted text-muted-foreground'">
+                      {{ r.status.replace('_',' ') }}
+                    </span>
+                  </div>
+                  <p class="text-sm whitespace-pre-wrap">{{ r.body }}</p>
+                  <div class="flex gap-1.5 flex-wrap pt-1">
+                    <Button v-if="r.status !== 'triaged'"    size="sm" variant="outline" @click="setFeedbackStatus(r.id, 'triaged')">Triaged</Button>
+                    <Button v-if="r.status !== 'in_build'"   size="sm" variant="outline" @click="setFeedbackStatus(r.id, 'in_build')">In Build</Button>
+                    <Button v-if="r.status !== 'shipped'"    size="sm" variant="outline" @click="setFeedbackStatus(r.id, 'shipped')">Shipped</Button>
+                    <Button v-if="r.status !== 'dismissed'"  size="sm" variant="outline" @click="setFeedbackStatus(r.id, 'dismissed')">Dismiss</Button>
+                    <Button v-if="r.status !== 'new'"        size="sm" variant="ghost"   @click="setFeedbackStatus(r.id, 'new')">Reopen</Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- ════════════ AGENT REVIEW TAB ════════════ -->
+        <TabsContent value="agent-review" class="grid gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>User Agent Review</CardTitle>
+              <CardDescription>
+                Submitted agents awaiting approval. Approving promotes the agent from the ollama-free tier
+                (per-user cap) to the company tier (higher cap, shared company Ollama key).
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="s in ['submitted','approved','paused','retired','draft','all']" :key="s"
+                  class="inline-flex items-center gap-1.5 rounded-md border px-2.5 h-7 text-[11px] font-medium transition-colors capitalize"
+                  :class="agentFilter === s ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+                  @click="agentFilter = s; loadUserAgents()"
+                >
+                  {{ s }}
+                  <span v-if="s !== 'all' && agentCounts[s]" class="text-[10px] opacity-70">{{ agentCounts[s] }}</span>
+                </button>
+              </div>
+
+              <div v-if="agentRows.length === 0" class="text-sm text-muted-foreground py-6 text-center">
+                No agents in this bucket.
+              </div>
+
+              <div v-else class="space-y-2">
+                <div v-for="a in agentRows" :key="a.id" class="rounded-lg border bg-card p-3 space-y-2">
+                  <div class="flex items-baseline gap-2 flex-wrap">
+                    <p class="font-semibold">{{ a.name }}</p>
+                    <span class="text-[11px] text-muted-foreground">by {{ a.owner_name || a.owner_email }}</span>
+                    <span v-if="a.department" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ a.department }}</span>
+                    <span class="text-[10px] font-mono text-muted-foreground ml-auto">{{ a.llm }}</span>
+                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
+                      :class="a.status === 'submitted' ? 'bg-amber-100 text-amber-700'
+                        : a.status === 'approved' ? 'bg-emerald-100 text-emerald-700'
+                        : a.status === 'paused' ? 'bg-violet-100 text-violet-700'
+                        : a.status === 'retired' ? 'bg-muted text-muted-foreground'
+                        : 'bg-blue-100 text-blue-700'">
+                      {{ a.status }}
+                    </span>
+                  </div>
+                  <p class="text-sm whitespace-pre-wrap">{{ a.objective }}</p>
+                  <p v-if="a.submission_note" class="text-[11px] text-muted-foreground italic">Note: {{ a.submission_note }}</p>
+                  <p class="text-[10px] text-muted-foreground">
+                    Tier: <span class="font-semibold">{{ a.tier }}</span> · Cap: {{ a.monthly_token_cap.toLocaleString() }} tok/mo · Used: {{ a.tokens_used_month.toLocaleString() }}
+                  </p>
+                  <div v-if="a.status === 'submitted'" class="flex gap-1.5 pt-1">
+                    <Button size="sm" @click="approveAgent(a.id)">Approve → Company</Button>
+                    <Button size="sm" variant="outline" @click="rejectAgent(a.id)">Reject → Draft</Button>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

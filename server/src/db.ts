@@ -231,6 +231,58 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_outputs_project ON agent_outputs(project_id)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_outputs_agent ON agent_outputs(agent, generated_at DESC)`)
 
+// --- App-level feedback (floating widget → admin triage queue) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    path TEXT NOT NULL,
+    category TEXT,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    triaged_by INTEGER REFERENCES users(id),
+    triaged_at TEXT,
+    triage_note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_app_feedback_status ON app_feedback(status, created_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_app_feedback_user ON app_feedback(user_id)`)
+
+// --- User-created agents (bones; execution not wired yet) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    llm TEXT NOT NULL,
+    monthly_token_cap INTEGER NOT NULL DEFAULT 50000,
+    tokens_used_month INTEGER NOT NULL DEFAULT 0,
+    tier TEXT NOT NULL DEFAULT 'ollama-free',
+    status TEXT NOT NULL DEFAULT 'draft',
+    department TEXT,
+    submission_note TEXT,
+    approved_by INTEGER REFERENCES users(id),
+    approved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_agents_user ON user_agents(user_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_agents_status ON user_agents(status, created_at DESC)`)
+
+// --- Per-user aggregate budget (authoritative cap across all their agents) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_budgets (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    monthly_token_cap INTEGER NOT NULL DEFAULT 50000,
+    tokens_used_month INTEGER NOT NULL DEFAULT 0,
+    tier TEXT NOT NULL DEFAULT 'ollama-free',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
 // --- Seed default roles if they don't exist ---
 const seedRoles = db.prepare(`
   INSERT OR IGNORE INTO roles (name, description, is_system) VALUES (?, ?, ?)

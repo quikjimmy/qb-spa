@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/breadcrumb'
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
+import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 
 const route = useRoute()
@@ -101,5 +102,6 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
         <RouterView />
       </main>
     </SidebarInset>
+    <FeedbackLauncher />
   </SidebarProvider>
 </template>
