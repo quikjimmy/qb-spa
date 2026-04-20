@@ -25,6 +25,11 @@ const router = createRouter({
       name: 'reset',
       component: () => import('../views/ResetView.vue'),
     },
+    {
+      path: '/forgot',
+      name: 'forgot',
+      component: () => import('../views/ForgotView.vue'),
+    },
 
     // App shell — sidebar layout
     {

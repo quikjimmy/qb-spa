@@ -67,7 +67,10 @@ async function handleLogin() {
           </div>
 
           <div class="ope-field">
-            <label for="ope-password" class="ope-label">Password</label>
+            <div class="ope-label-row">
+              <label for="ope-password" class="ope-label">Password</label>
+              <RouterLink to="/forgot" class="ope-forgot-link">Forgot?</RouterLink>
+            </div>
             <input
               id="ope-password"
               v-model="password"
@@ -211,6 +214,25 @@ async function handleLogin() {
   text-transform: uppercase;
   font-weight: 600;
   color: rgba(244, 237, 228, 0.62);
+}
+
+.ope-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ope-forgot-link {
+  font-size: 11px;
+  color: rgba(244, 237, 228, 0.55);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.ope-forgot-link:hover {
+  color: rgba(244, 237, 228, 0.95);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .ope-input {
