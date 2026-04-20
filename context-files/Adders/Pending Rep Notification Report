@@ -1,0 +1,54 @@
+{
+  "description": "",
+  "id": "35",
+  "incomplete": false,
+  "name": "Adder Review: Pending Rep Notification",
+  "properties": {
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      210,
+      220,
+      31,
+      171,
+      17,
+      56,
+      8,
+      139,
+      156,
+      213,
+      13,
+      125,
+      24,
+      20,
+      138,
+      148,
+      149,
+      142,
+      140,
+      141,
+      166,
+      167,
+      170,
+      209,
+      52,
+      53,
+      208,
+      7
+    ],
+    "filter": "{'149'.EX.'1'}AND{'142'.EX.''}AND{'140'.EX.''}AND({'39'.EX.'Active'}OR{'39'.EX.'Intake Hold'}OR{'39'.EX.'Design Hold'}OR{'39'.EX.'Finance Hold'}OR{'39'.EX.'HOA Hold'}OR{'39'.EX.'Roof Hold'}OR{'39'.EX.'On Hold'}OR{'39'.EX.'Customer Hold'})AND{'42'.AF.'365 days ago'}AND{'17'.XEX.'Sales Promise'}AND{'56'.XEX.'sales aid'}AND{'209'.EX.''}AND{'217'.XEX.'1'}",
+    "formulaFields": [],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 1,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "bsaycczmf"
+  },
+  "type": "table",
+  "usedCount": 129,
+  "usedLast": "2026-04-20T17:00:00Z"
+}

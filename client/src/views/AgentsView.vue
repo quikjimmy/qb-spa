@@ -37,9 +37,12 @@ interface UserAgent {
 interface LlmOption { id: string; label: string; availableTiers: string[] }
 interface UserBudget { monthly_token_cap: number; tokens_used_month: number; tier: string; updated_at: string }
 
+interface Department { id: number; name: string; description: string }
+
 const myAgents = ref<UserAgent[]>([])
 const llmOptions = ref<LlmOption[]>([])
 const myBudget = ref<UserBudget | null>(null)
+const myDepartments = ref<Department[]>([])
 
 async function loadMyAgents() {
   const res = await fetch('/api/user-agents/mine', { headers: hdrs() })
@@ -52,6 +55,10 @@ async function loadLlms() {
 async function loadMyBudget() {
   const res = await fetch('/api/user-agents/my-budget', { headers: hdrs() })
   if (res.ok) myBudget.value = (await res.json()).budget || null
+}
+async function loadMyDepartments() {
+  const res = await fetch('/api/user-settings/my-departments', { headers: hdrs() })
+  if (res.ok) myDepartments.value = (await res.json()).departments || []
 }
 
 const creatingAgent = ref(false)
@@ -108,7 +115,7 @@ const myAgentStatusStyle: Record<string, string> = {
   retired: 'bg-muted text-muted-foreground/60',
 }
 
-onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget() })
+onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget(); loadMyDepartments() })
 
 // ─── Mock data shaped around what OpenClaw / an orchestrator would provide ───
 
@@ -418,7 +425,17 @@ const agentRuns = computed(() => {
             <div class="grid sm:grid-cols-2 gap-3">
               <div class="space-y-1.5">
                 <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Department (optional)</Label>
-                <Input v-model="newAgent.department" placeholder="PC, INSPX, PTO, …" maxlength="60" />
+                <Select v-if="myDepartments.length > 0" :model-value="newAgent.department || '__none__'"
+                  @update:model-value="(v: string) => newAgent.department = v === '__none__' ? '' : v">
+                  <SelectTrigger><SelectValue placeholder="Pick a department" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">None</SelectItem>
+                    <SelectItem v-for="d in myDepartments" :key="d.id" :value="d.name">{{ d.name }}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p v-else class="text-xs text-muted-foreground py-2">
+                  You're not in any departments yet. Ask an admin to add you, then this picker will appear.
+                </p>
               </div>
             </div>
             <div class="flex justify-end">

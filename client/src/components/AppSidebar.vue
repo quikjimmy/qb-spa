@@ -203,6 +203,10 @@ function isActive(path: string) {
                 {{ auth.user?.roles?.join(', ') || 'No roles' }}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem as-child>
+                <RouterLink to="/settings" class="cursor-pointer w-full">Settings</RouterLink>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem @click="auth.logout()">
                 Sign out
               </DropdownMenuItem>

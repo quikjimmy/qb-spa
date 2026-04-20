@@ -283,6 +283,52 @@ db.exec(`
   )
 `)
 
+// --- Per-user Ollama connection (encrypted at rest) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_ollama_config (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    api_key_encrypted TEXT,
+    base_url TEXT NOT NULL DEFAULT 'https://ollama.com',
+    last_tested_at TEXT,
+    last_test_ok INTEGER,
+    last_test_error TEXT,
+    last_test_models_count INTEGER,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
+// --- Departments ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
+// --- User <-> Department (many-to-many) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_departments (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, department_id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_departments_user ON user_departments(user_id)`)
+
+// --- Seed starter departments (idempotent) ---
+const seedDept = db.prepare(`INSERT OR IGNORE INTO departments (name, description) VALUES (?, ?)`)
+const seedDeptTxn = db.transaction(() => {
+  seedDept.run('PC', 'Project Coordinators')
+  seedDept.run('INSPX', 'Inspections')
+  seedDept.run('PTO', 'Permit-to-operate / utility interconnect')
+  seedDept.run('Operations', 'General ops / admin')
+  seedDept.run('Engineering', 'Design & engineering')
+  seedDept.run('Sales', 'Sales & rep support')
+})
+seedDeptTxn()
+
 // --- Seed default roles if they don't exist ---
 const seedRoles = db.prepare(`
   INSERT OR IGNORE INTO roles (name, description, is_system) VALUES (?, ?, ?)

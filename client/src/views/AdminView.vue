@@ -37,8 +37,16 @@ interface PortalUser {
   email: string
   name: string
   roles: string[]
+  departments?: Array<{ id: number; name: string }>
   is_active: number
   created_at: string
+}
+
+interface Department {
+  id: number
+  name: string
+  description: string
+  user_count?: number
 }
 
 interface Permission {
@@ -70,6 +78,14 @@ const inviteCopied = ref(false)
 const editDialog = ref(false)
 const editingUser = ref<PortalUser | null>(null)
 const editingRoles = ref<Set<string>>(new Set())
+
+const editDeptDialog = ref(false)
+const editingDeptUser = ref<PortalUser | null>(null)
+const editingDeptIds = ref<Set<number>>(new Set())
+
+const departments = ref<Department[]>([])
+const newDeptName = ref('')
+const newDeptDesc = ref('')
 
 // Create role
 const newRoleName = ref('')
@@ -209,6 +225,51 @@ async function toggleUserActive(user: PortalUser) {
     body: JSON.stringify({ is_active: !user.is_active }),
   })
   await loadUsers()
+}
+
+// ─── Departments ─────────────────────────────────────────
+async function loadDepartments() {
+  const res = await fetch('/api/admin/departments', { headers: hdrs() })
+  if (res.ok) departments.value = (await res.json()).departments || []
+}
+
+async function createDepartment() {
+  if (!newDeptName.value.trim()) return
+  const res = await fetch('/api/admin/departments', {
+    method: 'POST', headers: hdrs(),
+    body: JSON.stringify({ name: newDeptName.value.trim(), description: newDeptDesc.value.trim() }),
+  })
+  if (res.ok) { newDeptName.value = ''; newDeptDesc.value = ''; await loadDepartments() }
+}
+
+async function deleteDepartment(d: Department) {
+  if (!window.confirm(`Delete department "${d.name}"? Users will lose this membership.`)) return
+  await fetch(`/api/admin/departments/${d.id}`, { method: 'DELETE', headers: hdrs() })
+  await Promise.all([loadDepartments(), loadUsers()])
+}
+
+function openEditDepartments(user: PortalUser) {
+  editingDeptUser.value = user
+  editingDeptIds.value = new Set((user.departments || []).map(d => d.id))
+  editDeptDialog.value = true
+}
+
+function toggleEditDepartment(id: number) {
+  const next = new Set(editingDeptIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  editingDeptIds.value = next
+}
+
+async function saveUserDepartments() {
+  if (!editingDeptUser.value) return
+  await fetch(`/api/admin/users/${editingDeptUser.value.id}/departments`, {
+    method: 'PUT', headers: hdrs(),
+    body: JSON.stringify({ department_ids: [...editingDeptIds.value] }),
+  })
+  editDeptDialog.value = false
+  editingDeptUser.value = null
+  await Promise.all([loadUsers(), loadDepartments()])
 }
 
 // ─── Roles ───────────────────────────────────────────────
@@ -613,7 +674,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents(), loadDepartments()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -636,6 +697,7 @@ onMounted(async () => {
         <TabsList class="mb-6">
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="roles">Roles</TabsTrigger>
+          <TabsTrigger value="departments">Departments</TabsTrigger>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="feedback">Feedback</TabsTrigger>
           <TabsTrigger value="agent-review">Agent Review</TabsTrigger>
@@ -751,6 +813,7 @@ onMounted(async () => {
                   <TableRow>
                     <TableHead>User</TableHead>
                     <TableHead>Roles</TableHead>
+                    <TableHead>Departments</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead class="text-right">Actions</TableHead>
                   </TableRow>
@@ -779,6 +842,14 @@ onMounted(async () => {
                       </div>
                     </TableCell>
                     <TableCell>
+                      <div class="flex gap-1 flex-wrap">
+                        <Badge v-for="d in (u.departments || [])" :key="d.id" variant="outline" class="text-xs">
+                          {{ d.name }}
+                        </Badge>
+                        <span v-if="!u.departments || u.departments.length === 0" class="text-xs text-muted-foreground italic">none</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
                       <div class="flex items-center gap-2">
                         <span
                           class="h-2 w-2 rounded-full"
@@ -790,9 +861,12 @@ onMounted(async () => {
                       </div>
                     </TableCell>
                     <TableCell class="text-right">
-                      <div class="flex items-center justify-end gap-2">
+                      <div class="flex items-center justify-end gap-2 flex-wrap">
                         <Button variant="ghost" size="sm" @click="openEditRoles(u)">
                           Edit roles
+                        </Button>
+                        <Button variant="ghost" size="sm" @click="openEditDepartments(u)">
+                          Edit depts
                         </Button>
                         <Button
                           :variant="u.is_active ? 'ghost' : 'outline'"
@@ -869,6 +943,60 @@ onMounted(async () => {
                         {{ role.qb_role_id ? 'synced' : 'built-in' }}
                       </span>
                     </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- ════════════ DEPARTMENTS TAB ════════════ -->
+        <TabsContent value="departments" class="grid gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Create Department</CardTitle>
+              <CardDescription>Add a team or business unit. Users can belong to many; agents deploy to one.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form @submit.prevent="createDepartment" class="flex gap-3 items-end flex-wrap">
+                <div class="space-y-2 w-48">
+                  <Label for="dept-name">Name</Label>
+                  <Input id="dept-name" v-model="newDeptName" placeholder="e.g. Solar Ops" maxlength="60" />
+                </div>
+                <div class="space-y-2 flex-1 min-w-[200px]">
+                  <Label for="dept-desc">Description</Label>
+                  <Input id="dept-desc" v-model="newDeptDesc" placeholder="What does this dept own?" />
+                </div>
+                <Button type="submit" :disabled="!newDeptName.trim()">Create</Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>All Departments</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead class="text-right">Members</TableHead>
+                    <TableHead class="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow v-for="d in departments" :key="d.id">
+                    <TableCell class="font-medium">{{ d.name }}</TableCell>
+                    <TableCell class="text-xs text-muted-foreground">{{ d.description || '—' }}</TableCell>
+                    <TableCell class="text-right tabular-nums">{{ d.user_count || 0 }}</TableCell>
+                    <TableCell class="text-right">
+                      <Button variant="ghost" size="sm" @click="deleteDepartment(d)">Delete</Button>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow v-if="departments.length === 0">
+                    <TableCell colspan="4" class="text-center text-muted-foreground py-6">No departments yet.</TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
@@ -1569,6 +1697,43 @@ onMounted(async () => {
         <DialogFooter>
           <Button variant="outline" @click="editDialog = false">Cancel</Button>
           <Button @click="saveUserRoles">Save Roles</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Edit Departments Dialog -->
+    <Dialog v-model:open="editDeptDialog">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit Departments</DialogTitle>
+          <DialogDescription v-if="editingDeptUser">
+            {{ editingDeptUser.name }} &mdash; {{ editingDeptUser.email }}
+          </DialogDescription>
+        </DialogHeader>
+        <div class="grid gap-2 py-2 max-h-[60vh] overflow-y-auto">
+          <label
+            v-for="d in departments"
+            :key="d.id"
+            class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
+            :class="editingDeptIds.has(d.id) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
+          >
+            <Checkbox
+              :checked="editingDeptIds.has(d.id)"
+              @update:checked="toggleEditDepartment(d.id)"
+              class="mt-0.5"
+            />
+            <div class="grid gap-0.5">
+              <span class="text-sm font-medium leading-none">{{ d.name }}</span>
+              <span class="text-xs text-muted-foreground">{{ d.description || '—' }}</span>
+            </div>
+          </label>
+          <p v-if="departments.length === 0" class="text-sm text-muted-foreground py-4 text-center">
+            No departments yet — create some in the Departments tab.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="editDeptDialog = false">Cancel</Button>
+          <Button @click="saveUserDepartments">Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

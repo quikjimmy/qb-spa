@@ -542,11 +542,32 @@ router.get('/analytics', (req: Request, res: Response): void => {
   })
 })
 
-// ── Adders (post-POS, pending rep notification) — table bsaycczmf ──
-// Filter mirrors QB report 35: SLA Start Date is populated AND Rep Notified Date is empty.
+// ── Adders: Pending Rep Notification — table bsaycczmf ──
+// Filter mirrors QB report 35 ("Adder Review: Pending Rep Notification") verbatim.
 // Using a direct records/query (not the report-run endpoint) so the filter is explicit,
 // debuggable, and doesn't silently drift when the QB-side report definition changes.
+//
+// Filter decoded:
+//   149 (Needs Operations Review?) = true
+//   AND 142 (Sales Notified Date) empty
+//   AND 140 (Ops Adder Plan Complete Date) empty
+//   AND 39  (Project Status) in (Active | *Hold statuses*)
+//   AND 42  (Project Sales Date) within last 365 days
+//   AND 17  (Product Category) != 'Sales Promise'
+//   AND 56  (Product Name) != 'sales aid'
+//   AND 209 (Rep Notified Date - Call-out) empty
+//   AND 217 != '1'
 const ADDERS_TABLE = 'bsaycczmf'
+const ADDERS_WHERE =
+  "{'149'.EX.'1'}AND{'142'.EX.''}AND{'140'.EX.''}" +
+  "AND({'39'.EX.'Active'}OR{'39'.EX.'Intake Hold'}OR{'39'.EX.'Design Hold'}" +
+  "OR{'39'.EX.'Finance Hold'}OR{'39'.EX.'HOA Hold'}OR{'39'.EX.'Roof Hold'}" +
+  "OR{'39'.EX.'On Hold'}OR{'39'.EX.'Customer Hold'})" +
+  "AND{'42'.AF.'365 days ago'}" +
+  "AND{'17'.XEX.'Sales Promise'}" +
+  "AND{'56'.XEX.'sales aid'}" +
+  "AND{'209'.EX.''}" +
+  "AND{'217'.XEX.'1'}"
 
 const adderFMap: Array<{ fid: number; col: string }> = [
   { fid: 3, col: 'record_id' },
@@ -574,9 +595,6 @@ async function refreshAddersCache(): Promise<{ total: number; duration: number; 
   const start = Date.now()
   const { realm, token } = getQbConfig()
 
-  // SLA Start Date set AND Rep Notified Date empty
-  const where = `{'167'.XEX.''}AND{'209'.EX.''}`
-
   let allRecords: Array<Record<string, { value: unknown }>> = []
   let skip = 0
   const batchSize = 1000
@@ -592,8 +610,8 @@ async function refreshAddersCache(): Promise<{ total: number; duration: number; 
       body: JSON.stringify({
         from: ADDERS_TABLE,
         select: adderFMap.map(f => f.fid),
-        where,
-        sortBy: [{ fieldId: 170, order: 'DESC' }, { fieldId: 1, order: 'ASC' }],
+        where: ADDERS_WHERE,
+        sortBy: [{ fieldId: 1, order: 'DESC' }],
         options: { skip, top: batchSize },
       }),
     })

@@ -96,22 +96,31 @@ router.delete('/roles/:id', (req: Request, res: Response): void => {
 router.get('/users', (_req: Request, res: Response): void => {
   const users = db.prepare(`
     SELECT u.id, u.email, u.name, u.is_active, u.created_at,
-      GROUP_CONCAT(r.name) as role_names
+      GROUP_CONCAT(DISTINCT r.name) as role_names,
+      GROUP_CONCAT(DISTINCT d.id || ':' || d.name) as dept_pairs
     FROM users u
     LEFT JOIN user_roles ur ON ur.user_id = u.id
     LEFT JOIN roles r ON r.id = ur.role_id
+    LEFT JOIN user_departments ud ON ud.user_id = u.id
+    LEFT JOIN departments d ON d.id = ud.department_id
     GROUP BY u.id
     ORDER BY u.created_at DESC
   `).all() as Array<{
     id: number; email: string; name: string; is_active: number;
-    created_at: string; role_names: string | null
+    created_at: string; role_names: string | null; dept_pairs: string | null
   }>
 
   res.json({
     users: users.map(u => ({
-      ...u,
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      is_active: u.is_active,
+      created_at: u.created_at,
       roles: u.role_names ? u.role_names.split(',') : [],
-      role_names: undefined,
+      departments: u.dept_pairs
+        ? u.dept_pairs.split(',').map(p => { const [id, ...rest] = p.split(':'); return { id: Number(id), name: rest.join(':') } })
+        : [],
     })),
   })
 })
@@ -550,6 +559,70 @@ const CACHE_REGISTRY: Array<Omit<CacheInfo, 'total' | 'last_refresh'>> = [
   { key: 'inspx', label: 'INSPX', description: 'Inspection workflow records', table: 'inspx_cache', refreshPath: '/api/analytics/inspx/refresh' },
   { key: 'tickets', label: 'Tickets', description: 'Ticket/blocker cache', table: 'ticket_cache', refreshPath: '/api/tickets/refresh' },
 ]
+
+// ── Departments ──────────────────────────────────────────
+
+router.get('/departments', (_req: Request, res: Response): void => {
+  const rows = db.prepare(
+    `SELECT d.id, d.name, d.description, d.created_at,
+            COUNT(ud.user_id) AS user_count
+     FROM departments d
+     LEFT JOIN user_departments ud ON ud.department_id = d.id
+     GROUP BY d.id
+     ORDER BY d.name`
+  ).all()
+  res.json({ departments: rows })
+})
+
+router.post('/departments', (req: Request, res: Response): void => {
+  const { name, description } = req.body as { name?: string; description?: string }
+  if (!name?.trim()) { res.status(400).json({ error: 'name is required' }); return }
+  try {
+    const r = db.prepare(
+      `INSERT INTO departments (name, description) VALUES (?, ?)`
+    ).run(name.trim().slice(0, 60), (description || '').slice(0, 300))
+    res.json({ ok: true, id: Number(r.lastInsertRowid) })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('UNIQUE')) { res.status(409).json({ error: 'department already exists' }); return }
+    res.status(500).json({ error: msg })
+  }
+})
+
+router.patch('/departments/:id', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  const { name, description } = req.body as { name?: string; description?: string }
+  const sets: string[] = []
+  const params: unknown[] = []
+  if (name !== undefined) { sets.push('name = ?'); params.push(name.trim().slice(0, 60)) }
+  if (description !== undefined) { sets.push('description = ?'); params.push(description.slice(0, 300)) }
+  if (sets.length === 0) { res.status(400).json({ error: 'nothing to update' }); return }
+  params.push(id)
+  db.prepare(`UPDATE departments SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+  res.json({ ok: true })
+})
+
+router.delete('/departments/:id', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  db.prepare(`DELETE FROM departments WHERE id = ?`).run(id)
+  res.json({ ok: true })
+})
+
+// Set the full list of departments for a user (admin only; mounted under authenticate+requireRole)
+router.put('/users/:id/departments', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const { department_ids } = req.body as { department_ids?: number[] }
+  if (!Array.isArray(department_ids)) { res.status(400).json({ error: 'department_ids must be an array' }); return }
+  const txn = db.transaction(() => {
+    db.prepare(`DELETE FROM user_departments WHERE user_id = ?`).run(userId)
+    const ins = db.prepare(`INSERT OR IGNORE INTO user_departments (user_id, department_id) VALUES (?, ?)`)
+    for (const dId of department_ids) {
+      if (typeof dId === 'number' && Number.isFinite(dId)) ins.run(userId, dId)
+    }
+  })
+  txn()
+  res.json({ ok: true })
+})
 
 router.get('/caches', (_req: Request, res: Response): void => {
   const caches: CacheInfo[] = CACHE_REGISTRY.map(c => {

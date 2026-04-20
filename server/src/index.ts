@@ -20,6 +20,7 @@ import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
 import { userAgentsRouter } from './routes/user-agents'
+import { userSettingsRouter } from './routes/user-settings'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 
@@ -54,6 +55,7 @@ app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
 app.use('/api/user-agents', authenticate, userAgentsRouter)
+app.use('/api/user-settings', authenticate, userSettingsRouter)
 
 // Admin routes — require JWT + admin role
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)
