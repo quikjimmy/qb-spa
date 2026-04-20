@@ -146,6 +146,46 @@ router.post('/ollama/test', async (req: Request, res: Response): Promise<void> =
   }
 })
 
+// GET /api/user-settings/ollama/models — list models actually available on the user's Ollama account
+router.get('/ollama/models', async (req: Request, res: Response): Promise<void> => {
+  const userId = req.user!.userId
+  const row = getOllamaRow(userId)
+  if (!row || !row.api_key_encrypted) {
+    res.status(400).json({ error: 'No Ollama key configured. Set one in Settings first.', needs_key: true }); return
+  }
+  let apiKey: string
+  try { apiKey = decryptSecret(row.api_key_encrypted) }
+  catch { res.status(500).json({ error: 'Stored key could not be decrypted — re-enter it in Settings.' }); return }
+
+  const base = (row.base_url || 'https://ollama.com').replace(/\/+$/, '')
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 10_000)
+    const r = await fetch(`${base}/api/tags`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      signal: ctrl.signal,
+    })
+    clearTimeout(timer)
+    if (!r.ok) {
+      const text = (await r.text().catch(() => '')).slice(0, 500)
+      res.status(200).json({ models: [], error: `HTTP ${r.status}: ${text}` }); return
+    }
+    const data = await r.json().catch(() => ({})) as { models?: Array<{ name?: string; model?: string; size?: number; modified_at?: string }> }
+    const models = (data.models || [])
+      .map(m => ({
+        name: String(m.name || m.model || ''),
+        size: m.size ?? null,
+        modified_at: m.modified_at ?? null,
+      }))
+      .filter(m => m.name)
+    res.json({ models })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    res.status(200).json({ models: [], error: msg })
+  }
+})
+
 // GET /api/user-settings/my-departments — departments the current user is in
 router.get('/my-departments', (req: Request, res: Response): void => {
   const rows = db.prepare(

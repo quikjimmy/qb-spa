@@ -61,6 +61,33 @@ async function loadMyDepartments() {
   if (res.ok) myDepartments.value = (await res.json()).departments || []
 }
 
+// ─── Ollama model list (real, from user's account) ───────
+interface OllamaModel { name: string; size: number | null; modified_at: string | null }
+const ollamaModels = ref<OllamaModel[]>([])
+const ollamaModelsError = ref('')
+const ollamaModelsLoading = ref(false)
+
+async function loadOllamaModels() {
+  ollamaModelsLoading.value = true
+  ollamaModelsError.value = ''
+  try {
+    const res = await fetch('/api/user-settings/ollama/models', { headers: hdrs() })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { ollamaModelsError.value = data.error || `HTTP ${res.status}`; return }
+    ollamaModels.value = data.models || []
+    if (data.error) ollamaModelsError.value = data.error
+  } catch (e) {
+    ollamaModelsError.value = e instanceof Error ? e.message : 'Failed to load models'
+  } finally { ollamaModelsLoading.value = false }
+}
+
+function isModelAvailable(name: string): boolean {
+  if (!name) return false
+  if (ollamaModels.value.some(m => m.name === name)) return true
+  // Also accept legacy seeded ids — backend maps them internally
+  return llmOptions.value.some(o => o.id === name)
+}
+
 const creatingAgent = ref(false)
 const newAgent = ref({ name: '', objective: '', llm: '', department: '' })
 function resetNew() { newAgent.value = { name: '', objective: '', llm: '', department: '' } }
@@ -106,6 +133,41 @@ async function deleteAgent(a: UserAgent) {
 const availableLlmsForFreeTier = computed(() =>
   llmOptions.value.filter(o => o.availableTiers.includes('ollama-free'))
 )
+
+// ─── Inline edit for existing agents ─────────────────────
+interface EditDraft { name: string; objective: string; llm: string; department: string }
+const editingAgentId = ref<number | null>(null)
+const editDraft = ref<EditDraft>({ name: '', objective: '', llm: '', department: '' })
+const editSaving = ref(false)
+const editError = ref('')
+
+function openEdit(a: UserAgent) {
+  editingAgentId.value = a.id
+  editError.value = ''
+  editDraft.value = {
+    name: a.name,
+    objective: a.objective,
+    llm: a.llm,
+    department: a.department || '',
+  }
+}
+function cancelEdit() {
+  editingAgentId.value = null
+  editError.value = ''
+}
+async function saveEdit(a: UserAgent) {
+  editSaving.value = true
+  editError.value = ''
+  try {
+    const res = await fetch(`/api/user-agents/${a.id}`, {
+      method: 'PATCH', headers: hdrs(), body: JSON.stringify(editDraft.value),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { editError.value = data.error || `HTTP ${res.status}`; return }
+    editingAgentId.value = null
+    await loadMyAgents()
+  } finally { editSaving.value = false }
+}
 
 const myAgentStatusStyle: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground',
@@ -214,7 +276,7 @@ function fmtRunTime(iso: string) {
   return `${days}d ago`
 }
 
-onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget(); loadMyDepartments() })
+onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget(); loadMyDepartments(); loadOllamaModels() })
 
 // ─── Mock data shaped around what OpenClaw / an orchestrator would provide ───
 
@@ -506,13 +568,24 @@ const agentRuns = computed(() => {
                 <Input v-model="newAgent.name" placeholder="e.g. Permit follow-up reminder" maxlength="120" />
               </div>
               <div class="space-y-1.5">
-                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">LLM</Label>
-                <Select v-model="newAgent.llm">
-                  <SelectTrigger><SelectValue placeholder="Pick an LLM" /></SelectTrigger>
+                <div class="flex items-center gap-2">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Model</Label>
+                  <button type="button" class="ml-auto text-[10px] text-muted-foreground hover:text-foreground" @click="loadOllamaModels">
+                    {{ ollamaModelsLoading ? 'Refreshing…' : 'Refresh' }}
+                  </button>
+                </div>
+                <Select v-if="ollamaModels.length > 0" v-model="newAgent.llm">
+                  <SelectTrigger><SelectValue placeholder="Pick a model" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem v-for="o in availableLlmsForFreeTier" :key="o.id" :value="o.id">{{ o.label }}</SelectItem>
+                    <SelectItem v-for="m in ollamaModels" :key="m.name" :value="m.name">{{ m.name }}</SelectItem>
                   </SelectContent>
                 </Select>
+                <Input v-else v-model="newAgent.llm" placeholder="e.g. llama3.1:8b" />
+                <p v-if="ollamaModelsError" class="text-[10px] text-red-600">{{ ollamaModelsError }}</p>
+                <p v-else-if="ollamaModels.length === 0" class="text-[10px] text-muted-foreground">
+                  No models loaded. Configure Ollama in <RouterLink to="/settings" class="underline">Settings</RouterLink> first.
+                </p>
+                <p v-else class="text-[10px] text-muted-foreground">Models come from your Ollama account. Pull new ones with <span class="font-mono">ollama pull</span> or on ollama.com.</p>
               </div>
             </div>
             <div class="space-y-1.5">
@@ -552,10 +625,59 @@ const agentRuns = computed(() => {
         <div v-else class="grid gap-3">
           <Card v-for="a in myAgents" :key="a.id">
             <CardContent class="pt-6 space-y-2">
+              <!-- Edit mode -->
+              <template v-if="editingAgentId === a.id">
+                <div class="grid sm:grid-cols-2 gap-3">
+                  <div class="space-y-1.5">
+                    <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Name</Label>
+                    <Input v-model="editDraft.name" maxlength="120" />
+                  </div>
+                  <div class="space-y-1.5">
+                    <div class="flex items-center gap-2">
+                      <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Model</Label>
+                      <button type="button" class="ml-auto text-[10px] text-muted-foreground hover:text-foreground" @click="loadOllamaModels">
+                        {{ ollamaModelsLoading ? 'Refreshing…' : 'Refresh' }}
+                      </button>
+                    </div>
+                    <Select v-if="ollamaModels.length > 0" v-model="editDraft.llm">
+                      <SelectTrigger><SelectValue placeholder="Pick a model" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem v-for="m in ollamaModels" :key="m.name" :value="m.name">{{ m.name }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input v-else v-model="editDraft.llm" placeholder="e.g. llama3.1:8b" />
+                  </div>
+                </div>
+                <div class="space-y-1.5">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Objective</Label>
+                  <textarea v-model="editDraft.objective" rows="3" maxlength="2000"
+                    class="w-full rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                </div>
+                <div class="space-y-1.5">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Department (optional)</Label>
+                  <Select v-if="myDepartments.length > 0" :model-value="editDraft.department || '__none__'"
+                    @update:model-value="(v: string) => editDraft.department = v === '__none__' ? '' : v">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      <SelectItem v-for="d in myDepartments" :key="d.id" :value="d.name">{{ d.name }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p v-if="editError" class="text-sm text-destructive">{{ editError }}</p>
+                <div class="flex gap-1.5 pt-1">
+                  <Button size="sm" :disabled="editSaving" @click="saveEdit(a)">{{ editSaving ? 'Saving…' : 'Save' }}</Button>
+                  <Button size="sm" variant="ghost" @click="cancelEdit">Cancel</Button>
+                </div>
+              </template>
+
+              <!-- View mode -->
+              <template v-else>
               <div class="flex items-baseline gap-2 flex-wrap">
                 <p class="font-semibold">{{ a.name }}</p>
                 <span v-if="a.department" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ a.department }}</span>
                 <span class="text-[10px] font-mono text-muted-foreground ml-auto">{{ a.llm }}</span>
+                <span v-if="!isModelAvailable(a.llm) && ollamaModels.length > 0" class="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700" title="This model is not available on your Ollama account — edit to pick one.">model missing</span>
                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
                   :class="myAgentStatusStyle[a.status]">
                   {{ a.status }}
@@ -576,6 +698,7 @@ const agentRuns = computed(() => {
                 <Button size="sm" variant="ghost" @click="toggleHistory(a)">
                   {{ historyOpen[a.id] ? 'Hide history' : 'History' }}
                 </Button>
+                <Button v-if="a.status === 'draft'" size="sm" variant="ghost" @click="openEdit(a)">Edit</Button>
 
                 <span class="ml-auto flex gap-1.5 flex-wrap">
                   <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="submitAgent(a)">Submit for review</Button>
@@ -669,6 +792,7 @@ const agentRuns = computed(() => {
                   </div>
                 </div>
               </div>
+              </template>
             </CardContent>
           </Card>
         </div>

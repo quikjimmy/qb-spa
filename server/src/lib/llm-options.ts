@@ -18,16 +18,31 @@ export const LLM_OPTIONS: LlmOption[] = [
   { id: 'ollama-mistral-7b',   label: 'Ollama — Mistral 7B',    provider: 'ollama-cloud', ollamaModel: 'mistral:7b',   availableTiers: ['ollama-free', 'company'] },
 ]
 
+// Accept either:
+//  - a known seeded id ('ollama-llama3.1-8b' → maps to 'llama3.1:8b'), or
+//  - a raw Ollama model name ('llama3.1:8b', 'granite3.3:2b-q4_K_M', …).
+// Raw names are what Ollama's /api/tags actually returns. Users pick
+// from their real model list now; the seeded ids remain for back-compat
+// with agents created before the dynamic picker.
 export function isValidLlm(id: string): boolean {
-  return LLM_OPTIONS.some(o => o.id === id)
+  if (!id || typeof id !== 'string') return false
+  if (LLM_OPTIONS.some(o => o.id === id)) return true
+  // Raw Ollama model name — lenient shape check, server will surface a
+  // specific "model not found" error at run time if it's wrong.
+  return /^[a-z0-9][a-z0-9._:/\-]{0,120}$/i.test(id)
 }
 
 export function llmAvailableForTier(id: string, tier: 'ollama-free' | 'company'): boolean {
   const opt = LLM_OPTIONS.find(o => o.id === id)
-  return !!opt && opt.availableTiers.includes(tier)
+  if (opt) return opt.availableTiers.includes(tier)
+  // Unmapped raw model — allow on ollama-free tier (user's own key/quota);
+  // company tier should go through admin approval which can re-scope.
+  return true
 }
 
 export function ollamaModelFor(id: string): string | null {
   const opt = LLM_OPTIONS.find(o => o.id === id)
-  return opt ? opt.ollamaModel : null
+  if (opt) return opt.ollamaModel
+  // Unmapped → assume the id is already a real Ollama model name.
+  return id && typeof id === 'string' ? id : null
 }
