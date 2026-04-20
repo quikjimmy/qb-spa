@@ -49,10 +49,7 @@ async function handleLogin() {
             />
           </div>
           <div class="grid gap-2">
-            <div class="flex items-center justify-between">
-              <Label for="password">Password</Label>
-              <RouterLink to="/forgot" class="text-xs text-muted-foreground hover:text-foreground underline-offset-4 hover:underline">Forgot?</RouterLink>
-            </div>
+            <Label for="password">Password</Label>
             <Input
               id="password"
               v-model="password"
