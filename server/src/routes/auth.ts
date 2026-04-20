@@ -1,7 +1,9 @@
 import { Router, type Request, type Response } from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import crypto from 'crypto'
 import db from '../db'
+import { sendEmail } from '../lib/email'
 
 const router = Router()
 
@@ -231,6 +233,93 @@ router.post('/invite/:token', (req: Request, res: Response): void => {
     token,
     user: { id: user.id, email: user.email, name: user.name, roles },
   })
+})
+
+// ── Self-serve forgot password ───────────────────────────
+// In-memory rate limit: max 3 attempts per email per 15 min.
+// Resets on server restart — good enough to discourage casual abuse.
+const forgotAttempts = new Map<string, { count: number; resetAt: number }>()
+const FORGOT_WINDOW_MS = 15 * 60 * 1000
+const FORGOT_MAX = 3
+
+function forgotRateLimited(email: string): boolean {
+  const now = Date.now()
+  const key = email.toLowerCase().trim()
+  const entry = forgotAttempts.get(key)
+  if (!entry || entry.resetAt < now) {
+    forgotAttempts.set(key, { count: 1, resetAt: now + FORGOT_WINDOW_MS })
+    return false
+  }
+  entry.count++
+  if (entry.count > FORGOT_MAX) return true
+  return false
+}
+
+router.post('/forgot', async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body as { email?: string }
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    res.status(400).json({ error: 'Valid email is required' }); return
+  }
+
+  // Always respond OK with a generic message so we don't leak which emails
+  // are registered. Rate-limit separately.
+  const GENERIC = { ok: true, message: 'If that email is registered, a reset link was sent.' }
+
+  if (forgotRateLimited(email)) {
+    // Still return generic — silent throttle.
+    res.json(GENERIC); return
+  }
+
+  const user = db.prepare(
+    'SELECT id, email, name, is_active FROM users WHERE email = ?'
+  ).get(email.toLowerCase().trim()) as { id: number; email: string; name: string; is_active: number } | undefined
+
+  if (!user || !user.is_active) { res.json(GENERIC); return }
+
+  const token = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()   // 1 hour for self-serve
+  db.prepare('UPDATE users SET reset_token = ?, reset_expires_at = ? WHERE id = ?').run(token, expiresAt, user.id)
+
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host
+  const resetUrl = `${proto}://${host}/reset/${token}`
+
+  const subject = 'Reset your Kin Home Portal password'
+  const text = [
+    `Hi ${user.name || ''},`,
+    '',
+    'We got a request to reset your Kin Home Portal password. Click the link below to pick a new one:',
+    '',
+    resetUrl,
+    '',
+    'This link expires in 1 hour. If you didn\'t request this, you can ignore this email.',
+  ].join('\n')
+
+  const html = `
+    <div style="font-family:Inter,system-ui,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0f172a">
+      <h2 style="margin:0 0 16px;font-size:20px">Reset your password</h2>
+      <p style="margin:0 0 16px;color:#475569;line-height:1.5">
+        Hi ${user.name || ''}, we got a request to reset your Kin Home Portal password.
+        Click below to pick a new one.
+      </p>
+      <p style="margin:0 0 16px"><a href="${resetUrl}" style="display:inline-block;background:#0f172a;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600">Reset password</a></p>
+      <p style="margin:0 0 16px;color:#475569;line-height:1.5;font-size:13px">
+        Or paste this URL into your browser:<br>
+        <span style="font-family:ui-monospace,monospace;color:#0f172a;word-break:break-all">${resetUrl}</span>
+      </p>
+      <p style="margin:24px 0 0;color:#94a3b8;line-height:1.5;font-size:12px">
+        This link expires in 1 hour. If you didn't request this, you can ignore this email.
+      </p>
+    </div>
+  `
+
+  // Fire-and-forget-ish: we await so we can log failures server-side, but the
+  // user still gets the generic 200 regardless of provider outcome.
+  const result = await sendEmail({ to: user.email, subject, html, text })
+  if (!result.ok) {
+    console.error(`[auth/forgot] email send failed for ${user.email} via ${result.provider}: ${result.error}`)
+  }
+  res.json(GENERIC)
 })
 
 // ── Password reset (admin-initiated) ─────────────────────
