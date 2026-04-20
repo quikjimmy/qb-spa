@@ -115,7 +115,7 @@ const myAgentStatusStyle: Record<string, string> = {
   retired: 'bg-muted text-muted-foreground/60',
 }
 
-// ─── Run once ────────────────────────────────────────────
+// ─── Test / Run ──────────────────────────────────────────
 interface RunOutcome {
   ok: boolean
   output?: string
@@ -124,27 +124,94 @@ interface RunOutcome {
   tokens_in?: number
   tokens_out?: number
   duration_ms?: number
+  run_id?: number
+}
+interface HistoryRun {
+  id: number
+  status: string
+  model: string | null
+  prompt: string | null
+  output: string | null
+  error: string | null
+  tokens_in: number | null
+  tokens_out: number | null
+  duration_ms: number | null
+  started_at: string
+  finished_at: string | null
 }
 const runningId = ref<number | null>(null)
 const runOutcomes = ref<Record<number, RunOutcome>>({})
-const openResultId = ref<number | null>(null)
+const testPrompt = ref<Record<number, string>>({})
+const testPanelOpen = ref<Record<number, boolean>>({})
+const historyOpen = ref<Record<number, boolean>>({})
+const historyRows = ref<Record<number, HistoryRun[]>>({})
+
+function ensureTestPrompt(a: UserAgent) {
+  if (testPrompt.value[a.id] === undefined) {
+    testPrompt.value = { ...testPrompt.value, [a.id]: a.objective }
+  }
+}
+
+function openTestPanel(a: UserAgent) {
+  ensureTestPrompt(a)
+  testPanelOpen.value = { ...testPanelOpen.value, [a.id]: !testPanelOpen.value[a.id] }
+}
 
 async function runAgentOnce(a: UserAgent) {
+  ensureTestPrompt(a)
   runningId.value = a.id
   try {
-    const res = await fetch(`/api/user-agents/${a.id}/run-once`, { method: 'POST', headers: hdrs() })
+    const res = await fetch(`/api/user-agents/${a.id}/run-once`, {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({ prompt: testPrompt.value[a.id] }),
+    })
     const data = await res.json().catch(() => ({} as RunOutcome))
     runOutcomes.value = { ...runOutcomes.value, [a.id]: data }
-    openResultId.value = a.id
-    // refresh counters so the UI shows the newly-bumped usage
+    testPanelOpen.value = { ...testPanelOpen.value, [a.id]: true }
     await Promise.all([loadMyAgents(), loadMyBudget()])
+    // if history was open, refresh it
+    if (historyOpen.value[a.id]) await loadHistory(a)
   } finally { runningId.value = null }
 }
 
-function fmtDuration(ms?: number) {
+function resetPromptToObjective(a: UserAgent) {
+  testPrompt.value = { ...testPrompt.value, [a.id]: a.objective }
+}
+
+async function loadHistory(a: UserAgent) {
+  const res = await fetch(`/api/user-agents/${a.id}/runs?limit=20`, { headers: hdrs() })
+  if (res.ok) historyRows.value = { ...historyRows.value, [a.id]: (await res.json()).rows || [] }
+}
+
+async function toggleHistory(a: UserAgent) {
+  const willOpen = !historyOpen.value[a.id]
+  historyOpen.value = { ...historyOpen.value, [a.id]: willOpen }
+  if (willOpen) await loadHistory(a)
+}
+
+function replayHistoryPrompt(a: UserAgent, run: HistoryRun) {
+  if (!run.prompt) return
+  testPrompt.value = { ...testPrompt.value, [a.id]: run.prompt }
+  testPanelOpen.value = { ...testPanelOpen.value, [a.id]: true }
+}
+
+function fmtDuration(ms?: number | null) {
   if (ms == null) return ''
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
+}
+
+function fmtRunTime(iso: string) {
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
+  if (isNaN(d.getTime())) return iso
+  const mins = Math.round((Date.now() - d.getTime()) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.round(hrs / 24)
+  return `${days}d ago`
 }
 
 onMounted(() => { loadMyAgents(); loadLlms(); loadMyBudget(); loadMyDepartments() })
@@ -501,37 +568,105 @@ const agentRuns = computed(() => {
                 Cap: {{ a.monthly_token_cap.toLocaleString() }} tok/mo ·
                 Used: {{ a.tokens_used_month.toLocaleString() }}
               </p>
-              <div class="flex gap-1.5 flex-wrap pt-1">
-                <Button v-if="['draft','approved'].includes(a.status)" size="sm" :disabled="runningId === a.id" @click="runAgentOnce(a)">
-                  {{ runningId === a.id ? 'Running…' : 'Run once' }}
+              <!-- Primary actions — Test is the headline interaction -->
+              <div class="flex gap-1.5 flex-wrap pt-1 items-center">
+                <Button v-if="a.status !== 'retired'" size="sm" @click="openTestPanel(a)">
+                  {{ testPanelOpen[a.id] ? 'Hide test' : 'Test / refine' }}
                 </Button>
-                <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="submitAgent(a)">Submit for review</Button>
-                <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="deleteAgent(a)">Delete</Button>
-                <Button v-if="a.status === 'approved'" size="sm" variant="outline" @click="pauseAgent(a)">Pause</Button>
-                <Button v-if="a.status === 'paused'" size="sm" @click="resumeAgent(a)">Resume</Button>
-                <Button v-if="['approved','paused'].includes(a.status)" size="sm" variant="ghost" @click="retireAgent(a)">Retire</Button>
-                <Button v-if="runOutcomes[a.id]" size="sm" variant="ghost"
-                  @click="openResultId = openResultId === a.id ? null : a.id">
-                  {{ openResultId === a.id ? 'Hide result' : 'Show result' }}
+                <Button size="sm" variant="ghost" @click="toggleHistory(a)">
+                  {{ historyOpen[a.id] ? 'Hide history' : 'History' }}
                 </Button>
+
+                <span class="ml-auto flex gap-1.5 flex-wrap">
+                  <Button v-if="a.status === 'draft'" size="sm" variant="outline" @click="submitAgent(a)">Submit for review</Button>
+                  <Button v-if="a.status === 'draft'" size="sm" variant="ghost" @click="deleteAgent(a)">Delete</Button>
+                  <Button v-if="a.status === 'approved'" size="sm" variant="outline" @click="pauseAgent(a)">Pause</Button>
+                  <Button v-if="a.status === 'paused'" size="sm" @click="resumeAgent(a)">Resume</Button>
+                  <Button v-if="['approved','paused'].includes(a.status)" size="sm" variant="ghost" @click="retireAgent(a)">Retire</Button>
+                </span>
               </div>
 
-              <!-- Run result panel -->
-              <div v-if="openResultId === a.id && runOutcomes[a.id]" class="mt-3 rounded-lg border p-3 space-y-2 text-sm"
-                :class="runOutcomes[a.id]!.ok ? 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900' : 'bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-900'">
-                <div v-if="runOutcomes[a.id]!.ok" class="space-y-2">
-                  <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-800 dark:text-emerald-300">
-                    <span>Output</span>
-                    <span class="font-mono normal-case">{{ runOutcomes[a.id]!.model }}</span>
-                    <span class="ml-auto text-muted-foreground tabular-nums">
-                      {{ runOutcomes[a.id]!.tokens_in }} in · {{ runOutcomes[a.id]!.tokens_out }} out · {{ fmtDuration(runOutcomes[a.id]!.duration_ms) }}
-                    </span>
+              <!-- Test panel -->
+              <div v-if="testPanelOpen[a.id]" class="mt-3 rounded-lg border bg-muted/20 p-3 space-y-3">
+                <div class="space-y-1.5">
+                  <div class="flex items-center gap-2">
+                    <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Test prompt</Label>
+                    <button type="button" class="ml-auto text-[10px] text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+                      @click="resetPromptToObjective(a)">
+                      Reset to objective
+                    </button>
                   </div>
-                  <pre class="text-sm whitespace-pre-wrap font-sans text-foreground">{{ runOutcomes[a.id]!.output }}</pre>
+                  <textarea v-model="testPrompt[a.id]" rows="3"
+                    class="w-full rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    placeholder="Ask the agent anything. Defaults to its objective — tweak here to try variations without editing the saved agent."
+                    @keydown.ctrl.enter="runAgentOnce(a)"
+                    @keydown.meta.enter="runAgentOnce(a)" />
+                  <p class="text-[10px] text-muted-foreground">⌘/Ctrl+Enter runs · soft-capped at 500 output tokens</p>
                 </div>
-                <div v-else class="space-y-1">
-                  <p class="font-medium text-red-800 dark:text-red-300">✗ Run failed</p>
-                  <p class="text-[12px] text-red-700 dark:text-red-400">{{ runOutcomes[a.id]!.error }}</p>
+                <div class="flex items-center gap-2">
+                  <Button size="sm" :disabled="runningId === a.id || !testPrompt[a.id]?.trim()" @click="runAgentOnce(a)">
+                    {{ runningId === a.id ? 'Running…' : 'Run' }}
+                  </Button>
+                </div>
+
+                <!-- Latest outcome -->
+                <div v-if="runOutcomes[a.id]" class="rounded-md border p-3 space-y-2 text-sm"
+                  :class="runOutcomes[a.id]!.ok ? 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900' : 'bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-900'">
+                  <div v-if="runOutcomes[a.id]!.ok" class="space-y-2">
+                    <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-800 dark:text-emerald-300">
+                      <span>Output</span>
+                      <span class="font-mono normal-case">{{ runOutcomes[a.id]!.model }}</span>
+                      <span class="ml-auto text-muted-foreground tabular-nums">
+                        {{ runOutcomes[a.id]!.tokens_in }} in · {{ runOutcomes[a.id]!.tokens_out }} out · {{ fmtDuration(runOutcomes[a.id]!.duration_ms) }}
+                      </span>
+                    </div>
+                    <pre class="text-sm whitespace-pre-wrap font-sans text-foreground">{{ runOutcomes[a.id]!.output }}</pre>
+                  </div>
+                  <div v-else class="space-y-1">
+                    <p class="font-medium text-red-800 dark:text-red-300">✗ Run failed</p>
+                    <p class="text-[12px] text-red-700 dark:text-red-400">{{ runOutcomes[a.id]!.error }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- History panel -->
+              <div v-if="historyOpen[a.id]" class="mt-3 rounded-lg border bg-card p-3 space-y-2">
+                <div class="flex items-center gap-2">
+                  <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Recent runs</p>
+                  <span class="text-[10px] text-muted-foreground">({{ (historyRows[a.id] || []).length }})</span>
+                  <button type="button" class="ml-auto text-[10px] text-muted-foreground hover:text-foreground" @click="loadHistory(a)">Refresh</button>
+                </div>
+                <div v-if="(historyRows[a.id] || []).length === 0" class="text-xs text-muted-foreground py-3 text-center">
+                  No runs yet. Hit Test / refine above to make one.
+                </div>
+                <div v-else class="space-y-1.5 max-h-[360px] overflow-y-auto">
+                  <div v-for="r in (historyRows[a.id] || [])" :key="r.id" class="rounded-md border p-2 text-[12px] space-y-1">
+                    <div class="flex items-center gap-2 text-[10px] text-muted-foreground flex-wrap">
+                      <span class="inline-flex items-center rounded px-1.5 py-0.5 font-semibold capitalize"
+                        :class="r.status === 'completed' ? 'bg-emerald-100 text-emerald-700'
+                          : r.status === 'failed' ? 'bg-red-100 text-red-700'
+                          : 'bg-amber-100 text-amber-700'">
+                        {{ r.status }}
+                      </span>
+                      <span class="font-mono">{{ r.model }}</span>
+                      <span>{{ fmtRunTime(r.started_at) }}</span>
+                      <span v-if="r.duration_ms != null">· {{ fmtDuration(r.duration_ms) }}</span>
+                      <span v-if="r.tokens_in != null" class="tabular-nums">· {{ r.tokens_in }} in / {{ r.tokens_out }} out</span>
+                      <button type="button" class="ml-auto text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+                        :disabled="!r.prompt" @click="replayHistoryPrompt(a, r)">
+                        Reuse prompt
+                      </button>
+                    </div>
+                    <div v-if="r.prompt" class="text-[11px] text-muted-foreground">
+                      <span class="font-semibold">Prompt:</span>
+                      <span class="whitespace-pre-wrap">{{ r.prompt.length > 240 ? r.prompt.slice(0, 240) + '…' : r.prompt }}</span>
+                    </div>
+                    <div v-if="r.output" class="text-[12px]">
+                      <span class="text-muted-foreground font-semibold">Output:</span>
+                      <pre class="whitespace-pre-wrap font-sans">{{ r.output.length > 600 ? r.output.slice(0, 600) + '…' : r.output }}</pre>
+                    </div>
+                    <div v-if="r.error" class="text-[11px] text-red-700">{{ r.error }}</div>
+                  </div>
                 </div>
               </div>
             </CardContent>

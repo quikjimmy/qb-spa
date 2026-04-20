@@ -221,6 +221,15 @@ db.exec(`
   )
 `)
 
+// Additive: prompt + output for user-triggered runs (test iterations).
+// Guarded via PRAGMA to be idempotent on upgraded DBs.
+{
+  const cols = db.prepare(`PRAGMA table_info(agent_runs)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('prompt')) db.exec(`ALTER TABLE agent_runs ADD COLUMN prompt TEXT`)
+  if (!names.has('output')) db.exec(`ALTER TABLE agent_runs ADD COLUMN output TEXT`)
+}
+
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent, started_at DESC)`)
 

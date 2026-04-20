@@ -223,6 +223,26 @@ router.delete('/:id', (req: Request, res: Response): void => {
   res.json({ ok: true })
 })
 
+// GET /api/user-agents/:id/runs — last N runs for a user agent
+router.get('/:id/runs', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  const agent = db.prepare(`SELECT user_id FROM user_agents WHERE id = ?`).get(id) as { user_id: number } | undefined
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
+  if (agent.user_id !== req.user!.userId && !req.user!.roles.includes('admin')) {
+    res.status(403).json({ error: 'Not your agent' }); return
+  }
+  const limit = Math.min(parseInt(String(req.query['limit'] || '20'), 10) || 20, 100)
+  const rows = db.prepare(
+    `SELECT id, status, trigger, model, prompt, output, error,
+            tokens_in, tokens_out, duration_ms, started_at, finished_at
+     FROM agent_runs
+     WHERE agent = ?
+     ORDER BY started_at DESC
+     LIMIT ?`
+  ).all(`user-agent-${id}`, limit)
+  res.json({ rows })
+})
+
 // ── Run Once ─────────────────────────────────────────────
 // Sends the agent's objective straight to Ollama as a single user message,
 // returns the response + token counts, logs to agent_runs, and increments
@@ -232,13 +252,18 @@ router.delete('/:id', (req: Request, res: Response): void => {
 router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> => {
   const id = parseInt(String(req.params['id']), 10)
   const userId = req.user!.userId
+  const { prompt: promptOverride } = (req.body || {}) as { prompt?: string }
 
   const agent = db.prepare(`SELECT * FROM user_agents WHERE id = ?`).get(id) as UserAgentRow | undefined
   if (!agent) { res.status(404).json({ error: 'Agent not found' }); return }
   if (agent.user_id !== userId) { res.status(403).json({ error: 'Not your agent' }); return }
-  if (!['draft', 'approved'].includes(agent.status)) {
-    res.status(400).json({ error: `Agents in status '${agent.status}' cannot be run.` }); return
+  // Owners can iterate while in any status except 'retired'. Draft is the
+  // sandbox, submitted still accepts tests while admin reviews, approved is
+  // production, paused stops *automatic* runs but allows manual.
+  if (agent.status === 'retired') {
+    res.status(400).json({ error: 'Retired agents cannot be run.' }); return
   }
+  const effectivePrompt = (promptOverride && promptOverride.trim()) ? promptOverride.trim() : agent.objective
 
   // Budget checks — both the agent cap and the user-wide cap must allow the run.
   ensureUserBudget(userId)
@@ -268,8 +293,8 @@ router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> 
 
   // Register the run row up-front so we can track in-progress + failures.
   const runInsert = db.prepare(
-    `INSERT INTO agent_runs (agent, trigger, status, model) VALUES (?, 'manual', 'running', ?)`
-  ).run(`user-agent-${agent.id}`, modelName)
+    `INSERT INTO agent_runs (agent, trigger, status, model, prompt) VALUES (?, 'manual', 'running', ?, ?)`
+  ).run(`user-agent-${agent.id}`, modelName, effectivePrompt.slice(0, 8000))
   const runId = Number(runInsert.lastInsertRowid)
 
   const result = await ollamaChat({
@@ -278,7 +303,7 @@ router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> 
     model: modelName,
     messages: [
       { role: 'system', content: `You are a user-built agent. Your objective: ${agent.objective}` },
-      { role: 'user', content: agent.objective },
+      { role: 'user', content: effectivePrompt },
     ],
     maxOutputTokens: 500,
     timeoutMs: 30_000,
@@ -300,8 +325,8 @@ router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> 
   const commit = db.transaction(() => {
     db.prepare(
       `UPDATE agent_runs SET status='completed', finished_at=datetime('now'),
-              duration_ms=?, tokens_in=?, tokens_out=? WHERE id = ?`
-    ).run(result.duration_ms ?? 0, tokensIn, tokensOut, runId)
+              duration_ms=?, tokens_in=?, tokens_out=?, output=? WHERE id = ?`
+    ).run(result.duration_ms ?? 0, tokensIn, tokensOut, (result.output || '').slice(0, 16_000), runId)
     db.prepare(
       `UPDATE user_agents SET tokens_used_month = tokens_used_month + ?,
               updated_at=datetime('now') WHERE id = ?`
