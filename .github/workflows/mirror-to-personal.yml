@@ -1,0 +1,27 @@
+name: Mirror main to quikjimmy/qb-spa
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: mirror-main
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push main to personal mirror
+        env:
+          MIRROR_TOKEN: ${{ secrets.PERSONAL_MIRROR_TOKEN }}
+        run: |
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo "PERSONAL_MIRROR_TOKEN secret is not set; skipping mirror."
+            exit 0
+          fi
+          git remote add personal "https://x-access-token:${MIRROR_TOKEN}@github.com/quikjimmy/qb-spa.git"
+          git push personal main
