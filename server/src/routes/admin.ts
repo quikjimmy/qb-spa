@@ -5,9 +5,40 @@ import { getRecordFilterForRole } from '../middleware/auth'
 
 const router = Router()
 
+const APP_ROLE_NAMES = ['admin', 'Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep']
+
+function normalizeAppRoleName(role: string): string {
+  const trimmed = String(role || '').trim()
+  const legacy: Record<string, string> = {
+    customer: 'Customer',
+    crew: 'Field Ops',
+    lender: 'Customer Support',
+  }
+  return legacy[trimmed] || trimmed
+}
+
+function ensureAppRoles(): void {
+  const descriptions: Record<string, string> = {
+    admin: 'Full access to all portal features and settings',
+    'Internal Ops': 'Internal operations team member',
+    'Customer Support': 'Customer support and service workflows',
+    'Field Ops': 'Field operations team member',
+    Customer: 'Customer portal access',
+    'Sales Manager': 'Sales management access',
+    'Sales Rep': 'Sales representative access',
+  }
+  const stmt = db.prepare(
+    `INSERT INTO roles (name, description, is_system)
+     VALUES (?, ?, 1)
+     ON CONFLICT(name) DO UPDATE SET description = excluded.description, is_system = 1`
+  )
+  for (const name of APP_ROLE_NAMES) stmt.run(name, descriptions[name] || '')
+}
+
 // --- Create user (admin invite flow) ---
 
 router.post('/users', (req: Request, res: Response): void => {
+  ensureAppRoles()
   const { email, name, roles } = req.body as {
     email?: string; name?: string; roles?: string[]
   }
@@ -35,7 +66,9 @@ router.post('/users', (req: Request, res: Response): void => {
     const assignRole = db.prepare(
       'INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = ?'
     )
-    const roleList = roles && roles.length > 0 ? roles : ['customer']
+    const roleList = roles && roles.length > 0
+      ? [...new Set(roles.map(normalizeAppRoleName))]
+      : ['Customer']
     for (const roleName of roleList) {
       assignRole.run(userId, roleName)
     }
@@ -57,7 +90,22 @@ router.post('/users', (req: Request, res: Response): void => {
 // --- Roles CRUD ---
 
 router.get('/roles', (_req: Request, res: Response): void => {
-  const roles = db.prepare('SELECT * FROM roles ORDER BY is_system DESC, name').all()
+  ensureAppRoles()
+  const placeholders = APP_ROLE_NAMES.map(() => '?').join(', ')
+  const roles = db.prepare(
+    `SELECT * FROM roles
+     WHERE name IN (${placeholders})
+     ORDER BY CASE name
+       WHEN 'admin' THEN 0
+       WHEN 'Internal Ops' THEN 1
+       WHEN 'Customer Support' THEN 2
+       WHEN 'Field Ops' THEN 3
+       WHEN 'Customer' THEN 4
+       WHEN 'Sales Manager' THEN 5
+       WHEN 'Sales Rep' THEN 6
+       ELSE 99
+     END`
+  ).all(...APP_ROLE_NAMES)
   res.json({ roles })
 })
 
@@ -117,7 +165,9 @@ router.get('/users', (_req: Request, res: Response): void => {
       name: u.name,
       is_active: u.is_active,
       created_at: u.created_at,
-      roles: u.role_names ? u.role_names.split(',') : [],
+      roles: u.role_names
+        ? [...new Set(u.role_names.split(',').map(normalizeAppRoleName).filter(r => APP_ROLE_NAMES.includes(r)))]
+        : [],
       departments: u.dept_pairs
         ? u.dept_pairs.split(',').map(p => { const [id, ...rest] = p.split(':'); return { id: Number(id), name: rest.join(':') } })
         : [],
@@ -126,11 +176,18 @@ router.get('/users', (_req: Request, res: Response): void => {
 })
 
 router.put('/users/:id/roles', (req: Request, res: Response): void => {
-  const userId = parseInt(req.params['id']!, 10)
+  ensureAppRoles()
+  const userId = parseInt(String(req.params['id']), 10)
   const { roles } = req.body as { roles: string[] }
 
   if (!Array.isArray(roles)) {
     res.status(400).json({ error: 'roles must be an array of role names' })
+    return
+  }
+  const normalizedRoles = [...new Set(roles.map(normalizeAppRoleName))]
+  const invalid = normalizedRoles.filter(role => !APP_ROLE_NAMES.includes(role))
+  if (invalid.length) {
+    res.status(400).json({ error: `Unsupported role(s): ${invalid.join(', ')}` })
     return
   }
 
@@ -146,7 +203,7 @@ router.put('/users/:id/roles', (req: Request, res: Response): void => {
       INSERT INTO user_roles (user_id, role_id)
       SELECT ?, id FROM roles WHERE name = ?
     `)
-    for (const roleName of roles) {
+    for (const roleName of normalizedRoles) {
       insert.run(userId, roleName)
     }
   })
@@ -158,7 +215,14 @@ router.put('/users/:id/roles', (req: Request, res: Response): void => {
     WHERE ur.user_id = ?
   `).all(userId) as Array<{ name: string }>
 
-  res.json({ roles: updatedRoles.map(r => r.name) })
+  const saved = updatedRoles.map(r => r.name)
+  const missing = normalizedRoles.filter(role => !saved.includes(role))
+  if (missing.length) {
+    res.status(500).json({ error: `Failed to save role(s): ${missing.join(', ')}`, roles: saved })
+    return
+  }
+
+  res.json({ roles: saved })
 })
 
 router.post('/users/:id/password-reset', (req: Request, res: Response): void => {
@@ -179,7 +243,7 @@ router.post('/users/:id/password-reset', (req: Request, res: Response): void => 
 })
 
 router.put('/users/:id/active', (req: Request, res: Response): void => {
-  const userId = parseInt(req.params['id']!, 10)
+  const userId = parseInt(String(req.params['id']), 10)
   const { is_active } = req.body
   db.prepare('UPDATE users SET is_active = ? WHERE id = ?').run(is_active ? 1 : 0, userId)
   res.json({ success: true })
@@ -271,7 +335,7 @@ router.delete('/permissions/:id', (req: Request, res: Response): void => {
 
 // Get effective permissions for a user (resolved through all their roles)
 router.get('/users/:id/permissions', (req: Request, res: Response): void => {
-  const userId = parseInt(req.params['id']!, 10)
+  const userId = parseInt(String(req.params['id']), 10)
 
   const perms = db.prepare(`
     SELECT p.resource_type, p.resource_id,
@@ -630,15 +694,31 @@ router.put('/users/:id/departments', (req: Request, res: Response): void => {
   const userId = parseInt(String(req.params['id']), 10)
   const { department_ids } = req.body as { department_ids?: number[] }
   if (!Array.isArray(department_ids)) { res.status(400).json({ error: 'department_ids must be an array' }); return }
+  const user = db.prepare(`SELECT id FROM users WHERE id = ?`).get(userId)
+  if (!user) { res.status(404).json({ error: 'User not found' }); return }
+  const cleanIds = [...new Set(department_ids.filter(id => typeof id === 'number' && Number.isFinite(id)))]
+  if (cleanIds.length) {
+    const placeholders = cleanIds.map(() => '?').join(', ')
+    const found = db.prepare(`SELECT id FROM departments WHERE id IN (${placeholders})`).all(...cleanIds) as Array<{ id: number }>
+    if (found.length !== cleanIds.length) {
+      res.status(400).json({ error: 'One or more departments do not exist' })
+      return
+    }
+  }
   const txn = db.transaction(() => {
     db.prepare(`DELETE FROM user_departments WHERE user_id = ?`).run(userId)
     const ins = db.prepare(`INSERT OR IGNORE INTO user_departments (user_id, department_id) VALUES (?, ?)`)
-    for (const dId of department_ids) {
-      if (typeof dId === 'number' && Number.isFinite(dId)) ins.run(userId, dId)
-    }
+    for (const dId of cleanIds) ins.run(userId, dId)
   })
   txn()
-  res.json({ ok: true })
+  const rows = db.prepare(
+    `SELECT d.id, d.name
+     FROM departments d
+     JOIN user_departments ud ON ud.department_id = d.id
+     WHERE ud.user_id = ?
+     ORDER BY d.name`
+  ).all(userId)
+  res.json({ ok: true, departments: rows })
 })
 
 router.get('/caches', (_req: Request, res: Response): void => {

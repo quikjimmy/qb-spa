@@ -10,6 +10,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+import { fmtDate, fmtDateLong as fmtDateFull, daysBetween, timeAgo, localTodayIso, localDateKey } from '@/lib/dates'
 
 const auth = useAuthStore()
 
@@ -72,9 +73,7 @@ function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type'
 
 async function loadTickets() {
   loading.value = true
-  const now = new Date()
-  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  const params = new URLSearchParams({ limit: '100', pivot: pivotDimension.value, today: localToday })
+  const params = new URLSearchParams({ limit: '100', pivot: pivotDimension.value, today: localTodayIso() })
   if (search.value.trim()) params.set('q', search.value.trim())
   if (dueFilter.value) params.set('due', dueFilter.value)
   if (fPriority.value) params.set('priority', fPriority.value)
@@ -160,14 +159,13 @@ function pBorder(p: string) { return priorityBorder[p] || 'border-l-muted-foregr
 
 function dueStatus(d: string): { label: string; cls: string } {
   if (!d || d === '' || d === '0') return { label: '', cls: '' }
-  const today = new Date().toISOString().split('T')[0]!
-  const due = d.split('T')[0]!
+  const today = localTodayIso()
+  const due = localDateKey(d)
+  if (!due) return { label: '', cls: '' }
   if (due < today) return { label: 'Past Due', cls: 'bg-red-100 text-red-700' }
   if (due === today) return { label: 'Due Today', cls: 'bg-amber-100 text-amber-700' }
   return { label: 'On Track', cls: 'bg-emerald-100 text-emerald-700' }
 }
-
-import { fmtDate, fmtDateLong as fmtDateFull, daysBetween, timeAgo } from '@/lib/dates'
 
 function daysPastDue(d: string): number { return Math.max(0, daysBetween(d)) }
 function ticketAge(d: string): number { return Math.max(0, daysBetween(d)) }

@@ -3,6 +3,7 @@ import db from '../db'
 import { runHoldClassifier, HOLD_AGENT_NAME } from '../agents/runner'
 import { classifyHoldProject, type HoldProject } from '../agents/holdClassifier'
 import { fetchProjectNotes } from '../agents/notesFetcher'
+import { dispatchRoleTask } from '../agents/taskDispatcher'
 
 const router = Router()
 
@@ -116,8 +117,20 @@ router.post('/hold-classifier/dry-run', async (req: Request, res: Response): Pro
 
 router.post('/hold-classifier/run', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const result = await runHoldClassifier('manual')
-    res.json({ ok: true, agent: HOLD_AGENT_NAME, ...result })
+    const role = db.prepare(`SELECT id FROM agent_roles WHERE slug = 'pc-risk-hold-worker'`).get() as { id: number } | undefined
+    const task = db.prepare(`SELECT id FROM agent_role_tasks WHERE agent_role_id = ? AND name = 'Hold classification'`).get(role?.id || 0) as { id: number } | undefined
+    if (role && task) {
+      const result = await dispatchRoleTask({
+        agentRoleId: role.id,
+        taskId: task.id,
+        trigger: 'manual',
+        payload: { source: 'legacy_admin_route' },
+      })
+      res.json({ ok: true, agent: HOLD_AGENT_NAME, migrated: true, ...result })
+      return
+    }
+    const fallback = await runHoldClassifier('manual')
+    res.json({ ok: true, agent: HOLD_AGENT_NAME, migrated: false, ...fallback })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     res.status(500).json({ ok: false, error: msg })

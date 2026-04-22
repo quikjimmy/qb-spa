@@ -68,20 +68,21 @@ const allPermissions = ref<Permission[]>([])
 
 // Invite user
 const inviteForm = ref({ name: '', email: '' })
-const inviteRoles = ref<Set<string>>(new Set(['customer']))
+const inviteRoles = ref<Set<string>>(new Set(['Customer']))
 const inviteError = ref('')
 const inviteSubmitting = ref(false)
 const lastInviteLink = ref('')
 const inviteCopied = ref(false)
+const basicRoleOptions = ['Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep']
 
-// Edit roles dialog
-const editDialog = ref(false)
-const editingUser = ref<PortalUser | null>(null)
-const editingRoles = ref<Set<string>>(new Set())
-
-const editDeptDialog = ref(false)
-const editingDeptUser = ref<PortalUser | null>(null)
-const editingDeptIds = ref<Set<number>>(new Set())
+// Edit user access
+const accessDialog = ref(false)
+const accessUser = ref<PortalUser | null>(null)
+const accessRole = ref('Customer')
+const accessKeepAdmin = ref(false)
+const accessDeptIds = ref<Set<number>>(new Set())
+const accessError = ref('')
+const accessSaving = ref(false)
 
 const departments = ref<Department[]>([])
 const newDeptName = ref('')
@@ -171,7 +172,7 @@ async function inviteUser() {
     }
     lastInviteLink.value = `${window.location.origin}${data.inviteLink}`
     inviteForm.value = { name: '', email: '' }
-    inviteRoles.value = new Set(['customer'])
+    inviteRoles.value = new Set(['Customer'])
     await loadUsers()
   } finally {
     inviteSubmitting.value = false
@@ -191,31 +192,79 @@ async function copyInviteLink() {
   setTimeout(() => { inviteCopied.value = false }, 2000)
 }
 
-// ─── Edit user roles ─────────────────────────────────────
+// ─── Edit user access ────────────────────────────────────
 
-function openEditRoles(user: PortalUser) {
-  editingUser.value = user
-  editingRoles.value = new Set(user.roles)
-  editDialog.value = true
+function normalizeDisplayRole(role: string): string {
+  const legacyMap: Record<string, string> = {
+    customer: 'Customer',
+    crew: 'Field Ops',
+    lender: 'Customer Support',
+  }
+  return legacyMap[role] || role
 }
 
-function toggleEditRole(name: string) {
-  const next = new Set(editingRoles.value)
-  if (next.has(name)) next.delete(name)
-  else next.add(name)
-  editingRoles.value = next
+function primaryEditableRole(user: PortalUser): string {
+  const role = (user.roles || []).find(r => r !== 'admin') || ''
+  return normalizeDisplayRole(role)
 }
 
-async function saveUserRoles() {
-  if (!editingUser.value) return
-  await fetch(`/api/admin/users/${editingUser.value.id}/roles`, {
-    method: 'PUT',
-    headers: hdrs(),
-    body: JSON.stringify({ roles: [...editingRoles.value] }),
-  })
-  editDialog.value = false
-  editingUser.value = null
-  await loadUsers()
+function openEditAccess(user: PortalUser) {
+  accessUser.value = user
+  accessRole.value = primaryEditableRole(user) || 'Customer'
+  accessKeepAdmin.value = (user.roles || []).includes('admin')
+  accessDeptIds.value = new Set((user.departments || []).map(d => Number(d.id)))
+  accessError.value = ''
+  accessDialog.value = true
+}
+
+function setAccessDepartment(id: number, checked: boolean) {
+  const numericId = Number(id)
+  const next = new Set(accessDeptIds.value)
+  if (checked) next.add(numericId)
+  else next.delete(numericId)
+  accessDeptIds.value = next
+}
+
+async function saveUserAccess() {
+  if (!accessUser.value) return
+  accessError.value = ''
+  accessSaving.value = true
+  try {
+    const userId = accessUser.value.id
+    const rolesToSave = accessKeepAdmin.value ? ['admin', accessRole.value] : [accessRole.value]
+    const roleRes = await fetch(`/api/admin/users/${userId}/roles`, {
+      method: 'PUT',
+      headers: hdrs(),
+      body: JSON.stringify({ roles: rolesToSave }),
+    })
+    const roleData = await roleRes.json().catch(() => ({}))
+    if (!roleRes.ok) {
+      accessError.value = roleData.error || `Role save failed (${roleRes.status})`
+      return
+    }
+
+    const deptRes = await fetch(`/api/admin/users/${userId}/departments`, {
+      method: 'PUT',
+      headers: hdrs(),
+      body: JSON.stringify({ department_ids: [...accessDeptIds.value] }),
+    })
+    const deptData = await deptRes.json().catch(() => ({}))
+    if (!deptRes.ok) {
+      accessError.value = deptData.error || `Department save failed (${deptRes.status})`
+      return
+    }
+
+    const user = users.value.find(u => u.id === userId)
+    if (user) {
+      user.roles = roleData.roles || rolesToSave
+      user.departments = deptData.departments || []
+    }
+    accessDialog.value = false
+    accessUser.value = null
+    await Promise.all([loadUsers(), loadDepartments()])
+  } finally {
+    accessSaving.value = false
+  }
 }
 
 async function toggleUserActive(user: PortalUser) {
@@ -275,30 +324,6 @@ async function deleteDepartment(d: Department) {
   if (!window.confirm(`Delete department "${d.name}"? Users will lose this membership.`)) return
   await fetch(`/api/admin/departments/${d.id}`, { method: 'DELETE', headers: hdrs() })
   await Promise.all([loadDepartments(), loadUsers()])
-}
-
-function openEditDepartments(user: PortalUser) {
-  editingDeptUser.value = user
-  editingDeptIds.value = new Set((user.departments || []).map(d => d.id))
-  editDeptDialog.value = true
-}
-
-function toggleEditDepartment(id: number) {
-  const next = new Set(editingDeptIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  editingDeptIds.value = next
-}
-
-async function saveUserDepartments() {
-  if (!editingDeptUser.value) return
-  await fetch(`/api/admin/users/${editingDeptUser.value.id}/departments`, {
-    method: 'PUT', headers: hdrs(),
-    body: JSON.stringify({ department_ids: [...editingDeptIds.value] }),
-  })
-  editDeptDialog.value = false
-  editingDeptUser.value = null
-  await Promise.all([loadUsers(), loadDepartments()])
 }
 
 // ─── Roles ───────────────────────────────────────────────
@@ -856,14 +881,14 @@ onMounted(async () => {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div class="flex gap-1 flex-wrap">
+                      <div class="flex gap-2 flex-wrap items-center">
                         <Badge
                           v-for="r in u.roles"
                           :key="r"
                           :variant="r === 'admin' ? 'default' : 'secondary'"
                           class="text-xs"
                         >
-                          {{ r }}
+                          {{ normalizeDisplayRole(r) }}
                         </Badge>
                         <span v-if="u.roles.length === 0" class="text-xs text-muted-foreground italic">
                           no roles
@@ -871,7 +896,7 @@ onMounted(async () => {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div class="flex gap-1 flex-wrap">
+                      <div class="flex gap-2 flex-wrap items-center">
                         <Badge v-for="d in (u.departments || [])" :key="d.id" variant="outline" class="text-xs">
                           {{ d.name }}
                         </Badge>
@@ -891,11 +916,8 @@ onMounted(async () => {
                     </TableCell>
                     <TableCell class="text-right">
                       <div class="flex items-center justify-end gap-2 flex-wrap">
-                        <Button variant="ghost" size="sm" @click="openEditRoles(u)">
-                          Edit roles
-                        </Button>
-                        <Button variant="ghost" size="sm" @click="openEditDepartments(u)">
-                          Edit depts
+                        <Button variant="ghost" size="sm" @click="openEditAccess(u)">
+                          Edit access
                         </Button>
                         <Button variant="ghost" size="sm" @click="sendPasswordReset(u)">
                           Send reset
@@ -1699,36 +1721,77 @@ onMounted(async () => {
         </TabsContent>
       </Tabs>
 
-    <!-- Edit Roles Dialog -->
-    <Dialog v-model:open="editDialog">
-      <DialogContent class="sm:max-w-md">
+    <!-- Edit Access Dialog -->
+    <Dialog v-model:open="accessDialog">
+      <DialogContent class="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Edit Roles</DialogTitle>
-          <DialogDescription v-if="editingUser">
-            {{ editingUser.name }} &mdash; {{ editingUser.email }}
+          <DialogTitle>Edit access</DialogTitle>
+          <DialogDescription v-if="accessUser">
+            {{ accessUser.name }} &mdash; {{ accessUser.email }}
           </DialogDescription>
         </DialogHeader>
-        <div class="grid gap-2 py-2">
-          <label
-            v-for="role in roles"
-            :key="role.id"
-            class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
-            :class="editingRoles.has(role.name) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
-          >
-            <Checkbox
-              :checked="editingRoles.has(role.name)"
-              @update:checked="toggleEditRole(role.name)"
-              class="mt-0.5"
+
+        <div class="grid gap-5 py-2">
+          <p v-if="accessError" class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {{ accessError }}
+          </p>
+
+          <div class="space-y-2">
+            <Label for="access-role">Business role</Label>
+            <select
+              id="access-role"
+              v-model="accessRole"
+              class="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option v-for="roleName in basicRoleOptions" :key="roleName" :value="roleName">
+                {{ roleName }}
+              </option>
+            </select>
+          </div>
+
+          <label class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer">
+            <input
+              type="checkbox"
+              class="mt-1 h-4 w-4"
+              :checked="accessKeepAdmin"
+              @change="accessKeepAdmin = ($event.target as HTMLInputElement).checked"
             />
-            <div class="grid gap-0.5">
-              <span class="text-sm font-medium leading-none">{{ role.name }}</span>
-              <span class="text-xs text-muted-foreground">{{ role.description }}</span>
-            </div>
+            <span class="grid gap-0.5">
+              <span class="text-sm font-medium leading-none">Admin access</span>
+              <span class="text-xs text-muted-foreground">Allows this user to manage users, roles, departments, and permissions.</span>
+            </span>
           </label>
+
+          <div class="space-y-3">
+            <Label>Departments</Label>
+            <div class="grid gap-2 max-h-[42vh] overflow-y-auto pr-1">
+              <label
+                v-for="d in departments"
+                :key="d.id"
+                class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
+                :class="accessDeptIds.has(Number(d.id)) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
+              >
+                <input
+                  type="checkbox"
+                  class="mt-1 h-4 w-4"
+                  :checked="accessDeptIds.has(Number(d.id))"
+                  @change="setAccessDepartment(Number(d.id), ($event.target as HTMLInputElement).checked)"
+                />
+                <span class="grid gap-0.5">
+                  <span class="text-sm font-medium leading-none">{{ d.name }}</span>
+                  <span class="text-xs text-muted-foreground">{{ d.description || 'No description' }}</span>
+                </span>
+              </label>
+              <p v-if="departments.length === 0" class="text-sm text-muted-foreground py-4 text-center">
+                No departments yet. Create departments before assigning them.
+              </p>
+            </div>
+          </div>
         </div>
+
         <DialogFooter>
-          <Button variant="outline" @click="editDialog = false">Cancel</Button>
-          <Button @click="saveUserRoles">Save Roles</Button>
+          <Button variant="outline" @click="accessDialog = false">Cancel</Button>
+          <Button :disabled="accessSaving" @click="saveUserAccess">{{ accessSaving ? 'Saving...' : 'Save access' }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1759,41 +1822,5 @@ onMounted(async () => {
       </DialogContent>
     </Dialog>
 
-    <!-- Edit Departments Dialog -->
-    <Dialog v-model:open="editDeptDialog">
-      <DialogContent class="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Edit Departments</DialogTitle>
-          <DialogDescription v-if="editingDeptUser">
-            {{ editingDeptUser.name }} &mdash; {{ editingDeptUser.email }}
-          </DialogDescription>
-        </DialogHeader>
-        <div class="grid gap-2 py-2 max-h-[60vh] overflow-y-auto">
-          <label
-            v-for="d in departments"
-            :key="d.id"
-            class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
-            :class="editingDeptIds.has(d.id) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
-          >
-            <Checkbox
-              :checked="editingDeptIds.has(d.id)"
-              @update:checked="toggleEditDepartment(d.id)"
-              class="mt-0.5"
-            />
-            <div class="grid gap-0.5">
-              <span class="text-sm font-medium leading-none">{{ d.name }}</span>
-              <span class="text-xs text-muted-foreground">{{ d.description || '—' }}</span>
-            </div>
-          </label>
-          <p v-if="departments.length === 0" class="text-sm text-muted-foreground py-4 text-center">
-            No departments yet — create some in the Departments tab.
-          </p>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" @click="editDeptDialog = false">Cancel</Button>
-          <Button @click="saveUserDepartments">Save</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   </div>
 </template>

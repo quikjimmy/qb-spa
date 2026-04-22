@@ -55,7 +55,7 @@ const navTop = [
 ]
 
 const navBottom = [
-  { label: 'Agents', to: '/agents', icon: 'bot' },
+  { label: 'Agent Ops', to: '/agents', icon: 'bot' },
   { label: 'Tickets', to: '/tickets', icon: 'ticket' },
 ]
 

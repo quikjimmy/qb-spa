@@ -38,15 +38,30 @@ export interface ProjectMilestoneFields {
   status: string
 }
 
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function localTodayIso(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+function localDateKey(dateStr: string): string {
+  if (!dateStr) return ''
+  if (dateStr.length === 10 && !dateStr.includes('T')) return dateStr
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 function has(v: string): boolean {
   return !!v && v !== '' && v !== '0' && v !== '-'
 }
 
 function isPast(dateStr: string): boolean {
   if (!dateStr || dateStr.length < 10) return false
-  // Parse as local date to avoid UTC offset shifting the day
-  const d = dateStr.length === 10 ? new Date(dateStr + 'T23:59:59') : new Date(dateStr)
-  return d < new Date()
+  return localDateKey(dateStr) < localTodayIso()
 }
 
 export function computeMilestones(p: ProjectMilestoneFields): MilestoneStep[] {

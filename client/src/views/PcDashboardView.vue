@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, watch } from 'vue'
+import { ref, computed, inject, nextTick, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { getStatusConfig } from '@/lib/status'
+import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays } from '@/lib/dates'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
@@ -39,6 +40,12 @@ interface OutreachRecord {
   project_coordinator: string
   display_order: number
   is_unresponsive: number
+  sms_count_7d?: number
+  call_count_7d?: number
+  last_comms_at?: string
+  last_inbound_sms_at?: string
+  last_call_direction?: string
+  has_recent_inbound?: number
 }
 
 interface UnresponsiveRow {
@@ -51,6 +58,10 @@ interface UnresponsiveRow {
   blockers?: string
   pto_status?: string
   source: 'outreach' | 'pto_blocker'
+  sms_count_7d?: number
+  call_count_7d?: number
+  last_comms_at?: string
+  has_recent_inbound?: number
 }
 
 interface BlockedNem {
@@ -62,6 +73,30 @@ interface BlockedNem {
   nem_approved: string
   nem_rejected: string
   status: string
+  sms_count_7d?: number
+  call_count_7d?: number
+  last_comms_at?: string
+  has_recent_inbound?: number
+}
+
+interface BlockedPto {
+  record_id: number
+  project_rid: number
+  customer_name: string
+  coordinator: string
+  state: string
+  status: string
+  pto_status: string
+  pto_submitted: string
+  pto_approved: string
+  inspection_passed: string
+  blockers: string
+  blocker_tickets: string
+  open_tickets: number
+  sms_count_7d?: number
+  call_count_7d?: number
+  last_comms_at?: string
+  has_recent_inbound?: number
 }
 
 interface AdderNotify {
@@ -84,6 +119,44 @@ interface AdderNotify {
   sla_start_date: string
   sla_timer_days: number | null
   rep_notified_date: string
+  ops_review_note: string
+  design_callout_note: string
+}
+
+interface RecentInbound {
+  type: 'sms' | 'call'
+  source_id: string
+  project_rid: number
+  occurred_at: string
+  contact_name: string
+  preview: string
+  direction: string
+  call_state?: string
+  customer_name: string
+  coordinator: string
+  state: string
+  sms_count_7d: number
+  call_count_7d: number
+}
+
+interface CommsItem {
+  id: string
+  type: 'sms' | 'call'
+  occurred_at: string
+  direction: 'inbound' | 'outbound' | string
+  from_number: string
+  to_number: string
+  body: string | null
+  message_status: string | null
+  delivery_result: string | null
+  contact_name: string | null
+  user_name: string | null
+  call_state: string | null
+  duration_ms: number | null
+  recording_url: string | null
+  voicemail_url: string | null
+  transcription: string | null
+  missed_reason: string | null
 }
 
 const loading = ref(true)
@@ -92,6 +165,8 @@ const kpi = ref<Record<string, number>>({})
 const groups = ref<Record<string, OutreachRecord[]>>({})
 const unresponsive = ref<UnresponsiveRow[]>([])
 const blockedNem = ref<BlockedNem[]>([])
+const blockedPto = ref<BlockedPto[]>([])
+const recentInbound = ref<RecentInbound[]>([])
 const filterOptions = ref<{ coordinators: string[]; states: string[]; lenders: string[] }>({ coordinators: [], states: [], lenders: [] })
 const cacheInfo = ref<{ total: number; last_refresh: string } | null>(null)
 
@@ -103,10 +178,17 @@ const search = ref('')
 const showFilters = ref(false)
 const showAnalytics = ref(false)
 const expandedStages = ref<Record<string, boolean>>({})
-const expandedExceptions = ref<Record<string, boolean>>({ unresponsive: false, blockedNem: false, adders: false })
+const expandedExceptions = ref<Record<string, boolean>>({ recentInbound: false, unresponsive: false, blockedNem: false, blockedPto: false, adders: false })
 const adders = ref<AdderNotify[]>([])
 const addersCache = ref<{ total: number; last_refresh: string } | null>(null)
 const addersRefreshing = ref(false)
+const commsRefreshing = ref(false)
+const commsOpen = ref(false)
+const commsLoading = ref(false)
+const commsItems = ref<CommsItem[]>([])
+const commsProject = ref<{ record_id?: number; customer_name?: string; coordinator?: string; state?: string; status?: string } | null>(null)
+const commsSummary = ref<{ sms_count_7d: number; call_count_7d: number; last_comms_at: string } | null>(null)
+const commsScroller = ref<HTMLElement | null>(null)
 
 const useBizDays = ref(false)
 const dayUnit = computed(() => useBizDays.value ? 'biz days' : 'days')
@@ -117,10 +199,12 @@ const activePerfMilestone = ref('Initial Outreach')
 
 interface VolumeBucket { period: string; count: number; avg: number; p90: number }
 interface CoordMetric { coordinator: string; count: number; avg: number; median: number; p90: number }
-interface DrillRow { record_id: number; project_rid: number; customer_name: string; coordinator: string; outreach_completed_date: string; milestone_date: string; days: number; status: string; state: string; lender: string }
+interface DrillRow { record_id: number; project_rid: number; customer_name: string; coordinator: string; outreach_completed_date: string; milestone_date: string; days: number; status: string; state: string; lender: string; contact_method?: string }
 interface AnalyticsData { touchpoint: string; binning: string; total: number; byCoordinator: CoordMetric[]; volume: VolumeBucket[]; drillData: DrillRow[] }
 const analytics = ref<AnalyticsData | null>(null)
 const analyticsLoading = ref(false)
+const analyticsError = ref('')
+const chartRenderKey = ref(0)
 const drillLabel = ref('')
 const drillRows = ref<DrillRow[]>([])
 
@@ -135,18 +219,17 @@ const datePresets = [
 function applyPerfPreset(key: string) {
   perfDatePreset.value = key
   const t = new Date()
-  const f = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-  const to = f(t)
-  if (key === 'last_30') { const d = new Date(t); d.setDate(d.getDate()-30); perfDateFrom.value = f(d); perfDateTo.value = to }
-  else if (key === 'last_60') { const d = new Date(t); d.setDate(d.getDate()-60); perfDateFrom.value = f(d); perfDateTo.value = to }
-  else if (key === 'last_90') { const d = new Date(t); d.setDate(d.getDate()-90); perfDateFrom.value = f(d); perfDateTo.value = to }
+  const to = localTodayIso()
+  if (key === 'last_30') { perfDateFrom.value = shiftLocalDays(-29, t); perfDateTo.value = to }
+  else if (key === 'last_60') { perfDateFrom.value = shiftLocalDays(-59, t); perfDateTo.value = to }
+  else if (key === 'last_90') { perfDateFrom.value = shiftLocalDays(-89, t); perfDateTo.value = to }
   else if (key === 'this_month') { perfDateFrom.value = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-01`; perfDateTo.value = to }
   else if (key === 'this_quarter') { perfDateFrom.value = `${t.getFullYear()}-${String(Math.floor(t.getMonth()/3)*3+1).padStart(2,'0')}-01`; perfDateTo.value = to }
   else if (key === 'this_year') { perfDateFrom.value = `${t.getFullYear()}-01-01`; perfDateTo.value = to }
   loadAnalytics()
 }
 // Init default date range
-;(() => { const t = new Date(); const d = new Date(t); d.setDate(d.getDate()-90); const f = (x: Date) => `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; perfDateFrom.value = f(d); perfDateTo.value = f(t) })()
+;(() => { perfDateFrom.value = shiftLocalDays(-89); perfDateTo.value = localTodayIso() })()
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
@@ -180,6 +263,7 @@ function chipFor(stage: string) { return STAGE_CHIPS[stage] || { bar: 'bg-muted-
 async function loadData() {
   loading.value = true
   const params = new URLSearchParams()
+  params.set('today', localTodayIso())
   if (viewMode.value === 'personal' && auth.user?.name) params.set('coordinator', auth.user.name)
   else if (fCoordinator.value) params.set('coordinator', fCoordinator.value)
   if (fState.value) params.set('state', fState.value)
@@ -191,6 +275,8 @@ async function loadData() {
     groups.value = data.groups || {}
     unresponsive.value = data.exceptions?.unresponsive || []
     blockedNem.value = data.exceptions?.blockedNem || []
+    blockedPto.value = data.exceptions?.blockedPto || []
+    recentInbound.value = data.exceptions?.recentInbound || []
     filterOptions.value = data.filters || { coordinators: [], states: [], lenders: [] }
     cacheInfo.value = data.cache
   } finally { loading.value = false }
@@ -226,6 +312,15 @@ async function refreshAdders() {
   } finally { addersRefreshing.value = false }
 }
 
+async function refreshComms() {
+  commsRefreshing.value = true
+  try {
+    await fetch('/api/pc-dashboard/refresh-comms', { method: 'POST', headers: hdrs() })
+    await loadData()
+    if (commsProject.value?.record_id) await openComms(Number(commsProject.value.record_id), commsProject.value.customer_name || '')
+  } finally { commsRefreshing.value = false }
+}
+
 const activeKpi = ref('')
 function toggleStage(stage: string) { expandedStages.value = { ...expandedStages.value, [stage]: !expandedStages.value[stage] } }
 function selectKpi(stage: string) {
@@ -235,17 +330,115 @@ function selectKpi(stage: string) {
 function toggleException(key: string) { expandedExceptions.value = { ...expandedExceptions.value, [key]: !expandedExceptions.value[key] } }
 
 function fmtDate(d: string | null) {
+  return d ? fmtLocalDate(d) : ''
+}
+
+function fmtDateTime(d: string | null | undefined) {
   if (!d) return ''
   const dt = new Date(d)
   if (isNaN(dt.getTime())) return ''
-  return `${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')}`
+  return dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+function fmtMsgTime(d: string | null | undefined) {
+  if (!d) return ''
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return ''
+  return dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+function msgDay(d: string | null | undefined) {
+  if (!d) return ''
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return ''
+  const today = new Date()
+  const yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+  const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (sameDay(dt, today)) return 'Today'
+  if (sameDay(dt, yesterday)) return 'Yesterday'
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+}
+
+function timeAgo(d: string | null | undefined) {
+  if (!d) return ''
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return ''
+  const mins = Math.floor((Date.now() - dt.getTime()) / 60000)
+  if (mins < 1) return 'now'
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  return `${Math.floor(hrs / 24)}d`
+}
+
+function fmtDuration(ms: number | null | undefined) {
+  if (!ms) return '0s'
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec}s`
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`
+}
+
+function commsCount(row: { sms_count_7d?: number; call_count_7d?: number }) {
+  return (row.sms_count_7d || 0) + (row.call_count_7d || 0)
+}
+
+function callStatus(item: CommsItem) {
+  const state = (item.call_state || '').toLowerCase()
+  const direction = item.direction === 'outbound' ? 'Outbound' : 'Inbound'
+  if (state.includes('missed')) return `${direction} missed call`
+  if (state.includes('voicemail')) return `${direction} voicemail`
+  if ((item.duration_ms || 0) > 0 || state.includes('hangup') || state.includes('connected')) return `${direction} answered call`
+  return `${direction} call`
+}
+
+function callListenUrl(item: CommsItem) {
+  return item.recording_url || item.voicemail_url || ''
+}
+
+function scrollCommsToBottom() {
+  requestAnimationFrame(() => {
+    if (commsScroller.value) commsScroller.value.scrollTop = commsScroller.value.scrollHeight
+  })
+}
+
+async function openComms(projectId: number, fallbackName = '') {
+  if (!projectId) return
+  commsOpen.value = true
+  commsLoading.value = true
+  commsItems.value = []
+  commsProject.value = { record_id: projectId, customer_name: fallbackName }
+  try {
+    const res = await fetch(`/api/pc-dashboard/comms?project_id=${projectId}`, { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      commsItems.value = data.items || []
+      commsProject.value = data.project || commsProject.value
+      commsSummary.value = data.summary || null
+    }
+  } finally {
+    commsLoading.value = false
+    await nextTick()
+    scrollCommsToBottom()
+  }
+}
+
+function closeComms() {
+  commsOpen.value = false
+  commsItems.value = []
+  commsProject.value = null
+  commsSummary.value = null
 }
 
 function daysUntil(d: string | null): number | null {
   if (!d) return null
-  const dt = new Date(d)
-  if (isNaN(dt.getTime())) return null
-  return Math.round((dt.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+  const dateKey = localDateKey(d)
+  if (!dateKey) return null
+  const [y, m, day] = dateKey.split('-').map(Number)
+  const target = new Date(y, (m || 1) - 1, day || 1, 12, 0, 0, 0)
+  const today = new Date()
+  today.setHours(12, 0, 0, 0)
+  return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
 function dueBadge(d: string | null): { label: string; cls: string } {
@@ -286,6 +479,7 @@ const filteredGroups = computed(() => {
 
 async function loadAnalytics() {
   analyticsLoading.value = true
+  analyticsError.value = ''
   drillLabel.value = ''; drillRows.value = []
   const params = new URLSearchParams()
   params.set('touchpoint', activePerfMilestone.value)
@@ -294,15 +488,34 @@ async function loadAnalytics() {
   if (useBizDays.value) params.set('biz_days', '1')
   if (perfDateFrom.value) params.set('date_from', perfDateFrom.value)
   if (perfDateTo.value) params.set('date_to', perfDateTo.value)
+  params.set('today', localTodayIso())
+  params.set('tz_offset_min', String(new Date().getTimezoneOffset()))
   try {
     const res = await fetch(`/api/pc-dashboard/analytics?${params}`, { headers: hdrs() })
-    if (res.ok) analytics.value = await res.json()
+    if (!res.ok) throw new Error(`Analytics failed (${res.status})`)
+    analytics.value = await res.json()
+    await nextTick()
+    chartRenderKey.value++
+  } catch (err) {
+    analyticsError.value = err instanceof Error ? err.message : String(err)
   } finally { analyticsLoading.value = false }
 }
 
 async function refreshAnalyticsCache() {
-  await fetch('/api/pc-dashboard/refresh-analytics', { method: 'POST', headers: hdrs() })
+  analyticsError.value = ''
+  const res = await fetch('/api/pc-dashboard/refresh-analytics', { method: 'POST', headers: hdrs() })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    analyticsError.value = data?.error || `Refresh failed (${res.status})`
+  }
   await loadAnalytics()
+}
+
+async function toggleAnalytics() {
+  showAnalytics.value = !showAnalytics.value
+  if (showAnalytics.value) {
+    await loadAnalytics()
+  }
 }
 
 function selectPerfMilestone(ms: string) {
@@ -401,30 +614,41 @@ function onChartClick(params: any) {
 watch([viewMode, fCoordinator, useBizDays, activePerfMilestone], () => { if (showAnalytics.value) loadAnalytics() })
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadData(); loadAdders(); registerRefresh?.(async () => { await loadData(); await loadAdders() }) })
+onMounted(() => {
+  loadData().then(() => {
+    const projectId = Number(new URLSearchParams(window.location.search).get('commsProject') || 0)
+    if (projectId) openComms(projectId)
+  })
+  loadAdders()
+  registerRefresh?.(async () => { await loadData(); await loadAdders() })
+})
 watch([viewMode, fCoordinator], () => { loadAdders() })
 </script>
 
 <template>
   <div class="grid gap-2 sm:gap-3">
     <!-- Header (sticky) -->
-    <div class="sticky top-0 z-20 bg-background flex items-center justify-between gap-3 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
-      <div class="flex items-baseline gap-2 min-w-0">
+    <div class="sticky top-0 z-20 bg-background flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
+      <div class="flex items-baseline gap-2 min-w-0 w-full sm:w-auto">
         <h1 class="text-2xl font-semibold tracking-tight">PC Dashboard</h1>
         <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ totalOutreach }}</span>
       </div>
-      <div class="flex items-center gap-1.5 shrink-0">
+      <div class="flex items-center gap-1.5 w-full sm:w-auto overflow-x-auto no-scrollbar pb-0.5 sm:pb-0">
         <!-- PC quick filter -->
         <Select :model-value="fCoordinator || '__all__'" @update:model-value="(v: string) => { fCoordinator = v === '__all__' ? '' : v; if (fCoordinator) viewMode = 'team'; loadData() }">
-          <SelectTrigger class="h-8 w-auto min-w-[100px] text-xs"><SelectValue placeholder="All PCs" /></SelectTrigger>
-          <SelectContent><SelectItem value="__all__">All PCs</SelectItem><SelectItem v-for="c in filterOptions.coordinators" :key="c" :value="c">{{ c }}</SelectItem></SelectContent>
+          <SelectTrigger class="h-8 w-[92px] sm:w-auto sm:min-w-[100px] text-xs"><SelectValue placeholder="All PCs" /></SelectTrigger>
+          <SelectContent class="max-w-[calc(100vw-1rem)] overflow-x-hidden">
+            <SelectItem value="__all__"><span class="block max-w-[calc(100vw-4rem)] truncate">All PCs</span></SelectItem>
+            <SelectItem v-for="c in filterOptions.coordinators" :key="c" :value="c"><span class="block max-w-[calc(100vw-4rem)] truncate">{{ c }}</span></SelectItem>
+          </SelectContent>
         </Select>
         <!-- Personal / Team toggle -->
         <div class="flex rounded-md border overflow-hidden">
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'personal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'personal'; fCoordinator = ''; loadData()">Me</button>
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'team' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'team'; loadData()">Team</button>
         </div>
-        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Syncing...' : 'Sync' }}</Button>
+        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2 shrink-0" :disabled="commsRefreshing" @click="refreshComms">{{ commsRefreshing ? 'Comms...' : 'Comms' }}</Button>
+        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2 shrink-0" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Syncing...' : 'Sync' }}</Button>
       </div>
     </div>
 
@@ -445,7 +669,7 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
 
     <!-- Analytics toggle + Cal/Biz -->
     <div class="flex items-center gap-2">
-      <button class="inline-flex items-center gap-1.5 rounded-md border px-2.5 h-8 text-xs font-medium transition-colors" :class="showAnalytics ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showAnalytics = !showAnalytics; if (showAnalytics && !analytics) { refreshAnalyticsCache() }">
+      <button class="inline-flex items-center gap-1.5 rounded-md border px-2.5 h-8 text-xs font-medium transition-colors" :class="showAnalytics ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="toggleAnalytics">
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         Performance
       </button>
@@ -457,11 +681,11 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
     </div>
 
     <!-- Analytics section -->
-    <div v-if="showAnalytics" class="space-y-3">
+    <div v-if="showAnalytics" class="space-y-3 min-w-0">
       <!-- Milestone selector KPI strip -->
-      <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1">
+      <div class="flex flex-wrap sm:flex-nowrap gap-1.5 sm:overflow-x-auto sm:no-scrollbar -mx-1 px-1 min-w-0">
         <button v-for="ms in PERF_MILESTONES" :key="ms"
-          class="flex-none rounded-lg px-2.5 py-1.5 text-[9px] font-semibold uppercase tracking-wider transition-all active:scale-[0.97] whitespace-nowrap"
+          class="rounded-lg px-2.5 py-1.5 text-[9px] font-semibold uppercase tracking-wider transition-all active:scale-[0.97] min-w-0 sm:flex-none"
           :class="activePerfMilestone === ms ? 'bg-primary text-primary-foreground shadow-md' : 'bg-card/60 hover:bg-card text-muted-foreground'"
           @click="selectPerfMilestone(ms)"
         >{{ ms }}</button>
@@ -477,21 +701,23 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
       </div>
 
       <div v-if="analyticsLoading" class="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">Loading...</div>
+      <div v-else-if="analyticsError" class="rounded-xl border bg-card p-4 text-sm text-red-600">{{ analyticsError }}</div>
       <template v-else-if="analytics">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0">
           <!-- Volume chart -->
-          <div class="rounded-xl border bg-card p-4">
-            <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">{{ activePerfMilestone }} Volume</p>
+          <div class="rounded-xl border bg-card p-4 min-w-0 overflow-hidden">
+            <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 break-words">{{ activePerfMilestone }} Volume</p>
             <p class="text-[10px] text-muted-foreground mb-2">{{ analytics.total }} completed · {{ analytics.binning }}</p>
-            <VChart v-if="volumeChart" :option="volumeChart" style="height: 200px" autoresize />
+            <VChart v-if="volumeChart" :key="`volume-${chartRenderKey}`" :option="volumeChart" class="w-full min-w-0" style="height: 200px" autoresize />
             <p v-else class="text-[11px] text-muted-foreground py-4 text-center">No data for this period</p>
           </div>
 
           <!-- Time-to-event by PC -->
-          <div class="rounded-xl border bg-card p-4">
-            <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">Time to {{ activePerfMilestone }} by PC</p>
+          <div class="rounded-xl border bg-card p-4 min-w-0 overflow-hidden">
+            <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 break-words">Time to {{ activePerfMilestone }} by PC</p>
             <p class="text-[10px] text-muted-foreground mb-2">avg + P90 · {{ dayUnit }}</p>
-            <VChart v-if="timeToEventChart" :option="timeToEventChart" @click="onChartClick"
+            <VChart v-if="timeToEventChart" :key="`time-${chartRenderKey}`" :option="timeToEventChart" @click="onChartClick"
+              class="w-full min-w-0"
               :style="{ height: Math.max(120, (analytics.byCoordinator?.length || 0) * 28) + 'px' }" autoresize />
             <p v-else class="text-[11px] text-muted-foreground py-4 text-center">No data</p>
           </div>
@@ -504,11 +730,14 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
             <button class="text-[10px] text-muted-foreground hover:text-foreground" @click="drillLabel = ''; drillRows = []">Close</button>
           </div>
           <div class="divide-y max-h-[300px] overflow-y-auto">
-            <div v-for="r in drillRows" :key="r.record_id" class="px-4 py-2 flex items-center gap-3 text-[11px]">
+            <div v-for="r in drillRows" :key="r.record_id" class="px-4 py-2 flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 text-[11px] min-w-0">
               <p class="font-medium flex-1 min-w-0 truncate">{{ r.customer_name }}</p>
-              <span class="text-muted-foreground">{{ r.milestone_date?.slice(0, 10) }} → {{ r.outreach_completed_date?.slice(0, 10) }}</span>
-              <span class="font-semibold tabular-nums" :class="r.days > 7 ? 'text-red-600' : r.days > 3 ? 'text-amber-600' : 'text-emerald-600'">{{ r.days }}d</span>
-              <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ r.state }}</span>
+              <div class="flex flex-wrap items-center gap-1.5 sm:gap-3 min-w-0 text-muted-foreground">
+                <span class="min-w-0">{{ fmtDate(r.milestone_date) }} → {{ fmtDate(r.outreach_completed_date) }}</span>
+                <span class="font-semibold tabular-nums" :class="r.days > 7 ? 'text-red-600' : r.days > 3 ? 'text-amber-600' : 'text-emerald-600'">{{ r.days }}d</span>
+                <span v-if="r.contact_method" class="text-[9px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700">{{ r.contact_method }}</span>
+                <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ r.state }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -530,19 +759,25 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
     </div>
 
     <!-- Filter drawer -->
-    <div v-if="showFilters" class="rounded-xl border bg-card p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+    <div v-if="showFilters" class="rounded-xl border bg-card p-3 sm:p-4 grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 gap-3">
       <div class="space-y-1.5">
         <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label>
         <Select :model-value="fState || '__all__'" @update:model-value="(v: string) => { fState = v === '__all__' ? '' : v; loadData() }">
           <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All states" /></SelectTrigger>
-          <SelectContent><SelectItem value="__all__">All states</SelectItem><SelectItem v-for="s in filterOptions.states" :key="s" :value="s">{{ s }}</SelectItem></SelectContent>
+          <SelectContent class="max-w-[calc(100vw-1rem)] overflow-x-hidden">
+            <SelectItem value="__all__"><span class="block max-w-[calc(100vw-4rem)] truncate">All states</span></SelectItem>
+            <SelectItem v-for="s in filterOptions.states" :key="s" :value="s"><span class="block max-w-[calc(100vw-4rem)] truncate">{{ s }}</span></SelectItem>
+          </SelectContent>
         </Select>
       </div>
       <div class="space-y-1.5">
         <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Lender</Label>
         <Select :model-value="fLender || '__all__'" @update:model-value="(v: string) => { fLender = v === '__all__' ? '' : v; loadData() }">
           <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All lenders" /></SelectTrigger>
-          <SelectContent><SelectItem value="__all__">All lenders</SelectItem><SelectItem v-for="l in filterOptions.lenders" :key="l" :value="l">{{ l }}</SelectItem></SelectContent>
+          <SelectContent class="max-w-[calc(100vw-1rem)] overflow-x-hidden">
+            <SelectItem value="__all__"><span class="block max-w-[calc(100vw-4rem)] truncate">All lenders</span></SelectItem>
+            <SelectItem v-for="l in filterOptions.lenders" :key="l" :value="l"><span class="block max-w-[calc(100vw-4rem)] truncate">{{ l }}</span></SelectItem>
+          </SelectContent>
         </Select>
       </div>
       <div class="space-y-1.5" v-if="viewMode === 'team'">
@@ -600,7 +835,19 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
               </div>
 
               <!-- Right: due date + update button -->
-              <div class="flex items-center gap-2 shrink-0 sm:justify-end sm:min-w-[160px]">
+              <div class="flex items-center flex-wrap gap-1.5 sm:gap-2 shrink-0 sm:justify-end sm:min-w-[160px] min-w-0">
+                <button
+                  v-if="commsCount(r) > 0"
+                  class="relative inline-flex items-center gap-1 rounded-md h-7 px-1.5 sm:px-2 text-[10px] font-semibold bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground transition-colors shrink-0"
+                  :class="r.has_recent_inbound ? 'ring-1 ring-amber-400 text-amber-700 bg-amber-50' : ''"
+                  title="Open comms log"
+                  @click.stop="openComms(r.project_rid, r.customer_name)"
+                >
+                  <span>SMS {{ r.sms_count_7d || 0 }}</span>
+                  <span class="opacity-40">/</span>
+                  <span>Call {{ r.call_count_7d || 0 }}</span>
+                  <span v-if="r.has_recent_inbound" class="absolute -right-1 -top-1 size-2 rounded-full bg-amber-500" />
+                </button>
                 <div v-if="r.due_date || r.next_due_date">
                   <span v-if="dueBadge(r.due_date || r.next_due_date).label" class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold" :class="dueBadge(r.due_date || r.next_due_date).cls">
                     {{ dueBadge(r.due_date || r.next_due_date).label }}
@@ -608,7 +855,7 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
                   <span class="text-[10px] text-muted-foreground ml-1">{{ fmtDate(r.due_date || r.next_due_date) }}</span>
                 </div>
                 <a :href="`https://kin.quickbase.com/db/btvik5kwi?a=er&dfid=10&rid=${r.record_id}`" target="_blank" @click.stop
-                  class="inline-flex items-center justify-center rounded-md h-7 px-2.5 text-[10px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shrink-0"
+                  class="inline-flex items-center justify-center rounded-md h-7 px-2 text-[10px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shrink-0"
                 >Update</a>
               </div>
             </div>
@@ -621,6 +868,44 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
 
       <!-- ── Exception panels ── -->
       <div class="mt-3 space-y-2">
+        <!-- Recent inbound comms -->
+        <div v-if="recentInbound.length > 0" class="rounded-xl border bg-card overflow-hidden">
+          <button class="flex items-center justify-between w-full px-4 py-2.5" @click="toggleException('recentInbound')">
+            <div class="flex items-center gap-2">
+              <span class="size-2 rounded-full bg-sky-500" />
+              <span class="text-[11px] font-semibold uppercase tracking-widest text-sky-700">Recent Inbound Comms</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <Badge variant="secondary" class="text-[10px]">{{ recentInbound.length }}</Badge>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground transition-transform" :class="expandedExceptions.recentInbound ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </button>
+          <div v-if="expandedExceptions.recentInbound" class="border-t divide-y overflow-hidden">
+            <button v-for="r in recentInbound" :key="`${r.type}-${r.source_id}-${r.project_rid}`"
+              class="block w-full min-w-0 max-w-full overflow-hidden px-3 sm:px-4 py-2 text-[11px] text-left hover:bg-muted/40 transition-colors"
+              @click="openComms(r.project_rid, r.customer_name)"
+            >
+              <div class="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <div class="min-w-0 overflow-hidden">
+                  <p class="font-medium truncate">{{ r.customer_name || r.contact_name || 'Customer' }}</p>
+                  <p class="text-[10px] text-muted-foreground truncate mt-0.5">{{ r.preview }}</p>
+                </div>
+                <span class="text-[10px] text-muted-foreground shrink-0">{{ timeAgo(r.occurred_at) }}</span>
+              </div>
+              <div class="mt-1 flex max-w-full flex-wrap items-center gap-1.5 overflow-hidden">
+                <span class="inline-flex items-center rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700">SMS {{ r.sms_count_7d || 0 }}</span>
+                <span class="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">Calls {{ r.call_count_7d || 0 }}</span>
+                <span v-if="r.coordinator" class="min-w-0 max-w-[140px] truncate text-muted-foreground sm:max-w-[220px]">{{ r.coordinator }}</span>
+                <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.state }}</span>
+                <div class="flex items-center gap-1 text-[10px] font-semibold text-primary shrink-0">
+                  <span>Open</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+
         <!-- Unresponsive Customers -->
         <div v-if="unresponsive.length > 0" class="rounded-xl border bg-card overflow-hidden">
           <button class="flex items-center justify-between w-full px-4 py-2.5" @click="toggleException('unresponsive')">
@@ -645,6 +930,7 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
               <span class="text-muted-foreground shrink-0">{{ r.touchpoint_name }}</span>
               <span class="text-muted-foreground shrink-0">{{ r.project_coordinator }}</span>
               <span v-if="r.project_state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.project_state }}</span>
+              <button v-if="r.project_rid && commsCount(r) > 0" class="text-[10px] font-semibold rounded px-2 py-1 bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground" @click="openComms(r.project_rid, r.customer_name)">Comms {{ commsCount(r) }}</button>
             </div>
           </div>
         </div>
@@ -662,12 +948,42 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
             </div>
           </button>
           <div v-if="expandedExceptions.blockedNem" class="border-t divide-y">
-            <div v-for="r in blockedNem" :key="r.record_id" class="px-4 py-2 flex items-center gap-3 text-[11px]">
-              <p class="font-medium flex-1 min-w-0 truncate">{{ r.customer_name }}</p>
+            <div v-for="r in blockedNem" :key="r.record_id" class="px-4 py-2 flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-3 text-[11px]">
+              <p class="font-medium flex-[1_1_160px] min-w-0 truncate">{{ r.customer_name }}</p>
               <span class="text-muted-foreground">{{ r.coordinator }}</span>
               <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ r.state }}</span>
               <span class="text-[10px] text-muted-foreground">NEM {{ fmtDate(r.nem_submitted) }}</span>
+              <button v-if="commsCount(r) > 0" class="text-[10px] font-semibold rounded px-2 py-1 bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground" @click="openComms(r.record_id, r.customer_name)">Comms {{ commsCount(r) }}</button>
               <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(r.status).bg, getStatusConfig(r.status).text]">{{ r.status }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Blocked PTO -->
+        <div v-if="blockedPto.length > 0" class="rounded-xl border bg-card overflow-hidden">
+          <button class="flex items-center justify-between w-full px-4 py-2.5" @click="toggleException('blockedPto')">
+            <div class="flex items-center gap-2">
+              <span class="size-2 rounded-full bg-violet-500" />
+              <span class="text-[11px] font-semibold uppercase tracking-widest text-violet-700">Blocked PTO</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <Badge variant="secondary" class="text-[10px]">{{ blockedPto.length }}</Badge>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground transition-transform" :class="expandedExceptions.blockedPto ? 'rotate-180' : ''"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </button>
+          <div v-if="expandedExceptions.blockedPto" class="border-t divide-y">
+            <div v-for="r in blockedPto" :key="r.record_id" class="px-4 py-2 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 text-[11px]">
+              <div class="flex-1 min-w-0">
+                <p class="font-medium truncate">{{ r.customer_name || 'Unnamed' }}</p>
+                <p v-if="r.blockers" class="text-[10px] text-violet-700 mt-0.5 line-clamp-1">{{ r.blockers }}</p>
+              </div>
+              <span class="text-muted-foreground shrink-0">{{ r.coordinator }}</span>
+              <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.state }}</span>
+              <span v-if="r.pto_submitted" class="text-[10px] text-muted-foreground shrink-0">PTO {{ fmtDate(r.pto_submitted) }}</span>
+              <span v-else-if="r.inspection_passed" class="text-[10px] text-muted-foreground shrink-0">Insp {{ fmtDate(r.inspection_passed) }}</span>
+              <span v-if="r.open_tickets > 0" class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold bg-rose-100 text-rose-700 shrink-0">{{ r.open_tickets }} open</span>
+              <button v-if="commsCount(r) > 0" class="text-[10px] font-semibold rounded px-2 py-1 bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground" @click="openComms(r.project_rid, r.customer_name)">Comms {{ commsCount(r) }}</button>
+              <span v-if="r.status" class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold shrink-0" :class="[getStatusConfig(r.status).bg, getStatusConfig(r.status).text]">{{ r.status }}</span>
             </div>
           </div>
         </div>
@@ -688,15 +1004,16 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
           <div v-if="expandedExceptions.adders" class="border-t divide-y">
             <a v-for="r in adders" :key="r.record_id"
               :href="`https://kin.quickbase.com/db/bsaycczmf?a=dr&rid=${r.record_id}`" target="_blank"
-              class="px-4 py-2 flex items-center gap-3 text-[11px] hover:bg-muted/40 transition-colors"
+              class="px-4 py-2 flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-3 text-[11px] hover:bg-muted/40 transition-colors"
             >
-              <div class="flex-1 min-w-0">
+              <div class="flex-[1_1_180px] min-w-0">
                 <p class="font-medium truncate">{{ r.customer_name || 'Unnamed' }}</p>
                 <p class="text-[10px] text-muted-foreground truncate mt-0.5">
                   {{ r.product_name || r.product_category }}
                   <template v-if="r.qty"> · Qty {{ r.qty }}</template>
                   <template v-if="r.project_closer"> · Rep {{ r.project_closer }}</template>
                 </p>
+                <p v-if="r.ops_review_note" class="text-[10px] text-rose-700 truncate mt-0.5">{{ r.ops_review_note }}</p>
               </div>
               <span v-if="r.customer_state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.customer_state }}</span>
               <span v-if="r.adder_total" class="text-[10px] font-semibold tabular-nums shrink-0">${{ Math.round(r.adder_total).toLocaleString() }}</span>
@@ -711,5 +1028,85 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
     </template>
 
     <p v-if="cacheInfo && cacheInfo.total > 0" class="text-center text-[10px] text-muted-foreground py-1">{{ cacheInfo.total }} outreach records · synced {{ cacheInfo.last_refresh }}</p>
+
+    <!-- Comms slide-over -->
+    <div v-if="commsOpen" class="fixed inset-0 z-50">
+      <button class="absolute inset-0 bg-black/25 hidden sm:block" aria-label="Close comms" @click="closeComms" />
+      <aside class="absolute right-0 top-0 h-full w-full sm:max-w-[520px] bg-[#f2f2f7] shadow-2xl flex flex-col">
+        <header class="shrink-0 border-b border-black/10 bg-[#f9f9fb]/95 backdrop-blur px-3 py-2.5 sm:px-4 sm:py-3">
+          <div class="flex items-center justify-between gap-2">
+            <button class="rounded-full size-9 shrink-0 inline-flex items-center justify-center text-[#007aff] hover:bg-black/5" @click="closeComms" aria-label="Back">
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div class="min-w-0">
+              <h2 class="text-[15px] sm:text-base font-semibold truncate text-center sm:text-left">{{ commsProject?.customer_name || `Project ${commsProject?.record_id || ''}` }}</h2>
+              <p class="text-[10px] sm:text-[11px] text-[#6b7280] mt-0.5 truncate text-center sm:text-left">
+                <template v-if="commsProject?.record_id">#{{ commsProject.record_id }}</template>
+                <template v-if="commsProject?.coordinator"> · {{ commsProject.coordinator }}</template>
+                <template v-if="commsProject?.state"> · {{ commsProject.state }}</template>
+              </p>
+            </div>
+            <button v-if="auth.isAdmin" class="rounded-full size-9 shrink-0 inline-flex items-center justify-center text-[#007aff] hover:bg-black/5 disabled:opacity-50" :disabled="commsRefreshing" @click="refreshComms" aria-label="Sync comms">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" :class="commsRefreshing ? 'animate-spin' : ''"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+            </button>
+            <span v-else class="size-9 shrink-0" />
+          </div>
+          <div class="mt-2 flex items-center justify-center gap-1.5 text-[10px] text-[#6b7280] overflow-x-auto no-scrollbar">
+            <span class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">SMS {{ commsSummary?.sms_count_7d || 0 }} / 7d</span>
+            <span class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">Calls {{ commsSummary?.call_count_7d || 0 }} / 7d</span>
+            <span v-if="commsSummary?.last_comms_at" class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">Last {{ timeAgo(commsSummary.last_comms_at) }} ago</span>
+          </div>
+        </header>
+
+        <div ref="commsScroller" class="flex-1 overflow-y-auto px-2.5 py-3 sm:px-4 sm:py-4">
+          <div v-if="commsLoading" class="py-12 text-center text-sm text-muted-foreground">Loading comms...</div>
+          <div v-else-if="commsItems.length === 0" class="py-12 text-center text-sm text-muted-foreground">No mapped SMS or calls found for this project.</div>
+          <div v-else class="space-y-1.5">
+            <div class="text-center text-[10px] text-[#6b7280] pb-2">Kin Portal comms log from Quickbase</div>
+            <div v-for="(item, i) in commsItems" :key="`${item.type}-${item.id}-${item.occurred_at}`">
+              <div v-if="i === 0 || msgDay(item.occurred_at) !== msgDay(commsItems[i - 1]?.occurred_at)" class="py-3 text-center">
+                <span class="inline-flex rounded-full bg-black/5 px-2 py-1 text-[10px] font-semibold text-[#6b7280]">{{ msgDay(item.occurred_at) }}</span>
+              </div>
+              <div v-if="item.type === 'call'" class="py-1.5 text-center">
+                <div class="inline-flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full bg-black/[0.035] px-2.5 py-1 text-[10px] leading-snug text-[#6b7280]">
+                  <span class="font-semibold">{{ callStatus(item) }}</span>
+                  <span>{{ fmtDateTime(item.occurred_at) }}</span>
+                  <span v-if="item.duration_ms">· {{ fmtDuration(item.duration_ms) }}</span>
+                  <span v-if="item.missed_reason">· {{ item.missed_reason }}</span>
+                  <a v-if="callListenUrl(item)" :href="callListenUrl(item)" target="_blank" class="font-semibold text-[#007aff]">Listen</a>
+                </div>
+                <p v-if="item.transcription" class="mx-auto mt-1 max-w-[86%] rounded-lg bg-white/65 px-2.5 py-1.5 text-left text-[11px] leading-snug text-[#6b7280]">
+                  {{ item.transcription }}
+                </p>
+              </div>
+              <div v-else class="flex" :class="item.direction === 'outbound' ? 'justify-end' : 'justify-start'">
+                <div
+                  class="max-w-[78%] sm:max-w-[82%] px-3 py-2 text-[15px] leading-snug shadow-sm"
+                  :class="[
+                    item.direction === 'outbound'
+                      ? 'rounded-[18px] rounded-br-md bg-[#007aff] text-white'
+                      : 'rounded-[18px] rounded-bl-md bg-[#e5e5ea] text-[#111827]',
+                  ]"
+              >
+                  <div class="flex items-center gap-1.5 mb-1 text-[10px]" :class="item.direction === 'outbound' && item.type === 'sms' ? 'text-white/75' : 'text-[#6b7280]'">
+                    <span class="font-semibold uppercase tracking-wider">{{ item.type }}</span>
+                    <span>{{ fmtMsgTime(item.occurred_at) }}</span>
+                  </div>
+
+                  <template v-if="item.type === 'sms'">
+                    <p class="whitespace-pre-wrap break-words">{{ item.body || '(empty message)' }}</p>
+                    <p v-if="item.delivery_result" class="mt-1 text-[10px]" :class="item.direction === 'outbound' ? 'text-white/70' : 'text-[#6b7280]'">{{ item.delivery_result }}</p>
+                  </template>
+
+                  <p v-if="item.contact_name || item.user_name" class="mt-1 text-[10px]" :class="item.direction === 'outbound' && item.type === 'sms' ? 'text-white/65' : 'text-[#6b7280]'">
+                    {{ item.direction === 'outbound' ? (item.user_name || 'Kin Home') : (item.contact_name || 'Customer') }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
   </div>
 </template>

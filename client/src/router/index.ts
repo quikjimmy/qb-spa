@@ -68,6 +68,12 @@ const router = createRouter({
           component: () => import('../views/AgentsView.vue'),
         },
         {
+          path: 'agents/tasks/:id',
+          name: 'agent-task-editor',
+          component: () => import('../views/AgentTaskEditorView.vue'),
+          meta: { requiresAdmin: true },
+        },
+        {
           path: 'tickets',
           name: 'tickets',
           component: () => import('../views/TicketsView.vue'),

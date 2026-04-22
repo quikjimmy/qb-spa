@@ -14,6 +14,28 @@ function parseLocal(d: string): Date {
   return new Date(d)
 }
 
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+export function localTodayIso(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+export function shiftLocalDays(days: number, base = new Date()): string {
+  const d = new Date(base)
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+export function localDateKey(d: string): string {
+  if (!d || d === '0' || d === '-') return ''
+  const parsed = parseLocal(d)
+  if (isNaN(parsed.getTime())) return ''
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`
+}
+
 export function fmtDate(d: string): string {
   if (!d || d === '0' || d === '-') return ''
   try {
@@ -37,20 +59,19 @@ export function fmtDateLong(d: string): string {
 
 export function isPast(d: string): boolean {
   if (!d || d === '0' || d === '-') return false
-  const date = parseLocal(d)
-  const now = new Date()
-  // Compare date-only (ignore time)
-  return date.toDateString() < now.toDateString()
+  return localDateKey(d) < localTodayIso()
 }
 
 export function isToday(d: string): boolean {
   if (!d || d === '0' || d === '-') return false
-  return parseLocal(d).toDateString() === new Date().toDateString()
+  return localDateKey(d) === localTodayIso()
 }
 
 export function daysBetween(d: string): number {
   if (!d || d === '0') return 0
-  const date = parseLocal(d)
+  const dateKey = localDateKey(d)
+  if (!dateKey) return 0
+  const date = parseLocal(dateKey)
   const now = new Date()
   now.setHours(12, 0, 0, 0)
   return Math.floor((now.getTime() - date.getTime()) / 86400000)
