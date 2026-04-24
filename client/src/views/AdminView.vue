@@ -848,6 +848,36 @@ async function probeSubscription() {
   } finally { subBusy.value = false }
 }
 
+// Webhook deliveries viewer — shows the last N POSTs that hit our
+// /api/webhooks/dialpad endpoint, including rejected-signature / missing-
+// body ones, so we can tell "Dialpad didn't send" from "Dialpad sent but
+// we rejected".
+interface WebhookDelivery {
+  id: number
+  path: string
+  method: string
+  content_type: string | null
+  body_preview: string | null
+  signature_ok: number | null
+  inferred_kind: string | null
+  status_code: number
+  error: string | null
+  stored_event_id: number | null
+  received_at: string
+}
+const deliveries = ref<WebhookDelivery[]>([])
+const deliveriesBusy = ref(false)
+async function loadWebhookDeliveries() {
+  deliveriesBusy.value = true
+  try {
+    const res = await fetch('/api/dialpad/webhook-deliveries?limit=50', { headers: hdrs() })
+    if (res.ok) {
+      const body = await res.json()
+      deliveries.value = body.rows || []
+    }
+  } finally { deliveriesBusy.value = false }
+}
+
 // ─── Dev mirror token (paste into local .env to replay prod events) ───
 const mirrorToken = ref('')
 const mirrorUrl = ref('')
@@ -1793,10 +1823,36 @@ onMounted(async () => {
                     <span v-if="subStatus.sms_subscription_error" class="text-[10px] text-red-600 min-w-0 flex-1 truncate" :title="subStatus.sms_subscription_error">· {{ subStatus.sms_subscription_error }}</span>
                     <button v-if="!subStatus.sms_subscription_id" class="text-[10px] text-primary hover:underline shrink-0 ml-auto" :disabled="subBusy" @click="retrySms">Retry SMS</button>
                   </div>
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-2 flex-wrap">
                     <button class="text-[10px] text-muted-foreground hover:text-foreground" :disabled="subBusy" @click="probeSubscription">Probe Dialpad status</button>
+                    <button class="text-[10px] text-muted-foreground hover:text-foreground" :disabled="deliveriesBusy" @click="loadWebhookDeliveries">
+                      {{ deliveriesBusy ? 'Loading…' : 'Recent deliveries' }}
+                    </button>
                   </div>
                   <pre v-if="probeResult" class="text-[9px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-48">{{ probeResult }}</pre>
+
+                  <!-- Delivery log table — condensed columns so it's scannable
+                       on mobile. status_code + signature_ok tell the story. -->
+                  <div v-if="deliveries.length > 0" class="rounded-md border bg-background">
+                    <div class="divide-y max-h-64 overflow-y-auto">
+                      <div v-for="d in deliveries" :key="d.id" class="px-2 py-1.5 flex items-start gap-2 text-[10px]">
+                        <span class="font-mono tabular-nums text-muted-foreground shrink-0 w-10 text-right">{{ d.status_code }}</span>
+                        <span class="shrink-0 w-14 truncate">
+                          <span v-if="d.signature_ok === 1" class="text-emerald-600">sig ok</span>
+                          <span v-else-if="d.signature_ok === 0" class="text-red-600">sig bad</span>
+                          <span v-else class="text-muted-foreground">no sig</span>
+                        </span>
+                        <span class="shrink-0 w-14 truncate text-muted-foreground">{{ d.inferred_kind || '—' }}</span>
+                        <div class="flex-1 min-w-0">
+                          <p class="truncate"><span class="font-mono text-muted-foreground">{{ d.path }}</span></p>
+                          <p v-if="d.error" class="text-red-600 truncate">{{ d.error }}</p>
+                          <p v-else-if="d.body_preview" class="text-muted-foreground truncate">{{ d.body_preview }}</p>
+                        </div>
+                        <span class="shrink-0 text-muted-foreground tabular-nums">{{ fmtCacheTime(d.received_at) }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p v-else-if="!deliveriesBusy && deliveries.length === 0" class="text-[10px] text-muted-foreground">Hit "Recent deliveries" to see the last 50 POSTs that reached our webhook endpoint.</p>
                 </div>
               </div>
 

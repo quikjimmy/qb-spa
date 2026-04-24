@@ -146,23 +146,63 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
   }
 }
 
+// Record each delivery attempt so admins can tell "Dialpad isn't firing"
+// apart from "Dialpad fires but we reject". Truncates the body preview
+// aggressively — we don't need the full JWT, just enough to eyeball shape.
+function logDelivery(args: {
+  path: string; method: string; contentType: string | null; bodyPreview: string
+  signatureOk: boolean | null; inferredKind: string | null; statusCode: number
+  error: string | null; storedEventId: number | null
+}): void {
+  db.prepare(
+    `INSERT INTO dialpad_webhook_deliveries
+       (path, method, content_type, body_preview, signature_ok, inferred_kind, status_code, error, stored_event_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    args.path, args.method, args.contentType, args.bodyPreview,
+    args.signatureOk === null ? null : (args.signatureOk ? 1 : 0),
+    args.inferredKind, args.statusCode, args.error, args.storedEventId,
+  )
+  // Keep the delivery log small — trim to 500 rows so it doesn't grow forever.
+  db.prepare(`DELETE FROM dialpad_webhook_deliveries WHERE id < (SELECT MAX(id) - 499 FROM dialpad_webhook_deliveries)`).run()
+}
+
+function bodyPreviewOf(req: Request): string {
+  if (typeof req.body === 'string') return req.body.slice(0, 500)
+  if (req.body && typeof req.body === 'object') {
+    try { return JSON.stringify(req.body).slice(0, 500) } catch { return '[unserializable]' }
+  }
+  return ''
+}
+
 // Handler factory — one signed endpoint per webhook kind.
 function makeHandler(kind: 'call' | 'sms' | 'generic') {
   return (req: Request, res: Response): void => {
+    const meta = {
+      path: req.originalUrl || req.url,
+      method: req.method,
+      contentType: req.header('content-type') || null,
+      bodyPreview: bodyPreviewOf(req),
+    }
     const secret = loadWebhookSecret()
-    if (!secret) { res.status(503).json({ error: 'Webhook secret not configured' }); return }
+    if (!secret) {
+      logDelivery({ ...meta, signatureOk: null, inferredKind: kind, statusCode: 503, error: 'Webhook secret not configured', storedEventId: null })
+      res.status(503).json({ error: 'Webhook secret not configured' }); return
+    }
     const token = extractJwt(req)
-    if (!token) { res.status(400).json({ error: 'Missing JWT payload' }); return }
+    if (!token) {
+      logDelivery({ ...meta, signatureOk: null, inferredKind: kind, statusCode: 400, error: 'Missing JWT payload', storedEventId: null })
+      res.status(400).json({ error: 'Missing JWT payload' }); return
+    }
     let decoded: Record<string, unknown>
     try {
       decoded = jwt.verify(token, secret, { algorithms: ['HS256'] }) as Record<string, unknown>
     } catch (e) {
-      // Intentionally vague — don't leak why verification failed.
+      const msg = e instanceof Error ? e.message : String(e)
+      logDelivery({ ...meta, signatureOk: false, inferredKind: kind, statusCode: 401, error: `JWT verify: ${msg}`, storedEventId: null })
       res.status(401).json({ error: 'Invalid webhook signature' })
       return
     }
-    // Dialpad nests the actual payload under various keys depending on product;
-    // check `payload`, fall through to the decoded JWT claims themselves.
     const payload = ((decoded as { payload?: Record<string, unknown> }).payload && typeof (decoded as { payload?: unknown }).payload === 'object')
       ? (decoded as { payload: Record<string, unknown> }).payload
       : decoded
@@ -177,7 +217,8 @@ function makeHandler(kind: 'call' | 'sms' | 'generic') {
        FROM dialpad_events WHERE id = ?`
     ).get(Number(result.lastInsertRowid)) as DialpadEvent
     publish(row)
-    res.status(200).json({ ok: true, id: row.id })
+    logDelivery({ ...meta, signatureOk: true, inferredKind: flat.event_kind, statusCode: 200, error: null, storedEventId: row.id })
+    res.status(200).json({ ok: true, id: row.id, kind: flat.event_kind })
   }
 }
 

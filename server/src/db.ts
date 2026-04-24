@@ -406,6 +406,27 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_received ON dialpad_events(rec
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_email ON dialpad_events(user_email, received_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_call ON dialpad_events(call_id)`)
 
+// Diagnostic log — every single POST that hits /api/webhooks/dialpad* is
+// recorded BEFORE signature verification, so we can tell "nothing arrived"
+// apart from "arrived but was rejected". Kept small (short body preview)
+// and capped by the caller to 500 rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_webhook_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    method TEXT NOT NULL,
+    content_type TEXT,
+    body_preview TEXT,
+    signature_ok INTEGER,
+    inferred_kind TEXT,
+    status_code INTEGER,
+    error TEXT,
+    stored_event_id INTEGER,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_deliveries_recv ON dialpad_webhook_deliveries(received_at DESC)`)
+
 // Per-user per-day per-leaf-bucket call aggregates. One row per
 // (user_email, call_date, bucket). Leaf bucket values are classified at ingest
 // time — rollups (inbound_total, outbound_total, answered, etc.) are computed

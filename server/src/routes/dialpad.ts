@@ -896,6 +896,21 @@ router.post('/webhook-subscription/retry-sms', async (_req: Request, res: Respon
   else res.status(200).json({ ok: false, error, status: attempt.status, note: 'If Dialpad keeps rejecting, SMS subscriptions likely aren\'t enabled for this plan — check with Dialpad support.' })
 })
 
+// Recent webhook deliveries — helps distinguish "Dialpad isn't firing"
+// from "Dialpad fires but we reject". Admin-only; logs are short and
+// capped server-side so this is cheap.
+router.get('/webhook-deliveries', (req: Request, res: Response): void => {
+  if (!req.user?.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '50'), 10) || 50, 1), 500)
+  const rows = db.prepare(
+    `SELECT id, path, method, content_type, body_preview, signature_ok, inferred_kind, status_code, error, stored_event_id, received_at
+     FROM dialpad_webhook_deliveries
+     ORDER BY id DESC
+     LIMIT ?`
+  ).all(limit)
+  res.json({ rows, limit })
+})
+
 // Probe the current subscription states at Dialpad to see if they're live.
 // Helps distinguish "we never created it" from "Dialpad has it but isn't
 // firing events".
