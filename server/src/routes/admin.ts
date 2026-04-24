@@ -249,6 +249,56 @@ router.put('/users/:id/active', (req: Request, res: Response): void => {
   res.json({ success: true })
 })
 
+// --- Alternate emails (cross-system matching; not for login) ---
+// `system` is a free-text tag — convention: 'dialpad', 'quickbase', 'slack', etc.
+// Empty string means the alias matches any system.
+const KNOWN_SYSTEMS = new Set(['', 'dialpad', 'quickbase', 'slack', 'email', 'other'])
+
+router.get('/users/:id/emails', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const rows = db.prepare(
+    `SELECT id, email, system, label, created_at FROM user_emails WHERE user_id = ? ORDER BY system, created_at`
+  ).all(userId)
+  res.json({ emails: rows })
+})
+
+router.post('/users/:id/emails', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const { email, system, label } = req.body as { email?: string; system?: string; label?: string }
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanSystem = String(system || '').trim().toLowerCase()
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    res.status(400).json({ error: 'valid email required' }); return
+  }
+  if (cleanSystem && !KNOWN_SYSTEMS.has(cleanSystem)) {
+    // Allow unknown tags but warn — keeps flexibility for new integrations.
+    // No rejection; future schemas can tighten this.
+  }
+  const user = db.prepare(`SELECT email FROM users WHERE id = ?`).get(userId) as { email: string } | undefined
+  if (!user) { res.status(404).json({ error: 'user not found' }); return }
+  if (cleanEmail === user.email.toLowerCase()) {
+    res.status(409).json({ error: 'this is already the primary email' }); return
+  }
+  try {
+    const r = db.prepare(
+      `INSERT INTO user_emails (user_id, email, system, label) VALUES (?, ?, ?, ?)`
+    ).run(userId, cleanEmail, cleanSystem, (label || '').slice(0, 120) || null)
+    res.json({ ok: true, id: Number(r.lastInsertRowid) })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('UNIQUE')) { res.status(409).json({ error: 'this email is already attached to this user for that system' }); return }
+    res.status(500).json({ error: msg })
+  }
+})
+
+router.delete('/users/:id/emails/:emailId', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const emailId = parseInt(String(req.params['emailId']), 10)
+  const r = db.prepare(`DELETE FROM user_emails WHERE id = ? AND user_id = ?`).run(emailId, userId)
+  if (r.changes === 0) { res.status(404).json({ error: 'not found' }); return }
+  res.json({ ok: true })
+})
+
 // --- Permissions CRUD ---
 
 router.get('/permissions', (req: Request, res: Response): void => {
@@ -639,6 +689,9 @@ const CACHE_REGISTRY: Array<Omit<CacheInfo, 'total' | 'last_refresh'>> = [
   { key: 'pto', label: 'PTO', description: 'PTO workflow records (PTO Dashboard)', table: 'pto_cache', refreshPath: '/api/pto/refresh' },
   { key: 'inspx', label: 'INSPX', description: 'Inspection workflow records', table: 'inspx_cache', refreshPath: '/api/analytics/inspx/refresh' },
   { key: 'tickets', label: 'Tickets', description: 'Ticket/blocker cache', table: 'ticket_cache', refreshPath: '/api/tickets/refresh' },
+  { key: 'dialpad_calls', label: 'Dialpad Calls', description: 'Per-user call aggregates (Comms Hub)', table: 'dialpad_call_daily', refreshPath: '/api/dialpad/refresh-call-stats' },
+  { key: 'dialpad_call_records', label: 'Dialpad Call Records', description: 'Per-call records powering the Activity Feed', table: 'dialpad_call_records', refreshPath: '/api/dialpad/refresh-call-stats' },
+  { key: 'dialpad_sms', label: 'Dialpad SMS', description: 'Per-user SMS counts (Comms Hub). Not all plans expose SMS stats.', table: 'dialpad_sms_daily', refreshPath: '/api/dialpad/refresh-sms-stats' },
 ]
 
 // ── Departments ──────────────────────────────────────────

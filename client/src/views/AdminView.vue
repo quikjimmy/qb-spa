@@ -215,6 +215,70 @@ function openEditAccess(user: PortalUser) {
   accessDeptIds.value = new Set((user.departments || []).map(d => Number(d.id)))
   accessError.value = ''
   accessDialog.value = true
+  loadAltEmails(user.id)
+}
+
+// ─── Alternate emails (cross-system matching) ──────────────
+interface AltEmail { id: number; email: string; system: string; label: string | null; created_at: string }
+const altEmails = ref<AltEmail[]>([])
+const altEmailInput = ref('')
+const altSystemInput = ref('')
+const altLabelInput = ref('')
+const altEmailError = ref('')
+const altEmailBusy = ref(false)
+
+const SYSTEM_OPTIONS = [
+  { value: '', label: 'Any system' },
+  { value: 'dialpad', label: 'Dialpad' },
+  { value: 'quickbase', label: 'QuickBase' },
+  { value: 'slack', label: 'Slack' },
+  { value: 'email', label: 'Email' },
+  { value: 'other', label: 'Other' },
+]
+
+async function loadAltEmails(userId: number) {
+  altEmails.value = []
+  altEmailInput.value = ''
+  altSystemInput.value = ''
+  altLabelInput.value = ''
+  altEmailError.value = ''
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/emails`, { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      altEmails.value = data.emails || []
+    }
+  } catch { /* ignore */ }
+}
+
+async function addAltEmail() {
+  if (!accessUser.value) return
+  altEmailError.value = ''
+  altEmailBusy.value = true
+  try {
+    const res = await fetch(`/api/admin/users/${accessUser.value.id}/emails`, {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({
+        email: altEmailInput.value.trim(),
+        system: altSystemInput.value,
+        label: altLabelInput.value.trim(),
+      }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) { altEmailError.value = body.error || `HTTP ${res.status}`; return }
+    await loadAltEmails(accessUser.value.id)
+  } finally { altEmailBusy.value = false }
+}
+
+async function removeAltEmail(id: number) {
+  if (!accessUser.value) return
+  await fetch(`/api/admin/users/${accessUser.value.id}/emails/${id}`, { method: 'DELETE', headers: hdrs() })
+  await loadAltEmails(accessUser.value.id)
+}
+
+function systemLabel(s: string): string {
+  return SYSTEM_OPTIONS.find(o => o.value === s)?.label || s || 'Any system'
 }
 
 function setAccessDepartment(id: number, checked: boolean) {
@@ -602,6 +666,163 @@ function fmtCacheTime(iso: string | null): string {
   return `${days}d ago`
 }
 
+// ─── Dialpad integration ─────────────────────────────────
+interface DialpadConfig {
+  connected: boolean
+  office_id: string
+  key_preview: string | null
+  last_tested_at: string | null
+  last_test_ok: boolean | null
+  last_test_error: string | null
+}
+const dialpad = ref<DialpadConfig | null>(null)
+const dialpadApiKey = ref('')
+const dialpadOfficeId = ref('')
+const dialpadBusy = ref(false)
+const dialpadTestResult = ref<{ ok: boolean; error?: string } | null>(null)
+
+async function loadDialpad() {
+  try {
+    const res = await fetch('/api/dialpad/config', { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json() as DialpadConfig
+      dialpad.value = data
+      dialpadOfficeId.value = data.office_id || ''
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveDialpad() {
+  dialpadBusy.value = true
+  dialpadTestResult.value = null
+  try {
+    const body: Record<string, string> = { office_id: dialpadOfficeId.value.trim() }
+    if (dialpadApiKey.value.trim()) body['api_key'] = dialpadApiKey.value.trim()
+    await fetch('/api/dialpad/config', { method: 'PUT', headers: hdrs(), body: JSON.stringify(body) })
+    dialpadApiKey.value = ''
+    await loadDialpad()
+  } finally { dialpadBusy.value = false }
+}
+
+async function testDialpad() {
+  dialpadBusy.value = true
+  try {
+    const res = await fetch('/api/dialpad/config/test', { method: 'POST', headers: hdrs() })
+    dialpadTestResult.value = await res.json()
+    await loadDialpad()
+  } finally { dialpadBusy.value = false }
+}
+
+async function clearDialpadKey() {
+  if (!confirm('Remove the stored Dialpad API key?')) return
+  dialpadBusy.value = true
+  try {
+    await fetch('/api/dialpad/config', { method: 'DELETE', headers: hdrs() })
+    await loadDialpad()
+  } finally { dialpadBusy.value = false }
+}
+
+// ─── Dialpad webhooks ───────────────────────────────────
+interface DialpadWebhookConfig {
+  configured: boolean
+  secret_preview: string | null
+  webhook_urls: { call: string; sms: string; generic: string }
+  is_https?: boolean
+}
+const webhookConfig = ref<DialpadWebhookConfig | null>(null)
+const newWebhookSecret = ref('')
+const webhookBusy = ref(false)
+const webhookCopied = ref('')
+
+async function loadWebhookConfig() {
+  try {
+    const res = await fetch('/api/dialpad/webhook-config', { headers: hdrs() })
+    if (res.ok) webhookConfig.value = await res.json()
+  } catch { /* ignore */ }
+}
+
+async function rotateWebhookSecret() {
+  if (webhookConfig.value?.configured && !confirm('Rotating invalidates Dialpad\'s existing subscription. Continue?')) return
+  webhookBusy.value = true
+  newWebhookSecret.value = ''
+  try {
+    const res = await fetch('/api/dialpad/webhook-secret/rotate', { method: 'POST', headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      newWebhookSecret.value = data.secret
+    }
+    await loadWebhookConfig()
+  } finally { webhookBusy.value = false }
+}
+
+async function clearWebhookSecret() {
+  if (!confirm('Remove the Dialpad webhook secret? Live events will stop until re-configured.')) return
+  webhookBusy.value = true
+  try {
+    await fetch('/api/dialpad/webhook-secret', { method: 'DELETE', headers: hdrs() })
+    newWebhookSecret.value = ''
+    await loadWebhookConfig()
+  } finally { webhookBusy.value = false }
+}
+
+async function copyText(text: string, key: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    webhookCopied.value = key
+    setTimeout(() => { if (webhookCopied.value === key) webhookCopied.value = '' }, 1500)
+  } catch { /* ignore */ }
+}
+
+// ─── Dialpad subscription (auto-activate) ────────────────
+interface WebhookSubStatus {
+  subscribed: boolean
+  webhook_id: string | null
+  call_subscription_id: string | null
+  sms_subscription_id: string | null
+  webhook_url: string
+}
+const subStatus = ref<WebhookSubStatus | null>(null)
+const subBusy = ref(false)
+const subResult = ref<string>('')
+
+async function loadSubStatus() {
+  try {
+    const res = await fetch('/api/dialpad/webhook-subscription', { headers: hdrs() })
+    if (res.ok) subStatus.value = await res.json()
+  } catch { /* ignore */ }
+}
+
+async function activateSubscription() {
+  subBusy.value = true
+  subResult.value = ''
+  try {
+    const res = await fetch('/api/dialpad/webhook-subscription', { method: 'POST', headers: hdrs() })
+    const body = await res.json()
+    if (!res.ok) {
+      subResult.value = `Failed: ${body.error || 'unknown'}${body.dialpad_body ? ` · Dialpad said: ${body.dialpad_body}` : ''}`
+    } else {
+      const parts = []
+      if (body.call?.id) parts.push(`calls ✓`); else if (body.call?.error) parts.push(`calls ✗ (${body.call.status})`)
+      if (body.sms?.id) parts.push(`sms ✓`); else if (body.sms?.error) parts.push(`sms ✗ (${body.sms.status})`)
+      subResult.value = `Activated · ${parts.join(' · ')}`
+    }
+    await loadSubStatus()
+  } catch (e) {
+    subResult.value = `Failed: ${e instanceof Error ? e.message : String(e)}`
+  } finally { subBusy.value = false }
+}
+
+async function deactivateSubscription() {
+  if (!confirm('Revoke Dialpad subscriptions? Live events will stop.')) return
+  subBusy.value = true
+  subResult.value = ''
+  try {
+    await fetch('/api/dialpad/webhook-subscription', { method: 'DELETE', headers: hdrs() })
+    subResult.value = 'Deactivated'
+    await loadSubStatus()
+  } finally { subBusy.value = false }
+}
+
 async function runFullSync() {
   syncing.value = true
   syncResult.value = null
@@ -728,7 +949,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents(), loadDepartments()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -1375,6 +1596,155 @@ onMounted(async () => {
             </CardContent>
           </Card>
 
+          <!-- Dialpad Integration -->
+          <Card>
+            <CardHeader>
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <CardTitle>Dialpad</CardTitle>
+                  <CardDescription>
+                    Call analytics for the PC Dashboard. One org-wide API key; calls are pulled via the Dialpad Stats API.
+                  </CardDescription>
+                </div>
+                <Badge v-if="dialpad?.connected" variant="secondary" class="shrink-0">Connected</Badge>
+                <Badge v-else variant="outline" class="shrink-0">Not connected</Badge>
+              </div>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div class="space-y-1.5">
+                  <Label for="dp-key">API Key</Label>
+                  <Input id="dp-key" type="password" v-model="dialpadApiKey"
+                    :placeholder="dialpad?.key_preview ? `Current: ${dialpad.key_preview}` : 'Paste Dialpad API key'" />
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="dp-office">Office ID (optional)</Label>
+                  <Input id="dp-office" v-model="dialpadOfficeId" placeholder="Numeric office_id for scoping" />
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" :disabled="dialpadBusy || (!dialpadApiKey.trim() && dialpadOfficeId === (dialpad?.office_id || ''))" @click="saveDialpad">
+                  {{ dialpadBusy ? 'Saving…' : 'Save' }}
+                </Button>
+                <Button size="sm" variant="outline" :disabled="dialpadBusy || !dialpad?.connected" @click="testDialpad">
+                  Test connection
+                </Button>
+                <Button size="sm" variant="ghost" :disabled="dialpadBusy || !dialpad?.connected" @click="clearDialpadKey">
+                  Remove key
+                </Button>
+                <span v-if="dialpad?.last_tested_at" class="text-xs text-muted-foreground ml-auto">
+                  Last test:
+                  <span :class="dialpad.last_test_ok ? 'text-emerald-600' : 'text-red-600'">
+                    {{ dialpad.last_test_ok ? 'OK' : 'failed' }}
+                  </span>
+                  · {{ fmtCacheTime(dialpad.last_tested_at) }}
+                </span>
+              </div>
+              <div v-if="dialpadTestResult" class="text-xs" :class="dialpadTestResult.ok ? 'text-emerald-700' : 'text-red-600'">
+                {{ dialpadTestResult.ok ? 'Connection OK.' : `Failed: ${dialpadTestResult.error || 'unknown error'}` }}
+              </div>
+              <div v-if="dialpad?.last_test_error && !dialpadTestResult" class="text-xs text-red-600">
+                Last error: {{ dialpad.last_test_error }}
+              </div>
+              <p class="text-xs text-muted-foreground">
+                After saving, sync <span class="font-medium">Dialpad Calls</span> in the Data Caches table above to pull the last 7 days of per-user call records.
+              </p>
+            </CardContent>
+          </Card>
+
+          <!-- Dialpad Webhooks (live events) -->
+          <Card>
+            <CardHeader>
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <CardTitle>Dialpad Webhooks</CardTitle>
+                  <CardDescription>
+                    Live call + SMS events pushed from Dialpad into the Comms Hub. Paste the URL + secret into a Dialpad subscription (Settings → Developer → Webhooks) to activate.
+                  </CardDescription>
+                </div>
+                <Badge v-if="webhookConfig?.configured" variant="secondary" class="shrink-0">Signed</Badge>
+                <Badge v-else variant="outline" class="shrink-0">Not configured</Badge>
+              </div>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <!-- URLs -->
+              <div class="grid gap-1.5">
+                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Webhook URLs</Label>
+                <div v-for="(url, kind) in (webhookConfig?.webhook_urls || {})" :key="kind"
+                  class="flex items-center gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
+                >
+                  <span class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground w-12 shrink-0">{{ kind }}</span>
+                  <span class="font-mono truncate flex-1 min-w-0">{{ url }}</span>
+                  <button class="text-[10px] text-muted-foreground hover:text-foreground shrink-0" @click="copyText(url, `url-${kind}`)">
+                    {{ webhookCopied === `url-${kind}` ? 'Copied!' : 'Copy' }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- One-time secret display after rotation -->
+              <div v-if="newWebhookSecret" class="rounded-lg border-2 border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-3 space-y-2">
+                <p class="text-xs font-medium text-amber-900 dark:text-amber-200">Save this secret now — it won't be shown again.</p>
+                <div class="flex items-center gap-2 rounded-md bg-background px-2.5 py-1.5 text-xs">
+                  <span class="font-mono truncate flex-1 min-w-0">{{ newWebhookSecret }}</span>
+                  <button class="text-[10px] text-muted-foreground hover:text-foreground shrink-0" @click="copyText(newWebhookSecret, 'secret')">
+                    {{ webhookCopied === 'secret' ? 'Copied!' : 'Copy' }}
+                  </button>
+                </div>
+                <button class="text-[10px] text-muted-foreground hover:text-foreground" @click="newWebhookSecret = ''">Dismiss</button>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" :disabled="webhookBusy" @click="rotateWebhookSecret">
+                  {{ webhookBusy ? '…' : (webhookConfig?.configured ? 'Rotate secret' : 'Generate secret') }}
+                </Button>
+                <Button size="sm" variant="ghost" :disabled="webhookBusy || !webhookConfig?.configured" @click="clearWebhookSecret">
+                  Remove secret
+                </Button>
+                <span v-if="webhookConfig?.configured && webhookConfig.secret_preview" class="text-xs text-muted-foreground ml-auto">
+                  Current: <span class="font-mono">{{ webhookConfig.secret_preview }}</span>
+                </span>
+              </div>
+
+              <!-- https check: Dialpad rejects http URLs -->
+              <div v-if="webhookConfig && webhookConfig.is_https === false" class="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-3 text-xs text-amber-900 dark:text-amber-200 space-y-1">
+                <p class="font-medium">Webhook URLs are being derived as <span class="font-mono">http://</span> — Dialpad requires <span class="font-mono">https</span>.</p>
+                <p>On Railway, set <span class="font-mono">PUBLIC_BASE_URL</span> to your public origin (e.g. <span class="font-mono">https://qb-spa.up.railway.app</span>) and redeploy. Express now honors <span class="font-mono">X-Forwarded-Proto</span> too, so most Railway configs will auto-resolve.</p>
+              </div>
+
+              <!-- Activate: calls Dialpad's subscription API for us -->
+              <div class="rounded-lg border bg-muted/20 p-3 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium">Activation</p>
+                    <p class="text-xs text-muted-foreground">
+                      <template v-if="subStatus?.subscribed">
+                        Subscribed ·
+                        <span v-if="subStatus.call_subscription_id">call <span class="font-mono text-[10px]">{{ subStatus.call_subscription_id }}</span></span>
+                        <span v-if="subStatus.sms_subscription_id"> · sms <span class="font-mono text-[10px]">{{ subStatus.sms_subscription_id }}</span></span>
+                      </template>
+                      <template v-else>Register a subscription with Dialpad so events start flowing.</template>
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <Button v-if="!subStatus?.subscribed" size="sm" :disabled="subBusy || !webhookConfig?.configured" @click="activateSubscription">
+                      {{ subBusy ? 'Activating…' : 'Activate' }}
+                    </Button>
+                    <Button v-else size="sm" variant="outline" :disabled="subBusy" @click="deactivateSubscription">
+                      {{ subBusy ? '…' : 'Deactivate' }}
+                    </Button>
+                  </div>
+                </div>
+                <p v-if="subResult" class="text-xs" :class="subResult.startsWith('Failed') ? 'text-red-600' : 'text-emerald-700'">{{ subResult }}</p>
+                <p v-if="!webhookConfig?.configured" class="text-[10px] text-muted-foreground">Generate a secret above before activating.</p>
+              </div>
+
+              <p class="text-xs text-muted-foreground">
+                Activation creates a signed subscription in Dialpad pointing at <span class="font-mono">{{ subStatus?.webhook_url || '/api/webhooks/dialpad' }}</span>.
+                If it fails, register manually via Dialpad's Developer Settings using the URLs + secret above (Dialpad signs each event as an HS256 JWT we verify on receipt).
+              </p>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Sync from QuickBase</CardTitle>
@@ -1786,6 +2156,42 @@ onMounted(async () => {
                 No departments yet. Create departments before assigning them.
               </p>
             </div>
+          </div>
+
+          <!-- Alternate emails (cross-system matching) -->
+          <div class="space-y-2">
+            <Label>Alternate emails</Label>
+            <p class="text-xs text-muted-foreground">
+              Extra email addresses used to match this user across systems (Dialpad, QuickBase, Slack). Not used for login.
+              Pick <span class="font-medium">Any system</span> to match everywhere, or scope to a specific integration.
+            </p>
+
+            <div v-if="altEmails.length > 0" class="grid gap-1">
+              <div v-for="e in altEmails" :key="e.id"
+                class="rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="font-mono truncate flex-1 min-w-0">{{ e.email }}</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-card border font-medium shrink-0">{{ systemLabel(e.system) }}</span>
+                  <button class="text-muted-foreground hover:text-destructive shrink-0" title="Remove" @click="removeAltEmail(e.id)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
+                <p v-if="e.label" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ e.label }}</p>
+              </div>
+            </div>
+
+            <div class="grid gap-2 sm:grid-cols-[1fr_auto_auto] rounded-lg border p-3 bg-card">
+              <Input v-model="altEmailInput" placeholder="alt@example.com" type="email" class="h-8 text-xs" />
+              <select v-model="altSystemInput" class="h-8 rounded-md border bg-background px-2 text-xs">
+                <option v-for="opt in SYSTEM_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
+              <Button size="sm" :disabled="altEmailBusy || !altEmailInput.trim()" @click="addAltEmail">
+                {{ altEmailBusy ? '…' : 'Add' }}
+              </Button>
+              <Input v-model="altLabelInput" placeholder="Optional note (e.g., 'old work email')" class="h-8 text-xs sm:col-span-3" />
+            </div>
+            <p v-if="altEmailError" class="text-xs text-destructive">{{ altEmailError }}</p>
           </div>
         </div>
 

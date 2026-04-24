@@ -316,6 +316,196 @@ db.exec(`
   )
 `)
 
+// --- Alternate emails per user (not used for login) ---
+// Primary login email stays on `users.email`. This table holds additional
+// addresses used for cross-system matching (Dialpad, QuickBase, Slack, etc).
+// `system` scopes the alias: empty string = matches any system, or a tag like
+// 'dialpad' / 'quickbase' / 'slack' limits the alias to one system.
+// UNIQUE(user_id, LOWER(email), system) prevents dupes per user+system but
+// allows the same email to be tagged under multiple systems with separate rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    system TEXT NOT NULL DEFAULT '',
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_emails_unique ON user_emails(user_id, LOWER(email), system)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_emails_lookup ON user_emails(LOWER(email))`)
+
+// Union view combining primary + alternate emails. Matching across systems
+// selects from this view so alias logic lives in one place.
+//   system = '' for the primary login email (matches any system)
+//   system = tag for an alternate scoped to that system
+//   is_primary = 1 only for the row from users.email
+db.exec(`DROP VIEW IF EXISTS user_email_lookup`)
+db.exec(`
+  CREATE VIEW user_email_lookup AS
+  SELECT id AS user_id, LOWER(TRIM(email)) AS email, '' AS system, name AS user_name, 1 AS is_primary
+  FROM users WHERE email IS NOT NULL AND email != ''
+  UNION ALL
+  SELECT ue.user_id, LOWER(TRIM(ue.email)) AS email, COALESCE(ue.system, '') AS system,
+         u.name AS user_name, 0 AS is_primary
+  FROM user_emails ue
+  JOIN users u ON u.id = ue.user_id
+  WHERE ue.email IS NOT NULL AND ue.email != ''
+`)
+
+// --- Dialpad integration (singleton config) ---
+// Dialpad is a company-wide integration, so one encrypted API key + office_id
+// lives here (not per-user). API key encrypted at rest with ENCRYPTION_KEY.
+// webhook_secret_encrypted is the HMAC secret Dialpad signs webhook JWTs with.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    api_key_encrypted TEXT,
+    office_id TEXT,
+    last_tested_at TEXT,
+    last_test_ok INTEGER,
+    last_test_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+// Ensure the singleton row exists so UPDATEs always have a target.
+db.prepare(`INSERT OR IGNORE INTO dialpad_config (id) VALUES (1)`).run()
+// Additive migration: webhook_secret_encrypted.
+{
+  const cols = db.prepare(`PRAGMA table_info(dialpad_config)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('webhook_secret_encrypted')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN webhook_secret_encrypted TEXT`)
+  // Subscription bookkeeping — stored so we can show status + revoke cleanly.
+  if (!names.has('webhook_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN webhook_id TEXT`)
+  if (!names.has('call_subscription_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN call_subscription_id TEXT`)
+  if (!names.has('sms_subscription_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN sms_subscription_id TEXT`)
+}
+
+// Webhook-delivered events. Stored raw for forensics + displayed live via SSE.
+// We keep a narrow set of hoisted columns for indexable filters; the full JWT
+// payload is preserved in raw_json so new fields don't require schema changes.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_kind TEXT NOT NULL,
+    event_state TEXT,
+    call_id TEXT,
+    user_email TEXT,
+    user_name TEXT,
+    external_number TEXT,
+    direction TEXT,
+    raw_json TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_received ON dialpad_events(received_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_email ON dialpad_events(user_email, received_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_call ON dialpad_events(call_id)`)
+
+// Per-user per-day per-leaf-bucket call aggregates. One row per
+// (user_email, call_date, bucket). Leaf bucket values are classified at ingest
+// time — rollups (inbound_total, outbound_total, answered, etc.) are computed
+// in SQL from these leaves, so adding a new drill-down only needs a query
+// change, not a re-ingest.
+//
+// Leaf buckets (match the Comms Hub drill-down tree):
+//   inbound:  in_answered, in_missed, in_abandoned, in_voicemail,
+//             in_transfer_unanswered, in_callback_requested
+//   outbound: out_connected, out_cancelled, out_callback_attempt
+//   other:    unclassified / fallback
+//
+// Rebuilt from a Dialpad records-export CSV on each refresh — safe to DELETE
+// the window and re-INSERT in a transaction.
+{
+  // Prior shape keyed on `direction` rather than `bucket`. Drop it so the
+  // CREATE below produces the new shape. Data is a cache — fully rebuildable
+  // from Dialpad, so discarding is safe.
+  const cols = db.prepare(`PRAGMA table_info(dialpad_call_daily)`).all() as Array<{ name: string }>
+  const has = new Set(cols.map(c => c.name))
+  if (cols.length > 0 && !has.has('bucket')) {
+    db.exec(`DROP TABLE dialpad_call_daily`)
+  }
+}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_call_daily (
+    user_email TEXT NOT NULL,
+    user_name TEXT,
+    call_date TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    call_count INTEGER NOT NULL DEFAULT 0,
+    talk_time_sec INTEGER NOT NULL DEFAULT 0,
+    cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_email, call_date, bucket)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_daily_email ON dialpad_call_daily(user_email, call_date DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_daily_date ON dialpad_call_daily(call_date DESC)`)
+
+// Per-call records. Mirrors the rows from Dialpad's records export — one row
+// per call leg per user — and drives the Call Activity Feed. We keep only the
+// columns the UI needs so the table stays lean; bucket is computed at ingest
+// time (same classifier used for dialpad_call_daily) so the feed can filter
+// by leaf without rerunning the logic on every request.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_call_records (
+    call_id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL,
+    user_name TEXT,
+    direction TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    external_number TEXT,
+    started_at TEXT NOT NULL,
+    connected_at TEXT,
+    ended_at TEXT,
+    talk_time_sec INTEGER NOT NULL DEFAULT 0,
+    ring_time_sec INTEGER NOT NULL DEFAULT 0,
+    was_voicemail INTEGER NOT NULL DEFAULT 0,
+    was_transfer INTEGER NOT NULL DEFAULT 0,
+    entry_point_target_kind TEXT,
+    cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_email_started ON dialpad_call_records(user_email, started_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_started ON dialpad_call_records(started_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_bucket ON dialpad_call_records(bucket, started_at DESC)`)
+
+// Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
+// SMS may not be supported on every Dialpad plan — refresh gracefully skips if
+// the stat_type is rejected.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_sms_daily (
+    user_email TEXT NOT NULL,
+    user_name TEXT,
+    sms_date TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing', 'unknown')),
+    message_count INTEGER NOT NULL DEFAULT 0,
+    cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_email, sms_date, direction)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_sms_email ON dialpad_sms_daily(user_email, sms_date DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_sms_date ON dialpad_sms_daily(sms_date DESC)`)
+
+// Records the last completed sync window so the dashboard can show freshness.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_sync_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stat_type TEXT NOT NULL,
+    days_ago_start INTEGER NOT NULL,
+    days_ago_end INTEGER NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    request_id TEXT,
+    status TEXT NOT NULL,
+    rows_ingested INTEGER DEFAULT 0,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_sync_log_started ON dialpad_sync_log(started_at DESC)`)
+
 // --- Departments ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS departments (

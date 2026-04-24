@@ -24,12 +24,19 @@ import { userSettingsRouter } from './routes/user-settings'
 import { agentOrgRouter } from './routes/agent-org'
 import { agentLabRouter } from './routes/agent-lab'
 import { agentApprovalsRouter } from './routes/agent-approvals'
+import { dialpadRouter } from './routes/dialpad'
+import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
 const isProd = process.env['NODE_ENV'] === 'production'
+
+// Trust Railway's edge proxy so req.protocol honors X-Forwarded-Proto: https.
+// Without this, req.protocol is always "http" internally and Dialpad rejects
+// the webhook URL we build for subscriptions.
+app.set('trust proxy', 1)
 
 if (!isProd) {
   app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
@@ -44,6 +51,9 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
 
 // Public routes
 app.use('/api/auth', authRouter)
+// Dialpad webhook ingest — PUBLIC (signed with per-org HMAC). Mounted before
+// the authenticate middleware so Dialpad can POST without a portal JWT.
+app.use('/api/webhooks/dialpad', dialpadWebhookRouter)
 
 // Protected routes — require JWT
 app.use('/api/qb', authenticate, qbRouter)
@@ -63,6 +73,7 @@ app.use('/api/agent-org', authenticate, agentOrgRouter)
 app.use('/api/agent-org/approvals', authenticate, agentApprovalsRouter)
 app.use('/api/agent-lab', authenticate, agentLabRouter)
 app.use('/api/agent-approvals', authenticate, agentApprovalsRouter)
+app.use('/api/dialpad', authenticate, dialpadRouter)
 
 // Admin routes — require JWT + admin role
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)

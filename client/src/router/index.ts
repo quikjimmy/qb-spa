@@ -63,15 +63,30 @@ const router = createRouter({
           component: () => import('../views/PcDashboardView.vue'),
         },
         {
+          path: 'comms',
+          name: 'comms-hub',
+          component: () => import('../views/CommsHubView.vue'),
+        },
+        {
           path: 'agents',
           name: 'agents',
           component: () => import('../views/AgentsView.vue'),
+        },
+        {
+          path: 'agents/new',
+          name: 'agent-create',
+          component: () => import('../views/AgentCreateView.vue'),
         },
         {
           path: 'agents/tasks/:id',
           name: 'agent-task-editor',
           component: () => import('../views/AgentTaskEditorView.vue'),
           meta: { requiresAdmin: true },
+        },
+        {
+          path: 'agents/:id',
+          name: 'agent-dashboard',
+          component: () => import('../views/AgentDashboardView.vue'),
         },
         {
           path: 'tickets',

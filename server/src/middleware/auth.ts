@@ -22,13 +22,20 @@ declare global {
 
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers['authorization']
-  if (!header?.startsWith('Bearer ')) {
+  // Fall back to ?token= query string for endpoints like SSE where the
+  // client can't set an Authorization header (EventSource API limitation).
+  // Header path is preferred and always wins when present.
+  const queryToken = typeof req.query['token'] === 'string' ? (req.query['token'] as string) : ''
+  let token: string | null = null
+  if (header?.startsWith('Bearer ')) token = header.slice(7)
+  else if (queryToken) token = queryToken
+
+  if (!token) {
     res.status(401).json({ error: 'Missing or invalid token' })
     return
   }
 
   try {
-    const token = header.slice(7)
     const payload = jwt.verify(token, getJwtSecret()) as AuthPayload
     req.user = payload
     next()
