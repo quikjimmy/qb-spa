@@ -51,9 +51,13 @@ function extractJwt(req: Request): string | null {
 
 interface CallPayload {
   call_id?: string | number
+  master_call_id?: string | number
   state?: string
+  event_type?: string
+  call_state?: string
+  type?: string
   direction?: string
-  target?: { email?: string; name?: string }
+  target?: { email?: string; name?: string; type?: string }
   user?: { email?: string; name?: string }
   operator?: { email?: string; name?: string }
   contact?: { phone?: string }
@@ -94,14 +98,24 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
       raw_json: JSON.stringify(payload),
     }
   }
-  // call or generic
+  // call or generic — Dialpad's payload shape varies across event types.
+  // Check a handful of known locations for state/direction/user/number so we
+  // don't render four identical cards for a single call's lifecycle.
   const p = payload as CallPayload
   const user = p.target || p.user || p.operator || {}
   const dir = (p.direction || '').toLowerCase()
+
+  // Strip an optional "call." prefix some Dialpad events use (e.g. "call.connected").
+  const rawState = firstNonEmpty(p.state, p.call_state, p.event_type, p.type) || ''
+  const state = rawState.replace(/^call\./i, '').toLowerCase() || null
+
   return {
     event_kind: kind || 'call',
-    event_state: firstNonEmpty(p.state),
-    call_id: p.call_id != null ? String(p.call_id) : null,
+    event_state: state,
+    call_id: firstNonEmpty(
+      p.call_id != null ? String(p.call_id) : null,
+      p.master_call_id != null ? String(p.master_call_id) : null,
+    ),
     user_email: firstNonEmpty(user.email),
     user_name: firstNonEmpty(user.name),
     external_number: firstNonEmpty(p.external_number, p.contact?.phone, dir.includes('out') ? p.to_number : p.from_number),

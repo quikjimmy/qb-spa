@@ -25,8 +25,13 @@ interface LiveEvent {
 
 const auth = useAuthStore()
 const events = ref<LiveEvent[]>([])
+// Aggregate events per call_id so a single call's lifecycle (preanswer →
+// ringing → connected → hangup) collapses into one card that updates its
+// state. Events missing a call_id are kept as-is (SMS, generic).
+const stateHistory = ref<Record<string, string[]>>({})
 const connected = ref(false)
 const lastId = ref(0)
+const expanded = ref<Record<number, boolean>>({})
 let es: EventSource | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempt = 0
@@ -34,6 +39,28 @@ let reconnectAttempt = 0
 const MAX_EVENTS = 25
 
 function ingest(ev: LiveEvent, prepend = true) {
+  // Track the state sequence for this call so we can display "ringing → connected → hangup".
+  if (ev.call_id) {
+    const seq = stateHistory.value[ev.call_id] || []
+    if (ev.event_state && (!seq.length || seq[seq.length - 1] !== ev.event_state)) {
+      stateHistory.value = { ...stateHistory.value, [ev.call_id]: [...seq, ev.event_state] }
+    }
+  }
+
+  // For events with a call_id, collapse into the existing card (update in place).
+  if (ev.call_id) {
+    const idx = events.value.findIndex(e => e.call_id === ev.call_id)
+    if (idx >= 0) {
+      const next = [...events.value]
+      next[idx] = ev
+      // Move to top so the most recently updated call sits first.
+      const [moved] = next.splice(idx, 1)
+      events.value = [moved!, ...next].slice(0, MAX_EVENTS)
+      if (ev.id > lastId.value) lastId.value = ev.id
+      return
+    }
+  }
+
   if (prepend) {
     events.value = [ev, ...events.value].slice(0, MAX_EVENTS)
   } else {
@@ -127,6 +154,10 @@ function visualFor(e: LiveEvent): EventVisual {
   return { ...bucketMeta('other'), icon: DtIconPhone, sublabel: e.event_kind }
 }
 
+function formatRaw(raw: string): string {
+  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
+}
+
 const connectionLabel = computed(() => connected.value ? 'Live' : reconnectAttempt > 0 ? 'Reconnecting…' : 'Offline')
 const connectionDot = computed(() => connected.value ? 'bg-emerald-500' : reconnectAttempt > 0 ? 'bg-amber-500' : 'bg-slate-400')
 </script>
@@ -151,21 +182,32 @@ const connectionDot = computed(() => connected.value ? 'bg-emerald-500' : reconn
     </div>
 
     <div v-else class="divide-y max-h-[360px] overflow-y-auto">
-      <div v-for="e in events" :key="e.id" class="flex items-center gap-2.5 sm:gap-3 px-3 sm:px-4 py-2">
-        <div class="shrink-0 size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
-          <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
+      <div v-for="e in events" :key="e.call_id || `evt-${e.id}`" class="px-3 sm:px-4 py-2">
+        <div class="flex items-center gap-2.5 sm:gap-3 cursor-pointer" @click="expanded[e.id] = !expanded[e.id]">
+          <div class="shrink-0 size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
+            <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
+            <p class="text-[10px] text-muted-foreground truncate flex items-center gap-1">
+              <!-- Full state progression for this call: ringing → connected → hangup -->
+              <template v-if="e.call_id && stateHistory[e.call_id]">
+                <span v-for="(s, i) in stateHistory[e.call_id]" :key="i" class="inline-flex items-center gap-1">
+                  <span v-if="i > 0" class="text-muted-foreground/60">→</span>
+                  <span :class="i === (stateHistory[e.call_id]!.length - 1) ? 'font-medium text-foreground' : ''">{{ s }}</span>
+                </span>
+              </template>
+              <template v-else>{{ visualFor(e).sublabel }}</template>
+              <template v-if="e.user_name || e.user_email"> · {{ e.user_name || e.user_email }}</template>
+            </p>
+          </div>
+          <div class="shrink-0 text-right">
+            <p class="text-[11px] tabular-nums">{{ splitStartedAt(e.received_at).time }}</p>
+            <p class="text-[10px] text-muted-foreground">{{ splitStartedAt(e.received_at).date }}</p>
+          </div>
         </div>
-        <div class="flex-1 min-w-0">
-          <p class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
-          <p class="text-[10px] text-muted-foreground truncate">
-            <span>{{ visualFor(e).sublabel }}</span>
-            <template v-if="e.user_name || e.user_email"> · {{ e.user_name || e.user_email }}</template>
-          </p>
-        </div>
-        <div class="shrink-0 text-right">
-          <p class="text-[11px] tabular-nums">{{ splitStartedAt(e.received_at).time }}</p>
-          <p class="text-[10px] text-muted-foreground">{{ splitStartedAt(e.received_at).date }}</p>
-        </div>
+        <!-- Tap the row to reveal the raw Dialpad payload — helpful for debugging classification -->
+        <pre v-if="expanded[e.id]" class="mt-2 text-[9px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all">{{ formatRaw(e.raw_json) }}</pre>
       </div>
     </div>
   </div>
