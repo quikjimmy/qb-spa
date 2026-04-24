@@ -282,10 +282,11 @@ function aggregateCallRecords(rows: CsvRow[]): CallRecord[] {
 }
 
 interface SmsAgg { count: number; name: string }
-// Dialpad /api/v2/sms flattens nested objects (user, from_user, to_user), so
-// we look across many field aliases for email, name, date, and direction.
-// Date fields typically arrive as epoch ms or ISO strings — toDateOnly handles
-// both.
+// Handles both the CSV records export from stat_type=texts AND the JSON
+// records shape from /api/v2/sms. A single universal `email` column is the
+// first-choice lookup; direction-specific nested fields (to_user_email /
+// from_user_email) fall through second. Dates accept ISO, YYYY-MM-DD, and
+// epoch sec/ms.
 function aggregateSms(rows: CsvRow[]): Map<string, { email: string; name: string; date: string; direction: 'incoming' | 'outgoing' | 'unknown'; agg: SmsAgg }> {
   const bucket = new Map<string, { email: string; name: string; date: string; direction: 'incoming' | 'outgoing' | 'unknown'; agg: SmsAgg }>()
   for (const row of rows) {
@@ -293,19 +294,19 @@ function aggregateSms(rows: CsvRow[]): Map<string, { email: string; name: string
     const direction: 'incoming' | 'outgoing' | 'unknown' =
       dirRaw.includes('in') ? 'incoming' : dirRaw.includes('out') ? 'outgoing' : 'unknown'
 
-    // For inbound SMS the Dialpad user is on `to_user_*`; for outbound it's `from_user_*`.
-    // Fall back to generic user_* / sender_* / operator_* on older exports.
+    // Universal `email` first (CSV exports usually have one email col for the
+    // Dialpad operator), then direction-specific fields for JSON payloads.
     const emailCandidates = direction === 'incoming'
-      ? ['to_user_email', 'to_email', 'recipient_email', 'user_email', 'operator_email', 'email']
-      : ['from_user_email', 'from_email', 'sender_email', 'user_email', 'operator_email', 'email']
+      ? ['email', 'user_email', 'operator_email', 'to_user_email', 'to_email', 'recipient_email']
+      : ['email', 'user_email', 'operator_email', 'from_user_email', 'from_email', 'sender_email']
     const nameCandidates = direction === 'incoming'
-      ? ['to_user_name', 'recipient_name', 'user_name', 'operator_name', 'name']
-      : ['from_user_name', 'sender_name', 'user_name', 'operator_name', 'name']
+      ? ['name', 'user_name', 'operator_name', 'to_user_name', 'recipient_name']
+      : ['name', 'user_name', 'operator_name', 'from_user_name', 'sender_name']
 
     const email = pick(row, emailCandidates).toLowerCase().trim()
     if (!email) continue
     const name = pick(row, nameCandidates)
-    const dateRaw = pick(row, ['date', 'sent_at', 'sent_date', 'timestamp', 'created_at', 'date_sent'])
+    const dateRaw = pick(row, ['date_sent', 'sent_at', 'sent_date', 'date_started', 'date', 'timestamp', 'created_at'])
     // Epoch ms arrives as a numeric string; convert before toDateOnly.
     const date = /^\d{13}$/.test(dateRaw)
       ? new Date(parseInt(dateRaw, 10)).toISOString().slice(0, 10)
@@ -394,10 +395,11 @@ async function refreshCallStats(daysBack: number): Promise<{ rowsFetched: number
   }
 }
 
-// SMS goes through the records endpoint /api/v2/sms (NOT the Stats API — SMS
-// isn't a valid stat_type). We page through the window, flatten each record,
-// and run it through the same aggregator as calls.
-async function refreshSmsStats(daysBack: number): Promise<{ rowsFetched: number; rowsAggregated: number }> {
+// SMS historical aggregates go through the Stats API with stat_type=texts,
+// export_type=records (per the official Dialpad Python SDK enum). We tried
+// the GET /api/v2/sms records endpoint first but it returns 404 on many
+// plans; stat_type=texts is the supported path.
+async function refreshSmsStats(daysBack: number): Promise<{ rowsFetched: number; rowsAggregated: number; requestId?: string }> {
   const cfg = loadDialpadConfig()
   if (!cfg) throw new DialpadError('No Dialpad API key configured')
   const logId = Number(db.prepare(
@@ -406,9 +408,14 @@ async function refreshSmsStats(daysBack: number): Promise<{ rowsFetched: number;
   ).run(daysBack, cfg.officeId ? 'office' : null, cfg.officeId || null).lastInsertRowid)
 
   try {
-    const nowSec = Math.floor(Date.now() / 1000)
-    const startSec = nowSec - daysBack * 86400
-    const rows = await fetchSmsRecords(cfg, { startEpochSec: startSec, endEpochSec: nowSec, limit: 500, maxPages: 30 })
+    const { rows, request_id } = await runStatsExport(cfg, {
+      stat_type: 'texts',
+      export_type: 'records',
+      days_ago_start: 1,
+      days_ago_end: daysBack,
+      office_id: cfg.officeId ?? null,
+      timezone: 'America/Los_Angeles',
+    })
 
     const agg = aggregateSms(rows)
     const insert = db.prepare(
@@ -426,9 +433,9 @@ async function refreshSmsStats(daysBack: number): Promise<{ rowsFetched: number;
       }
     })()
     db.prepare(
-      `UPDATE dialpad_sync_log SET status = 'complete', rows_ingested = ?, finished_at = datetime('now') WHERE id = ?`
-    ).run(agg.size, logId)
-    return { rowsFetched: rows.length, rowsAggregated: agg.size }
+      `UPDATE dialpad_sync_log SET status = 'complete', request_id = ?, rows_ingested = ?, finished_at = datetime('now') WHERE id = ?`
+    ).run(request_id, agg.size, logId)
+    return { rowsFetched: rows.length, rowsAggregated: agg.size, requestId: request_id }
   } catch (e) {
     const msg = formatError(e)
     db.prepare(`UPDATE dialpad_sync_log SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?`).run(msg, logId)
