@@ -19,6 +19,8 @@ db.exec(`
     customer_address TEXT,
     email TEXT,
     phone TEXT,
+    mobile_phone TEXT,
+    alt_phone TEXT,
     status TEXT,
     sales_office TEXT,
     lender TEXT,
@@ -60,6 +62,14 @@ db.exec(`
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_status ON project_cache(status)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name COLLATE NOCASE)`)
+// Additive migration for the extra phone columns — existing deployments
+// have the narrower table shape, so ALTER guarded via PRAGMA.
+{
+  const cols = db.prepare(`PRAGMA table_info(project_cache)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('mobile_phone')) db.exec(`ALTER TABLE project_cache ADD COLUMN mobile_phone TEXT`)
+  if (!names.has('alt_phone')) db.exec(`ALTER TABLE project_cache ADD COLUMN alt_phone TEXT`)
+}
 
 // Field mapping: QB field ID → cache column
 const fieldMap: Array<{ fid: number; col: string }> = [
@@ -486,35 +496,87 @@ router.post('/favorites/:projectId', (req: Request, res: Response): void => {
   }
 })
 
-// Lookup projects by phone number. Strip all non-digits on both sides and
-// match the last 10 digits, so "+14077459738" and "(407) 745-9738" resolve
-// to the same customer record. Returns up to `limit` projects, newest first.
+// Lookup projects by phone number. Matches across every phone column we
+// store (phone, mobile_phone, alt_phone) on the last 10 digits first; if
+// no strict match, falls back to the last 7 digits with `probable: true`
+// on each row so the UI can mark them tentative.
 router.get('/by-phone', (req: Request, res: Response): void => {
   const raw = String(req.query['number'] || '').trim()
-  if (!raw) { res.json({ rows: [], digits: '' }); return }
+  if (!raw) { res.json({ rows: [], digits: '', match_quality: 'none' }); return }
   const digits = raw.replace(/\D/g, '')
-  if (digits.length < 7) { res.json({ rows: [], digits }); return }
-  // Last 10 digits is strict enough to avoid false matches but flexible
-  // enough to match "+1XXX" and "(XXX)" formats to the same record.
-  const match = digits.slice(-10)
+  if (digits.length < 7) { res.json({ rows: [], digits, match_quality: 'none' }); return }
+  const last10 = digits.slice(-10)
+  const last7 = digits.slice(-7)
   const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '5'), 10) || 5, 1), 20)
 
-  // REPLACE chain normalizes stored phones on-the-fly. For a few thousand
-  // projects this is fine; if project_cache ever gets huge we should store a
-  // phone_digits column and index it.
-  const rows = db.prepare(`
-    SELECT record_id, customer_name, phone, customer_address, email,
-           status, state, lender, coordinator, closer,
+  // Helper: normalized-digits-ends-with expression across 3 phone columns.
+  // We SQL-normalize each column on the fly; cheap at current project scale.
+  const normExpr = (col: string) =>
+    `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')`
+  const clauseStrict = `(
+    ${normExpr('phone')} LIKE '%' || ?
+    OR ${normExpr('mobile_phone')} LIKE '%' || ?
+    OR ${normExpr('alt_phone')} LIKE '%' || ?
+  )`
+
+  interface MatchRow { record_id: number; customer_name: string; phone: string | null; mobile_phone: string | null; alt_phone: string | null; customer_address: string | null; email: string | null; status: string | null; state: string | null; lender: string | null; coordinator: string | null; closer: string | null; system_size_kw: number | null; sales_date: string | null }
+
+  const strict = db.prepare(`
+    SELECT record_id, customer_name, phone, mobile_phone, alt_phone,
+           customer_address, email, status, state, lender, coordinator, closer,
            system_size_kw, sales_date
     FROM project_cache
-    WHERE phone IS NOT NULL AND phone != ''
-      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')
-          LIKE '%' || ?
+    WHERE ${clauseStrict}
     ORDER BY record_id DESC
     LIMIT ?
-  `).all(match, limit) as Array<Record<string, unknown>>
+  `).all(last10, last10, last10, limit) as MatchRow[]
 
-  res.json({ rows, digits: match })
+  if (strict.length > 0) {
+    res.json({ rows: strict.map(r => ({ ...r, probable: false })), digits: last10, match_quality: 'strict' })
+    return
+  }
+
+  // Fallback — last 7 digits, flagged probable. Helps when a customer used a
+  // neighbouring area-code or the stored number has a typo.
+  const loose = db.prepare(`
+    SELECT record_id, customer_name, phone, mobile_phone, alt_phone,
+           customer_address, email, status, state, lender, coordinator, closer,
+           system_size_kw, sales_date
+    FROM project_cache
+    WHERE ${clauseStrict}
+    ORDER BY record_id DESC
+    LIMIT ?
+  `).all(last7, last7, last7, limit) as MatchRow[]
+
+  res.json({ rows: loose.map(r => ({ ...r, probable: true })), digits: last7, match_quality: loose.length ? 'probable' : 'none' })
+})
+
+// Diagnostic: list every phone-type field on the QB projects table. Admin-
+// only. Hit once from the browser dev tools (or curl) and paste the output
+// back so we can add the right fids to the projects sync fieldMap.
+router.get('/phone-fields-probe', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user?.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+  const token = process.env['QB_USER_TOKEN'] || ''
+  if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not set' }); return }
+  try {
+    const r = await fetch(`https://api.quickbase.com/v1/fields?tableId=br9kwm8na`, {
+      headers: {
+        'QB-Realm-Hostname': realm,
+        'Authorization': `QB-USER-TOKEN ${token}`,
+        'Accept': 'application/json',
+      },
+    })
+    if (!r.ok) { res.status(r.status).json({ error: await r.text() }); return }
+    const all = await r.json() as Array<{ id: number; label: string; fieldType: string }>
+    const phoneLike = all
+      .filter(f => f.fieldType === 'phone' || /phone|mobile|cell/i.test(f.label))
+      .map(f => ({ id: f.id, label: f.label, fieldType: f.fieldType }))
+      .sort((a, b) => a.id - b.id)
+    res.json({ count: phoneLike.length, fields: phoneLike })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
 })
 
 export { router as projectsRouter }

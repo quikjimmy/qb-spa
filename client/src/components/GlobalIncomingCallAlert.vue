@@ -26,6 +26,7 @@ interface MatchedProject {
   state: string
   coordinator: string
   closer: string
+  probable?: boolean
 }
 const matches = ref<Record<string, MatchedProject[]>>({})
 const matchLoading = ref<Record<string, boolean>>({})
@@ -121,17 +122,24 @@ const visible = computed(() => pendingRinging.value.slice(0, 3))   // cap to 3 s
           </button>
         </div>
 
-        <!-- Matched projects (if any) -->
+        <!-- Matched projects (if any). Probable-match rows get a subtle
+             amber tint so the user doesn't trust an uncertain match blindly. -->
         <div v-if="matches[keyFor(ev)]?.length" class="border-t bg-muted/30">
-          <p class="px-3.5 pt-2 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">Related projects</p>
+          <p class="px-3.5 pt-2 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">
+            Related projects
+            <span v-if="matches[keyFor(ev)]!.some(p => p.probable)" class="normal-case tracking-normal text-amber-700 ml-1">· probable match</span>
+          </p>
           <div class="divide-y">
             <button v-for="p in matches[keyFor(ev)]" :key="p.record_id"
               class="w-full flex items-center gap-2 px-3.5 py-1.5 hover:bg-muted/60 text-left transition-colors"
+              :class="p.probable ? 'bg-amber-50 dark:bg-amber-950/20' : ''"
               @click.stop="openProject(p.record_id)"
             >
-              <component :is="DtIconPhoneIncoming" class="w-3 h-3 text-sky-500 shrink-0" />
+              <component :is="DtIconPhoneIncoming" class="w-3 h-3 shrink-0" :class="p.probable ? 'text-amber-500' : 'text-sky-500'" />
               <div class="flex-1 min-w-0">
-                <p class="text-[12px] font-medium truncate">{{ p.customer_name }}</p>
+                <p class="text-[12px] font-medium truncate">
+                  <span v-if="p.probable" class="font-bold text-amber-700 mr-0.5">?</span>{{ p.customer_name }}
+                </p>
                 <p class="text-[10px] text-muted-foreground truncate">
                   {{ p.status }}<template v-if="p.state"> · {{ p.state }}</template><template v-if="p.coordinator"> · {{ p.coordinator }}</template>
                 </p>

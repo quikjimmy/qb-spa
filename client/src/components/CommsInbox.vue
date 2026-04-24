@@ -46,7 +46,7 @@ const loading = ref(false)
 // Matched projects per call_id so the inbox row can link to a QB project
 // without each row firing its own fetch. We prime the cache for every
 // visible row on load.
-interface MatchedProject { record_id: number; customer_name: string; status: string; state: string; coordinator: string }
+interface MatchedProject { record_id: number; customer_name: string; status: string; state: string; coordinator: string; probable?: boolean }
 const projectMatches = ref<Record<string, MatchedProject[]>>({})
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
@@ -71,7 +71,10 @@ async function primeMatch(number: string) {
   try {
     const res = await fetch(`/api/projects/by-phone?number=${encodeURIComponent(number)}&limit=3`, { headers: hdrs() })
     if (res.ok) {
-      const data = await res.json() as { rows: MatchedProject[] }
+      const data = await res.json() as { rows: MatchedProject[]; match_quality: string }
+      // The `probable` flag is set server-side on each row when the match
+      // came from the 7-digit fallback; UI renders these with a tentative
+      // chip style so the user knows to verify.
       projectMatches.value = { ...projectMatches.value, [number]: data.rows || [] }
     }
   } catch { /* ignore */ }
@@ -225,15 +228,20 @@ watch([tab, scope], load)
             <template v-if="r.talk_time_sec > 0"> · {{ fmtTalkSec(r.talk_time_sec) }}</template>
           </p>
 
-          <!-- Matched projects row -->
+          <!-- Matched projects row. Probable matches (last-7-digit fallback)
+               render with a yellow tint + "?" so the user treats them as
+               tentative and doesn't blindly click into the wrong project. -->
           <div v-if="r.external_number && projectMatches[r.external_number]?.length" class="flex flex-wrap gap-1 pt-0.5">
             <button v-for="p in projectMatches[r.external_number]" :key="p.record_id"
-              class="inline-flex items-center gap-1 rounded-md bg-muted/60 hover:bg-muted text-[10px] px-1.5 py-0.5 transition-colors"
+              class="inline-flex items-center gap-1 rounded-md text-[10px] px-1.5 py-0.5 transition-colors"
+              :class="p.probable ? 'bg-amber-100 hover:bg-amber-200 text-amber-900' : 'bg-muted/60 hover:bg-muted'"
+              :title="p.probable ? 'Probable match — caller\'s last 7 digits match, but country/area code differs' : 'Strict phone match'"
               @click="openProject(p.record_id)"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17l10-10"/><path d="M7 7h10v10"/></svg>
+              <span v-if="p.probable" class="font-bold">?</span>
               <span class="truncate max-w-[120px]">{{ p.customer_name }}</span>
-              <span v-if="p.status" class="text-[9px] text-muted-foreground">· {{ p.status }}</span>
+              <span v-if="p.status" class="text-[9px] opacity-70">· {{ p.status }}</span>
             </button>
           </div>
 
