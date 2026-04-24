@@ -821,15 +821,19 @@ interface DialpadSubscriptionRow {
   sms_subscription_error: string | null
 }
 
-// Dialpad's SMS subscription body varies by plan. We try shapes in order of
-// likelihood and stop at the first 2xx. Stored error on failure captures the
-// final attempt so admins can see the actual HTTP response body.
+// Dialpad's SMS subscription requires a `direction` field (proven by
+// production 400 response: "Message POST_PARAMS is missing required field
+// direction"). We try "all" first; if that isn't a valid enum value on this
+// plan, fall back to "inbound" as the minimum viable (receiving customer
+// replies is the main value add — outbound texts a PC sends they already
+// know about).
 async function createSmsSubscription(cfg: { apiKey: string; officeId: string | null }, webhookId: string): Promise<{ ok: boolean; id: string | null; status: number; body: string }> {
   const candidates: Array<Record<string, unknown>> = [
-    { webhook_id: webhookId },
-    { webhook_id: webhookId, enabled: true },
-    ...(cfg.officeId ? [{ webhook_id: webhookId, target_type: 'office', target_id: Number(cfg.officeId) }] : []),
-    { webhook_id: webhookId, target_type: 'company' },
+    { webhook_id: webhookId, direction: 'all' },
+    { webhook_id: webhookId, direction: 'all', enabled: true },
+    ...(cfg.officeId ? [{ webhook_id: webhookId, direction: 'all', target_type: 'office', target_id: Number(cfg.officeId) }] : []),
+    { webhook_id: webhookId, direction: 'inbound' },
+    { webhook_id: webhookId, direction: 'outbound' },
   ]
   let lastStatus = 0
   let lastBody = ''
