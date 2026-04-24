@@ -473,6 +473,20 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_email_started ON dialpad_call_rec
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_started ON dialpad_call_records(started_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_bucket ON dialpad_call_records(bucket, started_at DESC)`)
 
+// Per-user inbox read state. "Unread" = absence of a row here for a given
+// (user_id, call_id). Mark-as-read inserts; no delete on "un-read" (we can
+// add that later if needed). Kept separate from dialpad_call_records so a
+// cache rebuild doesn't blow away read state.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_inbox_reads (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    read_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, call_id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_inbox_read_user ON dialpad_inbox_reads(user_id, read_at DESC)`)
+
 // Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
 // SMS may not be supported on every Dialpad plan — refresh gracefully skips if
 // the stat_type is rejected.

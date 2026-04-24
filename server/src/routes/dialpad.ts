@@ -1061,6 +1061,134 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   res.json({ rows, limit, since_id: sinceId })
 })
 
+// ── Inbox: personal + actionable view of call records ────
+// Tabs:
+//   unread     = records in window without a dialpad_inbox_reads row for this user
+//   all        = any direction/state
+//   missed     = bucket = 'in_missed' (includes ring_no_answer)
+//   vms        = bucket = 'in_voicemail' OR was_voicemail = 1
+//   recordings = future — requires fetching from Dialpad stat_type=recordings;
+//                currently returns empty with a flag so the UI can show a
+//                "coming soon" state instead of "no data".
+//
+// Matching: defaults to the current user via user_email_lookup so primary
+// and alternate emails both resolve. `scope=all` lets admins see everyone.
+router.get('/inbox', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const tab = String(req.query['tab'] || 'unread').toLowerCase()
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '100'), 10) || 100, 1), 500)
+  const days = Math.min(Math.max(parseInt(String(req.query['days'] || '14'), 10) || 14, 1), 90)
+  const scopeAll = req.query['scope'] === 'all' && req.user.roles.includes('admin')
+
+  if (tab === 'recordings') {
+    // No data source yet — return a stub so the UI knows to show a
+    // "coming soon" empty state rather than "no results".
+    res.json({ tab, rows: [], coming_soon: true, note: 'Recordings require a separate stat_type=recordings pull.' })
+    return
+  }
+
+  const where: string[] = [`substr(r.started_at, 1, 10) >= date('now', ?)`]
+  const params: unknown[] = [`-${days} days`]
+
+  if (!scopeAll) {
+    // Scope to calls assigned to emails linked to the current portal user.
+    where.push(`r.user_email IN (
+      SELECT uel.email FROM user_email_lookup uel
+      WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad')
+    )`)
+    params.push(req.user.userId)
+  }
+
+  if (tab === 'missed') where.push(`r.bucket = 'in_missed'`)
+  else if (tab === 'vms') where.push(`(r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`)
+  else if (tab === 'unread') {
+    where.push(`NOT EXISTS (SELECT 1 FROM dialpad_inbox_reads ir WHERE ir.user_id = ? AND ir.call_id = r.call_id)`)
+    params.push(req.user.userId)
+  }
+  // 'all' applies no bucket filter.
+
+  const rows = db.prepare(`
+    SELECT r.call_id, r.user_email, r.user_name, r.direction, r.bucket,
+           r.external_number, r.started_at, r.connected_at, r.ended_at,
+           r.talk_time_sec, r.ring_time_sec, r.was_voicemail, r.was_transfer,
+           r.entry_point_target_kind,
+           COALESCE(u.name, r.user_name, r.user_email) AS coordinator,
+           CASE WHEN ir.call_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
+           ir.read_at
+    FROM dialpad_call_records r
+    LEFT JOIN user_email_lookup uel ON uel.email = r.user_email AND uel.system IN ('', 'dialpad')
+    LEFT JOIN users u ON u.id = uel.user_id
+    LEFT JOIN dialpad_inbox_reads ir ON ir.user_id = ? AND ir.call_id = r.call_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY r.started_at DESC
+    LIMIT ?
+  `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
+
+  // Counts per tab so the UI can render badges without extra round-trips.
+  // Uses the same scope filter as the main query.
+  const scopeClause = scopeAll ? '1=1' : `r.user_email IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`
+  const scopeParams: unknown[] = scopeAll ? [] : [req.user.userId]
+  const windowClause = `substr(r.started_at, 1, 10) >= date('now', ?)`
+  const baseWhere = `${scopeClause} AND ${windowClause}`
+  const baseParams = [...scopeParams, `-${days} days`]
+
+  const counts = {
+    unread: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_call_records r
+       WHERE ${baseWhere}
+         AND NOT EXISTS (SELECT 1 FROM dialpad_inbox_reads ir WHERE ir.user_id = ? AND ir.call_id = r.call_id)`
+    ).get(...baseParams, req.user.userId) as { c: number }).c,
+    all: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere}`
+    ).get(...baseParams) as { c: number }).c,
+    missed: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere} AND r.bucket = 'in_missed'`
+    ).get(...baseParams) as { c: number }).c,
+    vms: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere} AND (r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`
+    ).get(...baseParams) as { c: number }).c,
+    recordings: 0,
+  }
+
+  res.json({ tab, rows, counts, days, scope: scopeAll ? 'all' : 'me' })
+})
+
+router.post('/inbox/read-all', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  // Marks every currently-visible call record in the last 14 days as read
+  // for this user. Idempotent — INSERT OR IGNORE skips rows already marked.
+  const days = 14
+  db.prepare(
+    `INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id, read_at)
+     SELECT ?, r.call_id, datetime('now')
+     FROM dialpad_call_records r
+     WHERE substr(r.started_at, 1, 10) >= date('now', ?)
+       AND r.call_id IS NOT NULL
+       AND r.user_email IN (
+         SELECT uel.email FROM user_email_lookup uel
+         WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad')
+       )`
+  ).run(req.user.userId, `-${days} days`, req.user.userId)
+  res.json({ ok: true })
+})
+
+router.post('/inbox/:callId/read', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const callId = String(req.params['callId'] || '').trim()
+  if (!callId) { res.status(400).json({ error: 'callId required' }); return }
+  db.prepare(
+    `INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id) VALUES (?, ?)`
+  ).run(req.user.userId, callId)
+  res.json({ ok: true })
+})
+
+router.delete('/inbox/:callId/read', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const callId = String(req.params['callId'] || '').trim()
+  db.prepare(`DELETE FROM dialpad_inbox_reads WHERE user_id = ? AND call_id = ?`).run(req.user.userId, callId)
+  res.json({ ok: true })
+})
+
 // List coordinator names from Dialpad data for filter dropdowns
 router.get('/coordinators', (_req: Request, res: Response): void => {
   const rows = db.prepare(`

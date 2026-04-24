@@ -5,6 +5,9 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
 import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
+import CommsInbox from '@/components/CommsInbox.vue'
+import DtIconInbox from '@dialpad/dialtone-icons/vue3/inbox'
+import DtIconBarChart from '@dialpad/dialtone-icons/vue3/bar-chart-2'
 
 const auth = useAuthStore()
 
@@ -235,7 +238,14 @@ function canToggle(row: DrillRow): boolean {
 // ─── Lifecycle ───────────────────────────────────────────
 
 onMounted(() => {
-  applyPreset('last_30') // triggers loadSummary
+  // Set the default date window for Reporting but only load the summary if
+  // Reporting is the active tab — otherwise we wait until the user switches.
+  const t = new Date()
+  const from = new Date(t); from.setDate(t.getDate() - 29)
+  dateFrom.value = fmtLocalDate(from)
+  dateTo.value = fmtLocalDate(t)
+  datePreset.value = 'last_30'
+  if (mainTab.value === 'reporting') loadSummary()
 })
 
 watch([viewMode, fCoordinator], () => { loadSummary() })
@@ -245,6 +255,18 @@ watch([viewMode, fCoordinator], () => { loadSummary() })
 const activityCoordinator = ref<string>('')
 function toggleActivity(coord: string) {
   activityCoordinator.value = activityCoordinator.value === coord ? '' : coord
+}
+
+// Top-level tab: Inbox (actionable per-user view) or Reporting (KPIs +
+// drill-down). Default to Inbox — that's the "what do I need to do" view
+// most PCs will land on daily. localStorage persists the last choice.
+type CommsTab = 'inbox' | 'reporting'
+const mainTab = ref<CommsTab>((localStorage.getItem('comms.mainTab') as CommsTab) || 'inbox')
+function setMainTab(t: CommsTab) {
+  mainTab.value = t
+  localStorage.setItem('comms.mainTab', t)
+  // Load summary lazily when Reporting is opened
+  if (t === 'reporting' && !summary.value) loadSummary()
 }
 </script>
 
@@ -277,6 +299,34 @@ function toggleActivity(coord: string) {
       </div>
     </div>
 
+    <!-- Live events panel (SSE) — always visible, above the tabs -->
+    <DialpadLivePanel />
+
+    <!-- Top-level tabs: Inbox vs Reporting -->
+    <div class="flex rounded-lg border overflow-hidden bg-muted/20 w-full sm:w-auto sm:self-start">
+      <button
+        class="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors"
+        :class="mainTab === 'inbox' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+        @click="setMainTab('inbox')"
+      >
+        <component :is="DtIconInbox" class="w-3.5 h-3.5" />
+        Inbox
+      </button>
+      <button
+        class="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors"
+        :class="mainTab === 'reporting' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+        @click="setMainTab('reporting')"
+      >
+        <component :is="DtIconBarChart" class="w-3.5 h-3.5" />
+        Reporting
+      </button>
+    </div>
+
+    <!-- Inbox tab -->
+    <CommsInbox v-if="mainTab === 'inbox'" />
+
+    <!-- Reporting tab content below — everything date-window-scoped -->
+    <template v-if="mainTab === 'reporting'">
     <!-- Date presets + sync status -->
     <div class="flex flex-wrap items-center gap-1.5">
       <button v-for="p in presets" :key="p.key"
@@ -295,9 +345,6 @@ function toggleActivity(coord: string) {
         · SMS: <span :class="summary.lastSync.sms.status === 'failed' ? 'text-red-600' : 'text-emerald-600'">{{ summary.lastSync.sms.status }}</span>
       </span>
     </div>
-
-    <!-- Live events panel (SSE) — always visible, independent of date window -->
-    <DialpadLivePanel />
 
     <!-- Loading / empty -->
     <div v-if="loading && !summary" class="rounded-xl border bg-card p-12 text-center text-sm text-muted-foreground">Loading Comms Hub…</div>
@@ -497,6 +544,7 @@ function toggleActivity(coord: string) {
         :from="dateFrom || undefined"
         :to="dateTo || undefined"
       />
+    </template>
     </template>
   </div>
 </template>
