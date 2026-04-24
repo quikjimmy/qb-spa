@@ -107,11 +107,13 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
         </div>
       </header>
       <main ref="mainEl" class="flex-1 overflow-auto px-3 py-4 sm:p-6 relative">
-        <!-- Pull-to-refresh indicator -->
+        <!-- Pull-to-refresh indicator. Opacity ramps up only after the
+             dead zone (handled in the composable) — by the time the user
+             sees the spinner appearing, the pull has clearly started. -->
         <div
           v-if="pullDistance > 0 || isRefreshing"
-          class="flex justify-center py-2 transition-all duration-200 -mt-4 sm:-mt-6 mb-2"
-          :style="{ transform: `translateY(${Math.min(pullDistance, 60)}px)`, opacity: Math.min(pullDistance / 40, 1) }"
+          class="flex justify-center py-2 transition-all duration-200 -mt-4 sm:-mt-6 mb-2 pointer-events-none"
+          :style="{ transform: `translateY(${Math.min(pullDistance, 80)}px)`, opacity: Math.min(pullDistance / 90, 1) }"
         >
           <div class="size-6 rounded-full border-2 border-muted-foreground/30 border-t-foreground" :class="isRefreshing ? 'animate-spin' : ''" />
         </div>
