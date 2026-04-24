@@ -486,4 +486,35 @@ router.post('/favorites/:projectId', (req: Request, res: Response): void => {
   }
 })
 
+// Lookup projects by phone number. Strip all non-digits on both sides and
+// match the last 10 digits, so "+14077459738" and "(407) 745-9738" resolve
+// to the same customer record. Returns up to `limit` projects, newest first.
+router.get('/by-phone', (req: Request, res: Response): void => {
+  const raw = String(req.query['number'] || '').trim()
+  if (!raw) { res.json({ rows: [], digits: '' }); return }
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length < 7) { res.json({ rows: [], digits }); return }
+  // Last 10 digits is strict enough to avoid false matches but flexible
+  // enough to match "+1XXX" and "(XXX)" formats to the same record.
+  const match = digits.slice(-10)
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '5'), 10) || 5, 1), 20)
+
+  // REPLACE chain normalizes stored phones on-the-fly. For a few thousand
+  // projects this is fine; if project_cache ever gets huge we should store a
+  // phone_digits column and index it.
+  const rows = db.prepare(`
+    SELECT record_id, customer_name, phone, customer_address, email,
+           status, state, lender, coordinator, closer,
+           system_size_kw, sales_date
+    FROM project_cache
+    WHERE phone IS NOT NULL AND phone != ''
+      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')
+          LIKE '%' || ?
+    ORDER BY record_id DESC
+    LIMIT ?
+  `).all(match, limit) as Array<Record<string, unknown>>
+
+  res.json({ rows, digits: match })
+})
+
 export { router as projectsRouter }

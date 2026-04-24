@@ -285,11 +285,13 @@ function toggleActivity(coord: string) {
         @click="applyPreset(p.key)"
       >{{ p.label }}</button>
       <span v-if="dateFrom && dateTo" class="text-[10px] text-muted-foreground ml-2">{{ dateFrom }} → {{ dateTo }}</span>
-      <span class="text-[10px] text-muted-foreground ml-auto">
-        Calls: <span :class="summary?.lastSync?.calls?.status === 'failed' ? 'text-red-600' : 'text-emerald-600'">{{ summary?.lastSync?.calls?.status || 'never' }}</span>
+      <!-- Historical batch sync status (NOT the live webhook feed, which is
+           shown separately in the Live Activity panel below). -->
+      <span class="text-[10px] text-muted-foreground ml-auto" title="Historical records pulled from Dialpad's Stats API on demand. Separate from the live webhook feed.">
+        Historical sync · Calls: <span :class="summary?.lastSync?.calls?.status === 'failed' ? 'text-red-600' : 'text-emerald-600'">{{ summary?.lastSync?.calls?.status || 'never' }}</span>
         · {{ timeAgo(summary?.lastSync?.calls?.finished_at) }}
       </span>
-      <span v-if="summary?.lastSync?.sms" class="text-[10px] text-muted-foreground">
+      <span v-if="summary?.lastSync?.sms" class="text-[10px] text-muted-foreground" title="Historical SMS pull (stat_type=texts). Live SMS arrives separately via webhooks.">
         · SMS: <span :class="summary.lastSync.sms.status === 'failed' ? 'text-red-600' : 'text-emerald-600'">{{ summary.lastSync.sms.status }}</span>
       </span>
     </div>

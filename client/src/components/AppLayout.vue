@@ -14,6 +14,22 @@ import {
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
+import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
+import { useDialpadLive, unlockAudio } from '@/lib/dialpadLive'
+
+// Initialize the singleton Dialpad live connection at the app shell level
+// so ringing alerts pop no matter which view is active. useDialpadLive()
+// is idempotent — if a child component also calls it, they share one SSE.
+useDialpadLive()
+// Browsers require a user gesture before the audio context can start. Any
+// click anywhere in the shell unlocks it once.
+function unlockOnFirstGesture() {
+  unlockAudio()
+  window.removeEventListener('click', unlockOnFirstGesture)
+  window.removeEventListener('keydown', unlockOnFirstGesture)
+}
+window.addEventListener('click', unlockOnFirstGesture)
+window.addEventListener('keydown', unlockOnFirstGesture)
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 
 const route = useRoute()
@@ -103,5 +119,8 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
       </main>
     </SidebarInset>
     <FeedbackLauncher />
+    <!-- Sits above everything else; inner component is absent until a live
+         ringing event arrives, so zero cost on render when idle. -->
+    <GlobalIncomingCallAlert />
   </SidebarProvider>
 </template>
