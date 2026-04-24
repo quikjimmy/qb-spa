@@ -31,12 +31,37 @@ export function usePullToRefresh(
     pullDistance.value = 0
   }
 
+  // Walks up from a node to find the first ancestor whose overflow-y is
+  // auto/scroll AND which actually has scrollable content. Returns null if
+  // none — meaning the node is inside a fully-visible block.
+  function nearestScroller(node: HTMLElement | null): HTMLElement | null {
+    let cur: HTMLElement | null = node
+    while (cur) {
+      const style = getComputedStyle(cur)
+      if (/(auto|scroll)/.test(style.overflowY) && cur.scrollHeight > cur.clientHeight + 1) return cur
+      cur = cur.parentElement
+    }
+    return null
+  }
+
   function onTouchStart(e: TouchEvent) {
     if (isRefreshing.value) return
     const el = scrollEl.value
-    if (!el || el.scrollTop > 0) return
+    if (!el) return
     // Multi-touch (pinch/zoom) shouldn't start a pull.
     if (e.touches.length !== 1) return
+
+    // The *main page* must itself be scrolled to the very top.
+    if (el.scrollTop > 0) return
+
+    // If the finger landed inside an inner scrollable area (Live Activity
+    // panel, Call Activity Feed, dialogs, etc) that has its own scroll
+    // capacity, let that container handle the gesture instead — pull-to-
+    // refresh should never steal scroll from an inner scroller.
+    const target = e.target as HTMLElement | null
+    const inner = nearestScroller(target)
+    if (inner && inner !== el) return
+
     startY = e.touches[0]!.clientY
     startX = e.touches[0]!.clientX
     pulling = true
