@@ -1184,6 +1184,10 @@ router.get('/call/:callId/audio', async (req: Request, res: Response): Promise<v
 //
 // Matching: defaults to the current user via user_email_lookup so primary
 // and alternate emails both resolve. `scope=all` lets admins see everyone.
+// Unified inbox — calls (dialpad_call_records) + SMS (dialpad_events where
+// event_kind='sms'). Each row carries item_kind so the UI can render them
+// distinctly. Tabs unread/all mix both sources; missed/vms/recordings are
+// call-only; texts is SMS-only.
 router.get('/inbox', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
   const tab = String(req.query['tab'] || 'unread').toLowerCase()
@@ -1191,43 +1195,99 @@ router.get('/inbox', (req: Request, res: Response): void => {
   const days = Math.min(Math.max(parseInt(String(req.query['days'] || '14'), 10) || 14, 1), 90)
   const scopeAll = req.query['scope'] === 'all' && req.user.roles.includes('admin')
 
-  const where: string[] = [`substr(r.started_at, 1, 10) >= date('now', ?)`]
-  const params: unknown[] = [`-${days} days`]
+  const wantCalls = tab === 'unread' || tab === 'all' || tab === 'missed' || tab === 'vms' || tab === 'recordings'
+  const wantSms = tab === 'unread' || tab === 'all' || tab === 'texts'
 
-  if (!scopeAll) {
-    // Scope to calls assigned to emails linked to the current portal user.
-    where.push(`r.user_email IN (
-      SELECT uel.email FROM user_email_lookup uel
-      WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad')
-    )`)
-    params.push(req.user.userId)
+  // ── Calls query ──
+  let callRows: Array<Record<string, unknown>> = []
+  if (wantCalls) {
+    const where: string[] = [`substr(r.started_at, 1, 10) >= date('now', ?)`]
+    const params: unknown[] = [`-${days} days`]
+    if (!scopeAll) {
+      where.push(`r.user_email IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`)
+      params.push(req.user.userId)
+    }
+    if (tab === 'missed') where.push(`r.bucket = 'in_missed'`)
+    else if (tab === 'vms') where.push(`(r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`)
+    else if (tab === 'recordings') where.push(`r.was_recorded = 1`)
+    else if (tab === 'unread') {
+      where.push(`NOT EXISTS (SELECT 1 FROM dialpad_inbox_reads ir WHERE ir.user_id = ? AND ir.call_id = r.call_id)`)
+      params.push(req.user.userId)
+    }
+
+    callRows = db.prepare(`
+      SELECT 'call' AS item_kind, r.call_id AS item_id,
+             r.call_id, r.user_email, r.user_name, r.direction, r.bucket,
+             r.external_number, r.started_at AS sort_at, r.started_at, r.connected_at, r.ended_at,
+             r.talk_time_sec, r.ring_time_sec, r.was_voicemail, r.was_recorded, r.was_transfer,
+             r.entry_point_target_kind,
+             NULL AS message_body,
+             COALESCE(u.name, r.user_name, r.user_email) AS coordinator,
+             CASE WHEN ir.call_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
+             ir.read_at
+      FROM dialpad_call_records r
+      LEFT JOIN user_email_lookup uel ON uel.email = r.user_email AND uel.system IN ('', 'dialpad')
+      LEFT JOIN users u ON u.id = uel.user_id
+      LEFT JOIN dialpad_inbox_reads ir ON ir.user_id = ? AND ir.call_id = r.call_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY r.started_at DESC
+      LIMIT ?
+    `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
   }
 
-  if (tab === 'missed') where.push(`r.bucket = 'in_missed'`)
-  else if (tab === 'vms') where.push(`(r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`)
-  else if (tab === 'recordings') where.push(`r.was_recorded = 1`)
-  else if (tab === 'unread') {
-    where.push(`NOT EXISTS (SELECT 1 FROM dialpad_inbox_reads ir WHERE ir.user_id = ? AND ir.call_id = r.call_id)`)
-    params.push(req.user.userId)
+  // ── SMS query ──
+  let smsRows: Array<Record<string, unknown>> = []
+  if (wantSms) {
+    const where: string[] = [`e.event_kind = 'sms'`, `substr(e.received_at, 1, 10) >= date('now', ?)`]
+    const params: unknown[] = [`-${days} days`]
+    if (!scopeAll) {
+      where.push(`LOWER(TRIM(COALESCE(e.user_email, ''))) IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`)
+      params.push(req.user.userId)
+    }
+    if (tab === 'unread') {
+      where.push(`NOT EXISTS (SELECT 1 FROM dialpad_sms_reads sr WHERE sr.user_id = ? AND sr.event_id = e.id)`)
+      params.push(req.user.userId)
+    }
+    const raw = db.prepare(`
+      SELECT e.id, e.call_id, e.user_email, e.user_name, e.direction,
+             e.external_number, e.received_at, e.raw_json,
+             COALESCE(u.name, e.user_name, e.user_email) AS coordinator,
+             CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
+             sr.read_at
+      FROM dialpad_events e
+      LEFT JOIN user_email_lookup uel ON uel.email = LOWER(TRIM(COALESCE(e.user_email, ''))) AND uel.system IN ('', 'dialpad')
+      LEFT JOIN users u ON u.id = uel.user_id
+      LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.received_at DESC
+      LIMIT ?
+    `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
+    smsRows = raw.map(r => {
+      let body: string | null = null
+      try {
+        const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+        const s = String(p['text'] || p['message'] || p['body'] || p['message_body'] || '')
+        body = s || null
+      } catch { /* leave null */ }
+      return {
+        item_kind: 'sms', item_id: String(r.id),
+        call_id: r.call_id, user_email: r.user_email, user_name: r.user_name,
+        direction: r.direction,
+        bucket: r.direction === 'outgoing' ? 'sms_outgoing' : 'sms_incoming',
+        external_number: r.external_number,
+        sort_at: r.received_at, started_at: r.received_at,
+        message_body: body, coordinator: r.coordinator,
+        is_read: r.is_read, read_at: r.read_at,
+        talk_time_sec: 0, ring_time_sec: 0,
+        was_voicemail: 0, was_recorded: 0, was_transfer: 0,
+      }
+    })
   }
-  // 'all' applies no bucket filter.
 
-  const rows = db.prepare(`
-    SELECT r.call_id, r.user_email, r.user_name, r.direction, r.bucket,
-           r.external_number, r.started_at, r.connected_at, r.ended_at,
-           r.talk_time_sec, r.ring_time_sec, r.was_voicemail, r.was_recorded, r.was_transfer,
-           r.entry_point_target_kind,
-           COALESCE(u.name, r.user_name, r.user_email) AS coordinator,
-           CASE WHEN ir.call_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
-           ir.read_at
-    FROM dialpad_call_records r
-    LEFT JOIN user_email_lookup uel ON uel.email = r.user_email AND uel.system IN ('', 'dialpad')
-    LEFT JOIN users u ON u.id = uel.user_id
-    LEFT JOIN dialpad_inbox_reads ir ON ir.user_id = ? AND ir.call_id = r.call_id
-    WHERE ${where.join(' AND ')}
-    ORDER BY r.started_at DESC
-    LIMIT ?
-  `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
+  // Merge + sort desc by sort_at, respecting the overall limit.
+  const rows = [...callRows, ...smsRows]
+    .sort((a, b) => String(b.sort_at || b.started_at).localeCompare(String(a.sort_at || a.started_at)))
+    .slice(0, limit)
 
   // Counts per tab so the UI can render badges without extra round-trips.
   // Uses the same scope filter as the main query.
@@ -1255,6 +1315,14 @@ router.get('/inbox', (req: Request, res: Response): void => {
     recordings: (db.prepare(
       `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere} AND r.was_recorded = 1`
     ).get(...baseParams) as { c: number }).c,
+    // SMS count draws from dialpad_events (webhook-delivered). If webhooks
+    // aren't firing, this sits at 0 — expected, not a bug.
+    texts: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_events e
+       WHERE e.event_kind = 'sms'
+         AND substr(e.received_at, 1, 10) >= date('now', ?)
+         ${scopeAll ? '' : `AND LOWER(TRIM(COALESCE(e.user_email, ''))) IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`}`
+    ).get(...(scopeAll ? [`-${days} days`] : [`-${days} days`, req.user.userId])) as { c: number }).c,
   }
 
   res.json({ tab, rows, counts, days, scope: scopeAll ? 'all' : 'me' })
@@ -1262,8 +1330,8 @@ router.get('/inbox', (req: Request, res: Response): void => {
 
 router.post('/inbox/read-all', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
-  // Marks every currently-visible call record in the last 14 days as read
-  // for this user. Idempotent — INSERT OR IGNORE skips rows already marked.
+  // Marks every currently-visible call AND sms item in the last 14 days as
+  // read for this user. Idempotent via INSERT OR IGNORE.
   const days = 14
   db.prepare(
     `INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id, read_at)
@@ -1276,23 +1344,47 @@ router.post('/inbox/read-all', (req: Request, res: Response): void => {
          WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad')
        )`
   ).run(req.user.userId, `-${days} days`, req.user.userId)
-  res.json({ ok: true })
-})
-
-router.post('/inbox/:callId/read', (req: Request, res: Response): void => {
-  if (!req.user) { res.status(401).end(); return }
-  const callId = String(req.params['callId'] || '').trim()
-  if (!callId) { res.status(400).json({ error: 'callId required' }); return }
   db.prepare(
-    `INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id) VALUES (?, ?)`
-  ).run(req.user.userId, callId)
+    `INSERT OR IGNORE INTO dialpad_sms_reads (user_id, event_id, read_at)
+     SELECT ?, e.id, datetime('now')
+     FROM dialpad_events e
+     WHERE e.event_kind = 'sms'
+       AND substr(e.received_at, 1, 10) >= date('now', ?)
+       AND LOWER(TRIM(COALESCE(e.user_email, ''))) IN (
+         SELECT uel.email FROM user_email_lookup uel
+         WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad')
+       )`
+  ).run(req.user.userId, `-${days} days`, req.user.userId)
   res.json({ ok: true })
 })
 
-router.delete('/inbox/:callId/read', (req: Request, res: Response): void => {
+// Mark/unmark a SINGLE inbox item. Accepts ?kind=call|sms so the client can
+// toggle either type. Defaults to 'call' to preserve the existing API.
+router.post('/inbox/:itemId/read', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
-  const callId = String(req.params['callId'] || '').trim()
-  db.prepare(`DELETE FROM dialpad_inbox_reads WHERE user_id = ? AND call_id = ?`).run(req.user.userId, callId)
+  const itemId = String(req.params['itemId'] || '').trim()
+  const kind = String(req.query['kind'] || 'call')
+  if (!itemId) { res.status(400).json({ error: 'itemId required' }); return }
+  if (kind === 'sms') {
+    const eventId = parseInt(itemId, 10)
+    if (!eventId) { res.status(400).json({ error: 'sms itemId must be numeric event id' }); return }
+    db.prepare(`INSERT OR IGNORE INTO dialpad_sms_reads (user_id, event_id) VALUES (?, ?)`).run(req.user.userId, eventId)
+  } else {
+    db.prepare(`INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id) VALUES (?, ?)`).run(req.user.userId, itemId)
+  }
+  res.json({ ok: true })
+})
+
+router.delete('/inbox/:itemId/read', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const itemId = String(req.params['itemId'] || '').trim()
+  const kind = String(req.query['kind'] || 'call')
+  if (kind === 'sms') {
+    const eventId = parseInt(itemId, 10)
+    if (eventId) db.prepare(`DELETE FROM dialpad_sms_reads WHERE user_id = ? AND event_id = ?`).run(req.user.userId, eventId)
+  } else {
+    db.prepare(`DELETE FROM dialpad_inbox_reads WHERE user_id = ? AND call_id = ?`).run(req.user.userId, itemId)
+  }
   res.json({ ok: true })
 })
 

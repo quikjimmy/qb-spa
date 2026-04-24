@@ -515,6 +515,20 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_inbox_read_user ON dialpad_inbox_reads(user_id, read_at DESC)`)
 
+// Per-user read state for SMS messages. Keyed on dialpad_events.id so each
+// webhook-delivered SMS row can be marked read independently. Separate from
+// dialpad_inbox_reads (which keys on call_id TEXT) to avoid pretending we
+// have a polymorphic PK on a text column.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_sms_reads (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL,
+    read_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, event_id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_sms_read_user ON dialpad_sms_reads(user_id, read_at DESC)`)
+
 // Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
 // SMS may not be supported on every Dialpad plan — refresh gracefully skips if
 // the stat_type is rejected.

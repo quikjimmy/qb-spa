@@ -7,23 +7,27 @@ import DtIconPhoneMissed from '@dialpad/dialtone-icons/vue3/phone-missed'
 import DtIconVoicemail from '@dialpad/dialtone-icons/vue3/voicemail'
 import DtIconMic from '@dialpad/dialtone-icons/vue3/mic'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
+import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
 
 interface InboxRow {
-  call_id: string
+  item_kind: 'call' | 'sms'
+  item_id: string
+  call_id: string | null
   user_email: string
   user_name: string | null
   direction: string
   bucket: string
   external_number: string | null
   started_at: string
-  connected_at: string | null
-  ended_at: string | null
+  connected_at?: string | null
+  ended_at?: string | null
   talk_time_sec: number
   ring_time_sec: number
   was_voicemail: number
   was_recorded: number
   was_transfer: number
-  entry_point_target_kind: string | null
+  entry_point_target_kind?: string | null
+  message_body?: string | null
   coordinator: string
   is_read: number
   read_at: string | null
@@ -32,7 +36,7 @@ interface InboxRow {
 interface InboxResponse {
   tab: string
   rows: InboxRow[]
-  counts: { unread: number; all: number; missed: number; vms: number; recordings: number }
+  counts: { unread: number; all: number; missed: number; vms: number; recordings: number; texts: number }
   days: number
   scope: 'me' | 'all'
   coming_soon?: boolean
@@ -40,7 +44,7 @@ interface InboxResponse {
 }
 
 const auth = useAuthStore()
-const tab = ref<'unread' | 'all' | 'missed' | 'vms' | 'recordings'>('unread')
+const tab = ref<'unread' | 'all' | 'missed' | 'vms' | 'recordings' | 'texts'>('unread')
 const scope = ref<'me' | 'all'>('me')
 const resp = ref<InboxResponse | null>(null)
 const loading = ref(false)
@@ -81,21 +85,22 @@ async function primeMatch(number: string) {
   } catch { /* ignore */ }
 }
 
-async function markRead(callId: string) {
-  await fetch(`/api/dialpad/inbox/${encodeURIComponent(callId)}/read`, { method: 'POST', headers: hdrs() })
+async function markRead(r: InboxRow) {
+  const qs = r.item_kind === 'sms' ? '?kind=sms' : ''
+  await fetch(`/api/dialpad/inbox/${encodeURIComponent(r.item_id)}/read${qs}`, { method: 'POST', headers: hdrs() })
   if (resp.value) {
-    const row = resp.value.rows.find(r => r.call_id === callId)
+    const row = resp.value.rows.find(x => x.item_id === r.item_id && x.item_kind === r.item_kind)
     if (row) row.is_read = 1
     if (resp.value.counts.unread > 0) resp.value.counts.unread -= 1
   }
-  // Unread tab: remove the row from view since it no longer belongs.
   if (tab.value === 'unread' && resp.value) {
-    resp.value.rows = resp.value.rows.filter(r => r.call_id !== callId)
+    resp.value.rows = resp.value.rows.filter(x => !(x.item_id === r.item_id && x.item_kind === r.item_kind))
   }
 }
 
-async function markUnread(callId: string) {
-  await fetch(`/api/dialpad/inbox/${encodeURIComponent(callId)}/read`, { method: 'DELETE', headers: hdrs() })
+async function markUnread(r: InboxRow) {
+  const qs = r.item_kind === 'sms' ? '?kind=sms' : ''
+  await fetch(`/api/dialpad/inbox/${encodeURIComponent(r.item_id)}/read${qs}`, { method: 'DELETE', headers: hdrs() })
   await load()
 }
 
@@ -147,8 +152,24 @@ const tabs: TabDef[] = [
   { id: 'all',        label: 'All',        icon: DtIconInbox,      countKey: 'all' },
   { id: 'missed',     label: 'Missed',     icon: DtIconPhoneMissed, countKey: 'missed' },
   { id: 'vms',        label: 'VMs',        icon: DtIconVoicemail,  countKey: 'vms' },
+  { id: 'texts',      label: 'Texts',      icon: DtIconMessage,    countKey: 'texts' },
   { id: 'recordings', label: 'Recordings', icon: DtIconMic,        countKey: 'recordings' },
 ]
+
+// SMS bucket metadata — matches calls' bucketMeta shape so the row template
+// stays uniform. (bucketMeta's catch-all falls to 'other' which renders a
+// generic phone icon — not ideal for texts.)
+const SMS_META = {
+  sms_incoming: { label: 'Text received', short: 'Text in',  icon: DtIconMessage, colorClass: 'text-sky-600',     bgClass: 'bg-sky-100' },
+  sms_outgoing: { label: 'Text sent',     short: 'Text out', icon: DtIconMessage, colorClass: 'text-emerald-600', bgClass: 'bg-emerald-100' },
+} as const
+
+function metaFor(r: InboxRow) {
+  if (r.item_kind === 'sms') {
+    return r.bucket === 'sms_outgoing' ? SMS_META.sms_outgoing : SMS_META.sms_incoming
+  }
+  return bucketMeta(r.bucket)
+}
 
 const visibleRows = computed(() => resp.value?.rows || [])
 
@@ -205,6 +226,8 @@ watch([tab, scope], load)
         <template v-if="tab === 'unread'">Inbox zero</template>
         <template v-else-if="tab === 'missed'">No missed calls</template>
         <template v-else-if="tab === 'vms'">No voicemails</template>
+        <template v-else-if="tab === 'texts'">No texts received</template>
+        <template v-else-if="tab === 'recordings'">No recorded calls</template>
         <template v-else>No activity</template>
       </p>
       <p class="text-xs text-muted-foreground mt-1">Showing the last {{ resp?.days || 14 }} days · {{ scope === 'all' ? 'team' : 'you' }}</p>
@@ -212,13 +235,13 @@ watch([tab, scope], load)
 
     <!-- Inbox list -->
     <div v-else class="rounded-xl border bg-card overflow-hidden divide-y">
-      <div v-for="r in visibleRows" :key="r.call_id"
+      <div v-for="r in visibleRows" :key="`${r.item_kind}-${r.item_id}`"
         class="px-3 py-3 flex items-start gap-3 transition-colors"
         :class="r.is_read ? 'bg-card' : 'bg-sky-50/30 dark:bg-sky-950/10'"
       >
-        <!-- Icon chip -->
-        <div class="shrink-0 size-9 rounded-full flex items-center justify-center" :class="bucketMeta(r.bucket).bgClass">
-          <component :is="bucketMeta(r.bucket).icon" class="w-4 h-4" :class="bucketMeta(r.bucket).colorClass" />
+        <!-- Icon chip — SMS rows use the message icon + sky/emerald palette -->
+        <div class="shrink-0 size-9 rounded-full flex items-center justify-center" :class="metaFor(r).bgClass">
+          <component :is="metaFor(r).icon" class="w-4 h-4" :class="metaFor(r).colorClass" />
         </div>
 
         <!-- Main content -->
@@ -236,10 +259,16 @@ watch([tab, scope], load)
             <span class="text-[10px] text-muted-foreground tabular-nums shrink-0 ml-auto">{{ ago(r.started_at) }}</span>
           </div>
           <p class="text-[11px] text-muted-foreground truncate">
-            <span>{{ bucketMeta(r.bucket).short }}</span>
+            <span>{{ metaFor(r).short }}</span>
             <template v-if="r.external_number && projectMatches[r.external_number]?.[0]?.customer_name"> · {{ formatPhone(r.external_number) }}</template>
             <template v-if="r.coordinator && scope === 'all'"> · {{ r.coordinator }}</template>
             <template v-if="r.talk_time_sec > 0"> · {{ fmtTalkSec(r.talk_time_sec) }}</template>
+          </p>
+
+          <!-- SMS body — up to ~2 lines before truncation. Preserves newlines
+               so multi-line texts stay readable. -->
+          <p v-if="r.item_kind === 'sms' && r.message_body" class="text-[12px] leading-snug line-clamp-2 whitespace-pre-wrap pt-0.5">
+            {{ r.message_body }}
           </p>
 
           <!-- Matched projects row. Probable matches (last-7-digit fallback)
@@ -281,13 +310,13 @@ watch([tab, scope], load)
             </button>
             <button v-if="!r.is_read"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
-              @click="markRead(r.call_id)"
+              @click="markRead(r)"
             >
               Mark read
             </button>
             <button v-else
               class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-              @click="markUnread(r.call_id)"
+              @click="markUnread(r)"
             >
               Mark unread
             </button>
