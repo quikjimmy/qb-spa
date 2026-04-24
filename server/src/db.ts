@@ -464,11 +464,18 @@ db.exec(`
     talk_time_sec INTEGER NOT NULL DEFAULT 0,
     ring_time_sec INTEGER NOT NULL DEFAULT 0,
     was_voicemail INTEGER NOT NULL DEFAULT 0,
+    was_recorded INTEGER NOT NULL DEFAULT 0,
     was_transfer INTEGER NOT NULL DEFAULT 0,
     entry_point_target_kind TEXT,
     cached_at TEXT NOT NULL DEFAULT (datetime('now'))
   )
 `)
+// Additive migration — existing DBs have the narrower shape.
+{
+  const cols = db.prepare(`PRAGMA table_info(dialpad_call_records)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('was_recorded')) db.exec(`ALTER TABLE dialpad_call_records ADD COLUMN was_recorded INTEGER NOT NULL DEFAULT 0`)
+}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_email_started ON dialpad_call_records(user_email, started_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_started ON dialpad_call_records(started_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_rec_bucket ON dialpad_call_records(bucket, started_at DESC)`)

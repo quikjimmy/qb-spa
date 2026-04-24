@@ -21,6 +21,7 @@ interface InboxRow {
   talk_time_sec: number
   ring_time_sec: number
   was_voicemail: number
+  was_recorded: number
   was_transfer: number
   entry_point_target_kind: string | null
   coordinator: string
@@ -113,6 +114,19 @@ function openProject(rid: number) {
 function callBack(number: string | null) {
   if (!number) return
   window.location.href = `tel:${number}`
+}
+
+// Audio expansion state — lazily show the <audio> element only after the
+// user clicks "Listen" so we don't trigger a Dialpad fetch for every row.
+const audioOpen = ref<Record<string, boolean>>({})
+function toggleAudio(callId: string) {
+  audioOpen.value = { ...audioOpen.value, [callId]: !audioOpen.value[callId] }
+}
+function audioSrc(callId: string): string {
+  // token query param works because our authenticate middleware reads
+  // ?token= when the Authorization header is absent (audio elements can't
+  // set headers).
+  return `/api/dialpad/call/${encodeURIComponent(callId)}/audio?token=${encodeURIComponent(auth.token || '')}`
 }
 
 // Time-ago in compact form — 2m / 3h / 4d
@@ -246,13 +260,24 @@ watch([tab, scope], load)
           </div>
 
           <!-- Action buttons -->
-          <div class="flex items-center gap-1.5 pt-0.5">
+          <div class="flex items-center gap-1.5 pt-0.5 flex-wrap">
             <button v-if="r.external_number"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
               @click="callBack(r.external_number)"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
               Call back
+            </button>
+            <!-- Listen: shown for voicemails and recorded calls. Clicking
+                 mounts an <audio> element inline below which lazily fetches
+                 audio from /api/dialpad/call/:id/audio via our proxy. -->
+            <button v-if="r.was_voicemail || r.was_recorded"
+              class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors"
+              :class="audioOpen[r.call_id] ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+              @click="toggleAudio(r.call_id)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              {{ audioOpen[r.call_id] ? 'Hide' : (r.was_voicemail ? 'Listen VM' : 'Recording') }}
             </button>
             <button v-if="!r.is_read"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
@@ -266,6 +291,18 @@ watch([tab, scope], load)
             >
               Mark unread
             </button>
+          </div>
+
+          <!-- Inline audio player. Rendered only after the user opens it
+               (preload="none" is belt-and-suspenders since we only even
+               set src after the click). -->
+          <div v-if="audioOpen[r.call_id]" class="pt-1.5">
+            <audio
+              :src="audioSrc(r.call_id)"
+              controls
+              preload="none"
+              class="w-full h-8"
+            />
           </div>
         </div>
       </div>

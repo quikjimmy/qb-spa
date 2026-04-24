@@ -238,6 +238,7 @@ interface CallRecord {
   talk_time_sec: number
   ring_time_sec: number
   was_voicemail: boolean
+  was_recorded: boolean
   was_transfer: boolean
   entry_point_target_kind: string
 }
@@ -261,6 +262,9 @@ function aggregateCallRecords(rows: CsvRow[]): CallRecord[] {
     const ringMinutes = parseFloat(pick(row, ['ringing_duration'])) || 0
     const talkSeconds = parseFloat(pick(row, ['talk_duration_seconds', 'duration_seconds'])) || 0
 
+    const recordedRaw = pick(row, ['was_recorded', 'recorded', 'is_recorded']).toLowerCase()
+    const wasRecorded = recordedRaw === 'true' || recordedRaw === '1' || recordedRaw === 'yes'
+
     out.push({
       call_id: callId,
       user_email: email,
@@ -274,6 +278,7 @@ function aggregateCallRecords(rows: CsvRow[]): CallRecord[] {
       talk_time_sec: talkSeconds > 0 ? Math.round(talkSeconds) : Math.round(talkMinutes * 60),
       ring_time_sec: Math.round(ringMinutes * 60),
       was_voicemail: tags.has('voicemail') || tags.has('direct_to_voicemail'),
+      was_recorded: wasRecorded,
       was_transfer: [...tags].some(t => t.includes('transfer')),
       entry_point_target_kind: pick(row, ['entry_point_target_kind']),
     })
@@ -360,8 +365,8 @@ async function refreshCallStats(daysBack: number): Promise<{ rowsFetched: number
     const insertRecord = db.prepare(
       `INSERT OR REPLACE INTO dialpad_call_records
          (call_id, user_email, user_name, direction, bucket, external_number, started_at, connected_at, ended_at,
-          talk_time_sec, ring_time_sec, was_voicemail, was_transfer, entry_point_target_kind, cached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+          talk_time_sec, ring_time_sec, was_voicemail, was_recorded, was_transfer, entry_point_target_kind, cached_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
     )
     const dropWindow = db.prepare(
       `DELETE FROM dialpad_call_daily WHERE call_date >= date('now', ?) AND call_date <= date('now', '-1 day')`
@@ -379,7 +384,8 @@ async function refreshCallStats(daysBack: number): Promise<{ rowsFetched: number
         insertRecord.run(
           r.call_id, r.user_email, r.user_name || null, r.direction, r.bucket,
           r.external_number || null, r.started_at, r.connected_at || null, r.ended_at || null,
-          r.talk_time_sec, r.ring_time_sec, r.was_voicemail ? 1 : 0, r.was_transfer ? 1 : 0,
+          r.talk_time_sec, r.ring_time_sec,
+          r.was_voicemail ? 1 : 0, r.was_recorded ? 1 : 0, r.was_transfer ? 1 : 0,
           r.entry_point_target_kind || null,
         )
       }
@@ -1061,6 +1067,92 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   res.json({ rows, limit, since_id: sinceId })
 })
 
+// ── Audio proxy for recordings + voicemails ────────────
+// Dialpad stores recording/voicemail audio behind auth'd URLs. We fetch the
+// call detail from Dialpad, extract any audio URL present (recording first,
+// voicemail fallback), and stream the audio to the browser's <audio> tag.
+//
+// The <audio> element can't set headers, so this route accepts a JWT via
+// ?token= (the authenticate middleware already supports that). Kept as a
+// full arraybuffer proxy — voicemails are seconds long, recordings max out
+// around a few MB each; fine for the short-term. Swap to chunked Node
+// streams if we ever serve long-form audio.
+function findAudioUrlFromCall(call: Record<string, unknown>): { url: string; kind: 'recording' | 'voicemail' } | null {
+  // Dialpad's call detail response varies by plan; try the obvious
+  // locations first and fall back to a generic recursive search.
+  const candidates: Array<{ keys: Array<string | number>; kind: 'recording' | 'voicemail' }> = [
+    { keys: ['recording_details', 'url'], kind: 'recording' },
+    { keys: ['recording_url'], kind: 'recording' },
+    { keys: ['recordings', 0, 'url'], kind: 'recording' },
+    { keys: ['voicemail_details', 'url'], kind: 'voicemail' },
+    { keys: ['voicemail_url'], kind: 'voicemail' },
+    { keys: ['voicemail', 'url'], kind: 'voicemail' },
+  ]
+  for (const { keys, kind } of candidates) {
+    let cur: unknown = call
+    for (const k of keys) {
+      if (cur == null) break
+      cur = (cur as Record<string | number, unknown>)[k]
+    }
+    if (typeof cur === 'string' && /^https?:\/\//.test(cur)) return { url: cur, kind }
+  }
+  // Last resort — walk the object looking for any https URL that smells
+  // audio-ish. Keeps us robust if Dialpad shifts naming on a future API rev.
+  function walk(obj: unknown): { url: string; kind: 'recording' | 'voicemail' } | null {
+    if (!obj || typeof obj !== 'object') return null
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof v === 'string' && /^https?:\/\//.test(v) && /\.(mp3|wav|m4a|ogg)/i.test(v)) {
+        return { url: v, kind: /voicemail/i.test(k) ? 'voicemail' : 'recording' }
+      }
+      if (typeof v === 'object') {
+        const hit = walk(v); if (hit) return hit
+      }
+    }
+    return null
+  }
+  return walk(call)
+}
+
+router.get('/call/:callId/audio', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) { res.status(401).end(); return }
+  const callId = String(req.params['callId'] || '').trim()
+  if (!callId) { res.status(400).json({ error: 'callId required' }); return }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad not configured' }); return }
+
+  try {
+    const detail = await dialpadApi(cfg, 'GET', `/call/${encodeURIComponent(callId)}`)
+    if (!detail.ok) { res.status(detail.status).json({ error: 'Dialpad call detail failed', body: detail.text.slice(0, 400) }); return }
+    const hit = findAudioUrlFromCall(detail.data)
+    if (!hit) { res.status(404).json({ error: 'No recording or voicemail found for this call' }); return }
+
+    // Fetch the audio. Dialpad's recording URLs sometimes need Bearer auth
+    // (our org token) — try with the token first; if the server rejects
+    // the Authorization header (pre-signed URLs do this) retry bare.
+    let audioRes = await fetch(hit.url, { headers: { Authorization: `Bearer ${cfg.apiKey}` } })
+    if (!audioRes.ok && (audioRes.status === 400 || audioRes.status === 401 || audioRes.status === 403)) {
+      audioRes = await fetch(hit.url)
+    }
+    if (!audioRes.ok) {
+      const body = await audioRes.text().catch(() => '')
+      res.status(audioRes.status).json({ error: 'Upstream audio fetch failed', body: body.slice(0, 400) })
+      return
+    }
+
+    const ct = audioRes.headers.get('content-type') || (hit.url.includes('.wav') ? 'audio/wav' : 'audio/mpeg')
+    const cl = audioRes.headers.get('content-length')
+    res.setHeader('Content-Type', ct)
+    if (cl) res.setHeader('Content-Length', cl)
+    res.setHeader('X-Audio-Kind', hit.kind)
+    // Buffer-then-send is fine for short clips. Swap to chunked streaming
+    // if we start serving long-form recordings.
+    const buf = Buffer.from(await audioRes.arrayBuffer())
+    res.end(buf)
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // ── Inbox: personal + actionable view of call records ────
 // Tabs:
 //   unread     = records in window without a dialpad_inbox_reads row for this user
@@ -1080,13 +1172,6 @@ router.get('/inbox', (req: Request, res: Response): void => {
   const days = Math.min(Math.max(parseInt(String(req.query['days'] || '14'), 10) || 14, 1), 90)
   const scopeAll = req.query['scope'] === 'all' && req.user.roles.includes('admin')
 
-  if (tab === 'recordings') {
-    // No data source yet — return a stub so the UI knows to show a
-    // "coming soon" empty state rather than "no results".
-    res.json({ tab, rows: [], coming_soon: true, note: 'Recordings require a separate stat_type=recordings pull.' })
-    return
-  }
-
   const where: string[] = [`substr(r.started_at, 1, 10) >= date('now', ?)`]
   const params: unknown[] = [`-${days} days`]
 
@@ -1101,6 +1186,7 @@ router.get('/inbox', (req: Request, res: Response): void => {
 
   if (tab === 'missed') where.push(`r.bucket = 'in_missed'`)
   else if (tab === 'vms') where.push(`(r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`)
+  else if (tab === 'recordings') where.push(`r.was_recorded = 1`)
   else if (tab === 'unread') {
     where.push(`NOT EXISTS (SELECT 1 FROM dialpad_inbox_reads ir WHERE ir.user_id = ? AND ir.call_id = r.call_id)`)
     params.push(req.user.userId)
@@ -1110,7 +1196,7 @@ router.get('/inbox', (req: Request, res: Response): void => {
   const rows = db.prepare(`
     SELECT r.call_id, r.user_email, r.user_name, r.direction, r.bucket,
            r.external_number, r.started_at, r.connected_at, r.ended_at,
-           r.talk_time_sec, r.ring_time_sec, r.was_voicemail, r.was_transfer,
+           r.talk_time_sec, r.ring_time_sec, r.was_voicemail, r.was_recorded, r.was_transfer,
            r.entry_point_target_kind,
            COALESCE(u.name, r.user_name, r.user_email) AS coordinator,
            CASE WHEN ir.call_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
@@ -1147,7 +1233,9 @@ router.get('/inbox', (req: Request, res: Response): void => {
     vms: (db.prepare(
       `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere} AND (r.bucket = 'in_voicemail' OR r.was_voicemail = 1)`
     ).get(...baseParams) as { c: number }).c,
-    recordings: 0,
+    recordings: (db.prepare(
+      `SELECT COUNT(*) AS c FROM dialpad_call_records r WHERE ${baseWhere} AND r.was_recorded = 1`
+    ).get(...baseParams) as { c: number }).c,
   }
 
   res.json({ tab, rows, counts, days, scope: scopeAll ? 'all' : 'me' })

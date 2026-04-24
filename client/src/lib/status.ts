@@ -84,12 +84,16 @@ const statuses: Record<string, StatusConfig> = {
     label: 'Rejected',
   },
 
-  // ── Terminal / Closed (muted, fade back) ──
+  // ── Terminal / Closed ──
+  // Cancelled explicitly gets a red accent (per product direction) so a
+  // cancelled row jumps out in any table view. Keeps the bubble + left-
+  // border bar both red so the record reads as "deprioritized / closed,
+  // don't work this" at a glance.
   'Cancelled': {
-    bg: 'bg-gray-100 dark:bg-gray-800/30',
-    text: 'text-gray-500 dark:text-gray-500',
-    dot: 'bg-gray-400',
-    border: 'border-l-gray-300',
+    bg: 'bg-red-50 dark:bg-red-950/30',
+    text: 'text-red-700 dark:text-red-400',
+    dot: 'bg-red-500',
+    border: 'border-l-red-500',
     label: 'Cancelled',
   },
   'Surrendered': {
