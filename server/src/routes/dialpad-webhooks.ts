@@ -80,9 +80,25 @@ function firstNonEmpty(...vals: Array<string | undefined | null>): string | null
   return null
 }
 
+// Auto-subscribe creates both call + SMS subscriptions pointing at the same
+// webhook URL. So when kind is 'generic' we inspect the payload to figure out
+// whether this is a call or an SMS before classifying.
+function inferKind(payload: Record<string, unknown>): 'call' | 'sms' | 'generic' {
+  // SMS events typically carry a text body and from/to numbers, no call_id.
+  if ('text' in payload && typeof payload['text'] === 'string') return 'sms'
+  if ('message_id' in payload || 'sms_id' in payload) return 'sms'
+  if (('from_number' in payload || 'to_number' in payload) && !('call_id' in payload) && !('state' in payload)) return 'sms'
+  // Call events have call_id + state.
+  if ('call_id' in payload || 'master_call_id' in payload) return 'call'
+  if ('state' in payload || 'call_state' in payload) return 'call'
+  return 'generic'
+}
+
 // Turn a decoded payload into a row for insertion. Accepts both call and sms
-// shapes; kind argument picks which extractor to use.
+// shapes; kind argument picks which extractor to use. When 'generic', infer
+// from payload shape.
 function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEvent, 'id' | 'received_at'> {
+  if (kind === 'generic') kind = inferKind(payload)
   if (kind === 'sms') {
     const p = payload as SmsPayload
     const dir = (p.direction || '').toLowerCase()

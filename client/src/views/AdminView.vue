@@ -823,6 +823,22 @@ async function deactivateSubscription() {
   } finally { subBusy.value = false }
 }
 
+// ─── Dev mirror token (paste into local .env to replay prod events) ───
+const mirrorToken = ref('')
+const mirrorUrl = ref('')
+const mirrorBusy = ref(false)
+async function generateMirrorToken() {
+  mirrorBusy.value = true
+  try {
+    const res = await fetch('/api/dialpad/dev-mirror-token', { method: 'POST', headers: hdrs() })
+    if (res.ok) {
+      const body = await res.json()
+      mirrorToken.value = body.token
+      mirrorUrl.value = body.mirror_url
+    }
+  } finally { mirrorBusy.value = false }
+}
+
 async function runFullSync() {
   syncing.value = true
   syncResult.value = null
@@ -1742,6 +1758,29 @@ onMounted(async () => {
                 Activation creates a signed subscription in Dialpad pointing at <span class="font-mono">{{ subStatus?.webhook_url || '/api/webhooks/dialpad' }}</span>.
                 If it fails, register manually via Dialpad's Developer Settings using the URLs + secret above (Dialpad signs each event as an HS256 JWT we verify on receipt).
               </p>
+
+              <!-- Dev mirror — let local development see prod events without touching subscriptions -->
+              <div class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/10 p-3 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <div>
+                    <p class="text-sm font-medium">Dev mirror token</p>
+                    <p class="text-xs text-muted-foreground">Paste into a local <span class="font-mono">.env</span> so local dev sees prod webhook events in the Comms Hub.</p>
+                  </div>
+                  <Button size="sm" variant="outline" :disabled="mirrorBusy" @click="generateMirrorToken">
+                    {{ mirrorBusy ? '…' : 'Generate token' }}
+                  </Button>
+                </div>
+                <div v-if="mirrorToken" class="space-y-1.5">
+                  <div class="rounded-md bg-background border px-2.5 py-1.5 text-[11px] font-mono break-all">DIALPAD_MIRROR_URL={{ mirrorUrl }}</div>
+                  <div class="rounded-md bg-background border px-2.5 py-1.5 text-[11px] font-mono break-all">DIALPAD_MIRROR_TOKEN={{ mirrorToken }}</div>
+                  <div class="flex items-center gap-2">
+                    <button class="text-[10px] text-muted-foreground hover:text-foreground" @click="copyText(`DIALPAD_MIRROR_URL=${mirrorUrl}\nDIALPAD_MIRROR_TOKEN=${mirrorToken}`, 'mirror')">
+                      {{ webhookCopied === 'mirror' ? 'Copied!' : 'Copy both' }}
+                    </button>
+                    <span class="text-[10px] text-muted-foreground">30-day expiry · restart local server after pasting</span>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 

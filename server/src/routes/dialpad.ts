@@ -924,6 +924,31 @@ router.delete('/webhook-subscription', async (_req: Request, res: Response): Pro
   }
 })
 
+// ── Dev mirror token ────────────────────────────────────
+// Mints a long-lived JWT the admin can paste into their local .env as
+// DIALPAD_MIRROR_TOKEN so the local server can poll prod's /events/recent
+// endpoint and replay webhook data into the local Comms Hub. 30-day expiry
+// keeps risk of compromise bounded without requiring weekly rotation.
+// Admin-only caller; we reuse the authenticated user's identity so the token
+// has the same role set as whoever clicked the button.
+import jwt from 'jsonwebtoken'
+router.post('/dev-mirror-token', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).json({ error: 'Not authenticated' }); return }
+  if (!req.user.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  const secret = process.env['JWT_SECRET'] || 'dev-secret-change-me'
+  const token = jwt.sign(
+    { userId: req.user.userId, email: req.user.email, roles: req.user.roles },
+    secret,
+    { expiresIn: '30d' },
+  )
+  res.json({
+    token,
+    expires_in_days: 30,
+    mirror_url: req.protocol + '://' + req.get('host'),
+    note: 'Set DIALPAD_MIRROR_URL and DIALPAD_MIRROR_TOKEN in your local .env and restart the local server.',
+  })
+})
+
 // ── Events: SSE live stream + REST recent list ──────────
 
 // SSE requires auth via query token (EventSource can't set headers). The auth

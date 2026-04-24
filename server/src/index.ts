@@ -28,6 +28,7 @@ import { dialpadRouter } from './routes/dialpad'
 import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
+import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -97,4 +98,5 @@ if (isProd) {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT} (${isProd ? 'production' : 'development'})`)
   startAgentScheduler()
+  startDialpadEventMirror()
 })

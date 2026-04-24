@@ -38,6 +38,84 @@ let reconnectAttempt = 0
 
 const MAX_EVENTS = 25
 
+// ── Filter (Me / All) ────────────────────────────────────
+// Default to Me for non-admin users, All for admins. Toggle persists in
+// localStorage so users don't re-pick every time they open the page.
+const scope = ref<'me' | 'all'>((localStorage.getItem('comms.live.scope') as 'me' | 'all') || (auth.isAdmin ? 'all' : 'me'))
+function setScope(s: 'me' | 'all') {
+  scope.value = s
+  localStorage.setItem('comms.live.scope', s)
+}
+const myEmail = computed(() => (auth.user?.email || '').toLowerCase().trim())
+
+// ── Sound notifications ──────────────────────────────────
+// Distinct tones per kind, synthesized via Web Audio API so we don't ship
+// any asset files. Browsers require a user gesture before playing audio —
+// `audioUnlocked` flips true the first time the user clicks the toggle.
+const soundEnabled = ref(localStorage.getItem('comms.live.sound') !== '0')
+const audioUnlocked = ref(false)
+let audioCtx: AudioContext | null = null
+
+function unlockAudio() {
+  if (audioUnlocked.value) return
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctx) return
+    audioCtx = new Ctx()
+    // Some browsers start suspended until a gesture resumes them.
+    audioCtx.resume?.()
+    audioUnlocked.value = true
+  } catch { /* no audio available */ }
+}
+
+function playTone(kind: 'call' | 'sms') {
+  if (!soundEnabled.value || !audioCtx || audioCtx.state !== 'running') return
+  const now = audioCtx.currentTime
+
+  if (kind === 'call') {
+    // Two short rings ~800Hz, quick attack/decay. Distinctive but short.
+    for (const offset of [0, 0.22]) {
+      const osc = audioCtx.createOscillator()
+      const gain = audioCtx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = 880
+      gain.gain.setValueAtTime(0, now + offset)
+      gain.gain.linearRampToValueAtTime(0.18, now + offset + 0.01)
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.18)
+      osc.connect(gain).connect(audioCtx.destination)
+      osc.start(now + offset)
+      osc.stop(now + offset + 0.2)
+    }
+  } else {
+    // Single higher chime for SMS/generic.
+    const osc = audioCtx.createOscillator()
+    const gain = audioCtx.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(1320, now)
+    osc.frequency.exponentialRampToValueAtTime(1760, now + 0.12)
+    gain.gain.setValueAtTime(0, now)
+    gain.gain.linearRampToValueAtTime(0.14, now + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22)
+    osc.connect(gain).connect(audioCtx.destination)
+    osc.start(now)
+    osc.stop(now + 0.25)
+  }
+}
+
+function toggleSound() {
+  soundEnabled.value = !soundEnabled.value
+  localStorage.setItem('comms.live.sound', soundEnabled.value ? '1' : '0')
+  if (soundEnabled.value) unlockAudio()
+}
+
+// Filtered view — what the template renders. All events are kept in memory
+// so toggling Me/All is instant; the filter is purely presentational.
+const visibleEvents = computed<LiveEvent[]>(() => {
+  if (scope.value === 'all') return events.value
+  if (!myEmail.value) return events.value
+  return events.value.filter(e => (e.user_email || '').toLowerCase() === myEmail.value)
+})
+
 function ingest(ev: LiveEvent, prepend = true) {
   // Track the state sequence for this call so we can display "ringing → connected → hangup".
   if (ev.call_id) {
@@ -94,6 +172,13 @@ function connect() {
   es.addEventListener('dialpad', (e) => {
     try {
       const ev = JSON.parse((e as MessageEvent).data) as LiveEvent
+      // Only chime if the event would be visible under the current filter AND
+      // it's a new call (ringing/preanswer). We skip state transitions like
+      // "connected" and "hangup" so one call doesn't produce 3 dings.
+      const isNewCall = ev.event_kind === 'call' && (!ev.call_id || !stateHistory.value[ev.call_id])
+      const isSms = ev.event_kind === 'sms'
+      const passesScope = scope.value === 'all' || (myEmail.value && (ev.user_email || '').toLowerCase() === myEmail.value)
+      if (passesScope && (isNewCall || isSms)) playTone(isSms ? 'sms' : 'call')
       ingest(ev)
     } catch { /* ignore malformed */ }
   })
@@ -164,7 +249,7 @@ const connectionDot = computed(() => connected.value ? 'bg-emerald-500' : reconn
 
 <template>
   <div class="rounded-xl border bg-card overflow-hidden">
-    <div class="px-3 sm:px-4 py-2.5 border-b flex items-center justify-between gap-2">
+    <div class="px-3 sm:px-4 py-2.5 border-b flex items-center justify-between gap-2 flex-wrap">
       <div class="flex items-center gap-2 min-w-0">
         <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Live Activity</p>
         <span class="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
@@ -172,17 +257,35 @@ const connectionDot = computed(() => connected.value ? 'bg-emerald-500' : reconn
           <span>{{ connectionLabel }}</span>
         </span>
       </div>
-      <p v-if="events.length > 0" class="text-[10px] text-muted-foreground">{{ events.length }} shown</p>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <!-- Me / All filter -->
+        <div class="flex rounded-md border overflow-hidden">
+          <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="scope === 'me' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setScope('me')">Me</button>
+          <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="scope === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setScope('all')">All</button>
+        </div>
+        <!-- Sound toggle — first click also unlocks Web Audio (browser gesture requirement) -->
+        <button
+          class="inline-flex items-center justify-center size-6 rounded-md border transition-colors"
+          :class="soundEnabled ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+          :title="soundEnabled ? 'Sound on — click to mute' : 'Sound off — click to enable'"
+          @click="toggleSound"
+        >
+          <svg v-if="soundEnabled" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        </button>
+        <p v-if="visibleEvents.length > 0" class="text-[10px] text-muted-foreground tabular-nums">{{ visibleEvents.length }}</p>
+      </div>
     </div>
 
-    <div v-if="events.length === 0" class="px-4 py-8 text-center text-[11px] text-muted-foreground">
-      <template v-if="connected">Listening for events…</template>
+    <div v-if="visibleEvents.length === 0" class="px-4 py-8 text-center text-[11px] text-muted-foreground">
+      <template v-if="connected && events.length > 0 && scope === 'me'">No events for you in this session.</template>
+      <template v-else-if="connected">Listening for events…</template>
       <template v-else-if="reconnectAttempt > 0">Reconnecting to event stream…</template>
       <template v-else>No recent events.</template>
     </div>
 
     <div v-else class="divide-y max-h-[360px] overflow-y-auto">
-      <div v-for="e in events" :key="e.call_id || `evt-${e.id}`" class="px-3 sm:px-4 py-2">
+      <div v-for="e in visibleEvents" :key="e.call_id || `evt-${e.id}`" class="px-3 sm:px-4 py-2">
         <div class="flex items-center gap-2.5 sm:gap-3 cursor-pointer" @click="expanded[e.id] = !expanded[e.id]">
           <div class="shrink-0 size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
             <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
