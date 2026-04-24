@@ -779,6 +779,8 @@ interface WebhookSubStatus {
   webhook_id: string | null
   call_subscription_id: string | null
   sms_subscription_id: string | null
+  call_subscription_error: string | null
+  sms_subscription_error: string | null
   webhook_url: string
 }
 const subStatus = ref<WebhookSubStatus | null>(null)
@@ -820,6 +822,29 @@ async function deactivateSubscription() {
     await fetch('/api/dialpad/webhook-subscription', { method: 'DELETE', headers: hdrs() })
     subResult.value = 'Deactivated'
     await loadSubStatus()
+  } finally { subBusy.value = false }
+}
+
+async function retrySms() {
+  subBusy.value = true
+  subResult.value = ''
+  try {
+    const res = await fetch('/api/dialpad/webhook-subscription/retry-sms', { method: 'POST', headers: hdrs() })
+    const body = await res.json()
+    if (body.ok) subResult.value = `SMS subscription created (${body.id})`
+    else subResult.value = `Failed: ${body.error || 'unknown'}`
+    await loadSubStatus()
+  } finally { subBusy.value = false }
+}
+
+const probeResult = ref<string>('')
+async function probeSubscription() {
+  subBusy.value = true
+  probeResult.value = ''
+  try {
+    const res = await fetch('/api/dialpad/webhook-subscription/probe', { headers: hdrs() })
+    const body = await res.json()
+    probeResult.value = JSON.stringify(body, null, 2)
   } finally { subBusy.value = false }
 }
 
@@ -1752,6 +1777,27 @@ onMounted(async () => {
                 </div>
                 <p v-if="subResult" class="text-xs" :class="subResult.startsWith('Failed') ? 'text-red-600' : 'text-emerald-700'">{{ subResult }}</p>
                 <p v-if="!webhookConfig?.configured" class="text-[10px] text-muted-foreground">Generate a secret above before activating.</p>
+
+                <!-- Sub-level statuses with retry for SMS -->
+                <div v-if="subStatus?.subscribed" class="grid gap-1.5">
+                  <div class="flex items-center gap-2 text-xs flex-wrap">
+                    <span class="text-muted-foreground w-12 shrink-0">Call</span>
+                    <span v-if="subStatus.call_subscription_id" class="font-mono text-[10px] truncate">{{ subStatus.call_subscription_id }}</span>
+                    <span v-else class="text-red-600 text-[10px]">not active</span>
+                    <span v-if="subStatus.call_subscription_error" class="text-[10px] text-red-600 truncate">· {{ subStatus.call_subscription_error }}</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-xs flex-wrap">
+                    <span class="text-muted-foreground w-12 shrink-0">SMS</span>
+                    <span v-if="subStatus.sms_subscription_id" class="font-mono text-[10px] truncate">{{ subStatus.sms_subscription_id }}</span>
+                    <span v-else class="text-amber-600 text-[10px]">not active</span>
+                    <span v-if="subStatus.sms_subscription_error" class="text-[10px] text-red-600 min-w-0 flex-1 truncate" :title="subStatus.sms_subscription_error">· {{ subStatus.sms_subscription_error }}</span>
+                    <button v-if="!subStatus.sms_subscription_id" class="text-[10px] text-primary hover:underline shrink-0 ml-auto" :disabled="subBusy" @click="retrySms">Retry SMS</button>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button class="text-[10px] text-muted-foreground hover:text-foreground" :disabled="subBusy" @click="probeSubscription">Probe Dialpad status</button>
+                  </div>
+                  <pre v-if="probeResult" class="text-[9px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-48">{{ probeResult }}</pre>
+                </div>
               </div>
 
               <p class="text-xs text-muted-foreground">

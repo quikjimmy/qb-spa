@@ -85,8 +85,14 @@ function firstNonEmpty(...vals: Array<string | undefined | null>): string | null
 // whether this is a call or an SMS before classifying.
 function inferKind(payload: Record<string, unknown>): 'call' | 'sms' | 'generic' {
   // SMS events typically carry a text body and from/to numbers, no call_id.
-  if ('text' in payload && typeof payload['text'] === 'string') return 'sms'
+  // Cast a wide net on field names — Dialpad uses several variants across
+  // products and plan tiers.
+  const smsFields = ['text', 'message', 'body', 'message_body', 'sms_body']
+  for (const k of smsFields) {
+    if (k in payload && typeof payload[k] === 'string' && (payload[k] as string).length > 0) return 'sms'
+  }
   if ('message_id' in payload || 'sms_id' in payload) return 'sms'
+  if ('event_type' in payload && typeof payload['event_type'] === 'string' && /sms|text|message/i.test(payload['event_type'] as string)) return 'sms'
   if (('from_number' in payload || 'to_number' in payload) && !('call_id' in payload) && !('state' in payload)) return 'sms'
   // Call events have call_id + state.
   if ('call_id' in payload || 'master_call_id' in payload) return 'call'

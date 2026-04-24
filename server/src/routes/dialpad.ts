@@ -804,6 +804,34 @@ interface DialpadSubscriptionRow {
   webhook_id: string | null
   call_subscription_id: string | null
   sms_subscription_id: string | null
+  call_subscription_error: string | null
+  sms_subscription_error: string | null
+}
+
+// Dialpad's SMS subscription body varies by plan. We try shapes in order of
+// likelihood and stop at the first 2xx. Stored error on failure captures the
+// final attempt so admins can see the actual HTTP response body.
+async function createSmsSubscription(cfg: { apiKey: string; officeId: string | null }, webhookId: string): Promise<{ ok: boolean; id: string | null; status: number; body: string }> {
+  const candidates: Array<Record<string, unknown>> = [
+    { webhook_id: webhookId },
+    { webhook_id: webhookId, enabled: true },
+    ...(cfg.officeId ? [{ webhook_id: webhookId, target_type: 'office', target_id: Number(cfg.officeId) }] : []),
+    { webhook_id: webhookId, target_type: 'company' },
+  ]
+  let lastStatus = 0
+  let lastBody = ''
+  for (const body of candidates) {
+    const r = await dialpadApi(cfg, 'POST', '/subscriptions/sms', body)
+    if (r.ok) {
+      return { ok: true, id: String(r.data['id'] ?? '') || null, status: r.status, body: r.text }
+    }
+    lastStatus = r.status
+    lastBody = r.text
+    // Only keep trying when the error looks like a shape problem — auth or
+    // not-found errors won't improve with a different body.
+    if (r.status !== 400 && r.status !== 422) break
+  }
+  return { ok: false, id: null, status: lastStatus, body: lastBody }
 }
 
 async function dialpadApi(cfg: { apiKey: string }, method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; text: string }> {
@@ -824,17 +852,60 @@ async function dialpadApi(cfg: { apiKey: string }, method: string, path: string,
 
 router.get('/webhook-subscription', (req: Request, res: Response): void => {
   const row = db.prepare(
-    `SELECT webhook_id, call_subscription_id, sms_subscription_id FROM dialpad_config WHERE id = 1`
+    `SELECT webhook_id, call_subscription_id, sms_subscription_id, call_subscription_error, sms_subscription_error FROM dialpad_config WHERE id = 1`
   ).get() as DialpadSubscriptionRow
   const host = resolvePublicBaseUrl(req)
   res.json({
     webhook_id: row.webhook_id,
     call_subscription_id: row.call_subscription_id,
     sms_subscription_id: row.sms_subscription_id,
+    call_subscription_error: row.call_subscription_error,
+    sms_subscription_error: row.sms_subscription_error,
     subscribed: !!(row.webhook_id && (row.call_subscription_id || row.sms_subscription_id)),
     webhook_url: `${host}/api/webhooks/dialpad`,
     is_https: host.startsWith('https://'),
   })
+})
+
+// Retry just the SMS subscription using the shape-variant ladder. Useful
+// when the initial activate failed on SMS but calls succeeded.
+router.post('/webhook-subscription/retry-sms', async (_req: Request, res: Response): Promise<void> => {
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API key not configured' }); return }
+  const row = db.prepare(`SELECT webhook_id FROM dialpad_config WHERE id = 1`).get() as { webhook_id: string | null } | undefined
+  if (!row?.webhook_id) { res.status(400).json({ error: 'No webhook registered — run Activate first' }); return }
+  const attempt = await createSmsSubscription(cfg, row.webhook_id)
+  const error = attempt.ok ? null : `HTTP ${attempt.status}: ${attempt.body.slice(0, 500)}`
+  db.prepare(
+    `UPDATE dialpad_config SET sms_subscription_id = ?, sms_subscription_error = ?, updated_at = datetime('now') WHERE id = 1`
+  ).run(attempt.id, error)
+  if (attempt.ok) res.json({ ok: true, id: attempt.id })
+  else res.status(200).json({ ok: false, error, status: attempt.status, note: 'If Dialpad keeps rejecting, SMS subscriptions likely aren\'t enabled for this plan — check with Dialpad support.' })
+})
+
+// Probe the current subscription states at Dialpad to see if they're live.
+// Helps distinguish "we never created it" from "Dialpad has it but isn't
+// firing events".
+router.get('/webhook-subscription/probe', async (_req: Request, res: Response): Promise<void> => {
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API key not configured' }); return }
+  const row = db.prepare(
+    `SELECT webhook_id, call_subscription_id, sms_subscription_id FROM dialpad_config WHERE id = 1`
+  ).get() as DialpadSubscriptionRow
+  const out: Record<string, unknown> = { webhook_id: row.webhook_id, call: null, sms: null, webhook: null }
+  if (row.webhook_id) {
+    const r = await dialpadApi(cfg, 'GET', `/webhooks/${encodeURIComponent(row.webhook_id)}`)
+    out['webhook'] = { ok: r.ok, status: r.status, body: r.text.slice(0, 400) }
+  }
+  if (row.call_subscription_id) {
+    const r = await dialpadApi(cfg, 'GET', `/subscriptions/call/${encodeURIComponent(row.call_subscription_id)}`)
+    out['call'] = { ok: r.ok, status: r.status, body: r.text.slice(0, 400) }
+  }
+  if (row.sms_subscription_id) {
+    const r = await dialpadApi(cfg, 'GET', `/subscriptions/sms/${encodeURIComponent(row.sms_subscription_id)}`)
+    out['sms'] = { ok: r.ok, status: r.status, body: r.text.slice(0, 400) }
+  }
+  res.json(out)
 })
 
 router.post('/webhook-subscription', async (req: Request, res: Response): Promise<void> => {
@@ -874,21 +945,28 @@ router.post('/webhook-subscription', async (req: Request, res: Response): Promis
     // Step 2a: call subscription (all states)
     const callRes = await dialpadApi(cfg, 'POST', '/subscriptions/call', { webhook_id: webhookId, call_states: ['all'] })
     const callSubId = callRes.ok ? String(callRes.data['id'] ?? '') : null
+    const callError = callRes.ok ? null : `HTTP ${callRes.status}: ${callRes.text.slice(0, 500)}`
 
-    // Step 2b: SMS subscription (company-wide). SMS subs sometimes 404 on
-    // accounts without texting enabled — non-fatal, log it.
-    const smsRes = await dialpadApi(cfg, 'POST', '/subscriptions/sms', { webhook_id: webhookId, target_type: 'company', enabled: true })
-    const smsSubId = smsRes.ok ? String(smsRes.data['id'] ?? '') : null
+    // Step 2b: SMS subscription — try known body shapes, keep the error
+    // verbatim for display so admins can see why Dialpad rejected it.
+    const smsAttempt = await createSmsSubscription(cfg, webhookId)
+    const smsSubId = smsAttempt.id
+    const smsError = smsAttempt.ok ? null : `HTTP ${smsAttempt.status}: ${smsAttempt.body.slice(0, 500)}`
 
     db.prepare(
-      `UPDATE dialpad_config SET webhook_id = ?, call_subscription_id = ?, sms_subscription_id = ?, updated_at = datetime('now') WHERE id = 1`
-    ).run(webhookId, callSubId, smsSubId)
+      `UPDATE dialpad_config
+       SET webhook_id = ?,
+           call_subscription_id = ?, call_subscription_error = ?,
+           sms_subscription_id = ?, sms_subscription_error = ?,
+           updated_at = datetime('now')
+       WHERE id = 1`
+    ).run(webhookId, callSubId, callError, smsSubId, smsError)
 
     res.json({
       ok: true,
       webhook_id: webhookId,
-      call: callRes.ok ? { id: callSubId } : { error: callRes.text.slice(0, 400), status: callRes.status },
-      sms: smsRes.ok ? { id: smsSubId } : { error: smsRes.text.slice(0, 400), status: smsRes.status, note: 'SMS may not be enabled on this plan' },
+      call: callRes.ok ? { id: callSubId } : { error: callError, status: callRes.status },
+      sms: smsAttempt.ok ? { id: smsSubId } : { error: smsError, status: smsAttempt.status, note: 'See /webhook-subscription for last recorded error' },
     })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })

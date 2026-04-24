@@ -380,6 +380,9 @@ db.prepare(`INSERT OR IGNORE INTO dialpad_config (id) VALUES (1)`).run()
   if (!names.has('webhook_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN webhook_id TEXT`)
   if (!names.has('call_subscription_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN call_subscription_id TEXT`)
   if (!names.has('sms_subscription_id')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN sms_subscription_id TEXT`)
+  // Last error per sub kind so admins can see why activation partially failed.
+  if (!names.has('call_subscription_error')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN call_subscription_error TEXT`)
+  if (!names.has('sms_subscription_error')) db.exec(`ALTER TABLE dialpad_config ADD COLUMN sms_subscription_error TEXT`)
 }
 
 // Webhook-delivered events. Stored raw for forensics + displayed live via SSE.
