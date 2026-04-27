@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatPhone, fmtTalkSec } from '@/lib/callBuckets'
+import { usePhoneMatches } from '@/composables/usePhoneMatches'
 import DtIconPhoneIncoming from '@dialpad/dialtone-icons/vue3/phone-incoming'
 import DtIconPhoneOutgoing from '@dialpad/dialtone-icons/vue3/phone-outgoing'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
@@ -31,19 +32,43 @@ interface TimelineEvent {
   sec_since_prev: number
 }
 const events = ref<TimelineEvent[]>([])
+const hasRecording = ref(false)
+const hasVoicemail = ref(false)
 const loading = ref(false)
 const error = ref('')
+
+// Audio expansion — lazily mount the <audio> element only after the
+// user clicks Listen so we don't trigger a Dialpad fetch every time
+// the dialog opens.
+const audioOpen = ref(false)
+function audioSrc(): string {
+  return `/api/dialpad/call/${encodeURIComponent(props.callId)}/audio?token=${encodeURIComponent(auth.token || '')}`
+}
+
+// Customer name lookup — same shared cache as the inbox + live panel,
+// so by the time the user opens the timeline the name is usually
+// already resolved without a network call.
+const { matches: phoneMatches, primeMany } = usePhoneMatches()
+const customerName = computed<string>(() => {
+  const num = props.externalNumber || ''
+  if (!num) return ''
+  return phoneMatches.value[num]?.[0]?.customer_name || ''
+})
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
 async function load() {
   if (!props.open || !props.callId) return
+  audioOpen.value = false
   loading.value = true; error.value = ''
+  if (props.externalNumber) primeMany([props.externalNumber])
   try {
     const res = await fetch(`/api/dialpad/call/${encodeURIComponent(props.callId)}/timeline`, { headers: hdrs() })
     if (!res.ok) { error.value = `HTTP ${res.status}`; return }
-    const data = await res.json() as { events: TimelineEvent[] }
+    const data = await res.json() as { events: TimelineEvent[]; has_recording?: boolean; has_voicemail?: boolean }
     events.value = data.events || []
+    hasRecording.value = !!data.has_recording
+    hasVoicemail.value = !!data.has_voicemail
   } catch (e) { error.value = e instanceof Error ? e.message : String(e) }
   finally { loading.value = false }
 }
@@ -123,7 +148,12 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <div class="flex-1 min-w-0">
-            <p class="text-[14px] font-semibold truncate">Call timeline</p>
+            <!-- Customer name takes the headline when matched; phone moves
+                 to the secondary line so the user still has it for callback. -->
+            <p class="text-[14px] font-semibold truncate">
+              <template v-if="customerName">{{ customerName }}</template>
+              <template v-else>Call timeline</template>
+            </p>
             <p class="text-[10px] text-muted-foreground truncate">
               {{ formatPhone(externalNumber || null) || 'Unknown' }} · {{ headerKind.label.toLowerCase() }}
               <template v-if="totalDuration"> · total {{ fmtTalkSec(totalDuration) }}</template>
@@ -144,6 +174,24 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
             <p v-if="entryPoint" class="text-[10px] text-muted-foreground">via {{ entryPoint }}</p>
             <p v-else class="text-[10px] text-muted-foreground">direct to user</p>
           </div>
+          <!-- Listen toggle — primary CTA when this call has audio. Mounting
+               the <audio> element lazily keeps the Dialpad audio proxy idle
+               until the user actually wants to play. -->
+          <button
+            v-if="hasRecording || hasVoicemail"
+            class="shrink-0 inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors"
+            :class="audioOpen ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'"
+            @click="audioOpen = !audioOpen"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+            {{ audioOpen ? 'Hide' : (hasVoicemail && !hasRecording ? 'Voicemail' : 'Recording') }}
+          </button>
+        </div>
+
+        <!-- Inline audio player. Only mounted (and only fetched) after the
+             user clicks Listen — preload="none" is belt-and-suspenders. -->
+        <div v-if="audioOpen && (hasRecording || hasVoicemail)" class="px-4 py-2 border-b bg-muted/20">
+          <audio :src="audioSrc()" controls preload="none" class="w-full h-9" />
         </div>
 
         <!-- Vertical timeline -->

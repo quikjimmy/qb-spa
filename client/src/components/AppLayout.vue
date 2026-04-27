@@ -134,11 +134,12 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           </BreadcrumbList>
         </Breadcrumb>
         <div class="ml-auto flex items-center gap-1">
-          <!-- Live Hub toggle — desktop only; mobile uses the FAB rendered
-               by CommsLiveRail. Badge shows current live event count so
-               users have an at-a-glance "is something happening?" cue. -->
+          <!-- Live Hub toggle — sits next to the bell on every breakpoint
+               so the mobile entry point doesn't collide with the feedback
+               FAB. Badge shows current live event count so users have an
+               at-a-glance "is something happening?" cue. -->
           <button
-            class="hidden md:inline-flex relative items-center justify-center size-8 rounded-md transition-colors"
+            class="relative inline-flex items-center justify-center size-8 rounded-md transition-colors"
             :class="railOpen ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
             :title="railOpen ? 'Close Live Hub' : 'Open Live Hub'"
             @click="toggleRail"

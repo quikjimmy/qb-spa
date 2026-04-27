@@ -1187,7 +1187,27 @@ router.get('/call/:callId/timeline', (req: Request, res: Response): void => {
         step_index: idx, sec_since_prev: sincePrev,
       }
     })
-    res.json({ call_id: callId, events, count: events.length })
+    // Pull the call record (if we have one) so the UI can render a
+    // "Listen" button without making a second round-trip just to check.
+    // Falls back to nulls if no record exists yet — webhooks for live
+    // events arrive before the historical sync writes the record row.
+    const record = db.prepare(`
+      SELECT was_recorded, was_voicemail, talk_time_sec, started_at, bucket
+      FROM dialpad_call_records
+      WHERE call_id = ?
+      LIMIT 1
+    `).get(callId) as { was_recorded?: number; was_voicemail?: number; talk_time_sec?: number; started_at?: string; bucket?: string } | undefined
+
+    res.json({
+      call_id: callId,
+      events,
+      count: events.length,
+      has_recording: !!(record && record.was_recorded),
+      has_voicemail: !!(record && record.was_voicemail),
+      talk_time_sec: record?.talk_time_sec ?? null,
+      started_at: record?.started_at ?? null,
+      bucket: record?.bucket ?? null,
+    })
   } catch (e) {
     console.error('[dialpad/timeline] error for callId', callId, e)
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })

@@ -139,19 +139,6 @@ function startResize(e: MouseEvent) {
         </div>
       </div>
 
-      <!-- Floating action button — hidden when sheet is open -->
-      <button
-        v-if="!open"
-        class="fixed bottom-4 right-4 z-[70] size-14 rounded-full bg-primary text-primary-foreground shadow-lg active:scale-95 transition-transform flex items-center justify-center"
-        title="Open Live Hub"
-        @click="toggle"
-      >
-        <component :is="DtIconPhone" class="w-6 h-6" />
-        <span
-          v-if="eventCount > 0"
-          class="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-sky-500 text-[10px] font-bold tabular-nums flex items-center justify-center ring-2 ring-background"
-        >{{ eventCount > 99 ? '99+' : eventCount }}</span>
-      </button>
     </template>
   </Teleport>
 </template>
