@@ -53,39 +53,81 @@ router.get('/', (req: Request, res: Response): void => {
   const ptoSubmitted = db.prepare(`SELECT ${subG} as period, COUNT(*) as count FROM project_cache ${subW} GROUP BY period ORDER BY period`).all(...subP)
   const ptoApproved = db.prepare(`SELECT ${apprG} as period, COUNT(*) as count FROM project_cache ${apprW} GROUP BY period ORDER BY period`).all(...apprP)
 
-  // Box plot data
+  // Box plot data — bucket TWICE so the chart can pivot its x-axis based
+  // on which metric is being displayed:
+  //   Inst → PTO  → bucket by install_completed month (the actual cohort)
+  //   Sale → PTO  → bucket by sales_date month
+  // Previously only the sale-month bucketing existed, which meant an
+  // install in April with a sale in March showed up under March on both
+  // chart modes — masked recent installs.
   const rawTTP = db.prepare(`
-    SELECT SUBSTR(sales_date,1,7) as sm, CAST(JULIANDAY(pto_approved)-JULIANDAY(install_completed) AS INTEGER) as i2p, CAST(JULIANDAY(pto_approved)-JULIANDAY(sales_date) AS INTEGER) as s2p
+    SELECT SUBSTR(sales_date,1,7) as sm,
+           SUBSTR(install_completed,1,7) as im,
+           CAST(JULIANDAY(pto_approved)-JULIANDAY(install_completed) AS INTEGER) as i2p,
+           CAST(JULIANDAY(pto_approved)-JULIANDAY(sales_date) AS INTEGER) as s2p
     FROM project_cache ${base} AND ${has('pto_approved')} AND ${has('install_completed')} AND ${has('sales_date')} ORDER BY sales_date
-  `).all(...bp) as Array<{ sm: string; i2p: number; s2p: number }>
+  `).all(...bp) as Array<{ sm: string; im: string; i2p: number; s2p: number }>
 
-  const mm = new Map<string, { inst: number[]; sale: number[] }>()
-  for (const r of rawTTP) {
-    if (!mm.has(r.sm)) mm.set(r.sm, { inst: [], sale: [] })
-    const m = mm.get(r.sm)!
-    if (r.i2p >= 0) m.inst.push(useBizDays ? Math.round(r.i2p * bizFactor) : r.i2p)
-    if (r.s2p >= 0) m.sale.push(useBizDays ? Math.round(r.s2p * bizFactor) : r.s2p)
-  }
   function pct(a: number[], p: number) { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); const i = (p / 100) * (s.length - 1); const l = Math.floor(i); return l === Math.ceil(i) ? s[l]! : Math.round(s[l]! + (s[Math.ceil(i)]! - s[l]!) * (i - l)) }
   function mean(a: number[]) { return a.length ? Math.round(a.reduce((s, v) => s + v, 0) / a.length) : 0 }
 
-  // Total projects per sale month (for % PTO calculation)
+  type BucketAcc = { inst: number[]; sale: number[] }
+  function ensure(map: Map<string, BucketAcc>, key: string): BucketAcc {
+    let v = map.get(key)
+    if (!v) { v = { inst: [], sale: [] }; map.set(key, v) }
+    return v
+  }
+  const bySale = new Map<string, BucketAcc>()
+  const byInstall = new Map<string, BucketAcc>()
+  for (const r of rawTTP) {
+    const i2p = useBizDays ? Math.round(r.i2p * bizFactor) : r.i2p
+    const s2p = useBizDays ? Math.round(r.s2p * bizFactor) : r.s2p
+    if (r.sm) {
+      const v = ensure(bySale, r.sm)
+      if (r.i2p >= 0) v.inst.push(i2p)
+      if (r.s2p >= 0) v.sale.push(s2p)
+    }
+    if (r.im) {
+      const v = ensure(byInstall, r.im)
+      if (r.i2p >= 0) v.inst.push(i2p)
+      if (r.s2p >= 0) v.sale.push(s2p)
+    }
+  }
+
+  // Cohort-size lookups — one per bucketing. Each is "denominator" for the
+  // pctPto rate displayed in tooltip + footer table.
   const totalBySaleMonth = db.prepare(`
     SELECT SUBSTR(sales_date,1,7) as sm, COUNT(*) as total
     FROM project_cache ${base} AND ${has('sales_date')} AND ${has('install_completed')}
     GROUP BY sm
   `).all(...bp) as Array<{ sm: string; total: number }>
-  const totalMap = new Map(totalBySaleMonth.map(r => [r.sm, r.total]))
+  const totalBySale = new Map(totalBySaleMonth.map(r => [r.sm, r.total]))
 
-  const boxes: Array<{ sale_month: string; count: number; totalProjects: number; pctPto: number; inst: { p0: number; p25: number; p50: number; p90: number; p100: number; mean: number }; sale: { p0: number; p25: number; p50: number; p90: number; p100: number; mean: number } }> = []
-  for (const [month, d] of mm) {
-    const totalProj = totalMap.get(month) || d.inst.length
-    boxes.push({
-      sale_month: month, count: d.inst.length, totalProjects: totalProj, pctPto: totalProj > 0 ? Math.round((d.inst.length / totalProj) * 100) : 0,
-      inst: { p0: pct(d.inst, 0), p25: pct(d.inst, 25), p50: pct(d.inst, 50), p90: pct(d.inst, 90), p100: pct(d.inst, 100), mean: mean(d.inst) },
-      sale: { p0: pct(d.sale, 0), p25: pct(d.sale, 25), p50: pct(d.sale, 50), p90: pct(d.sale, 90), p100: pct(d.sale, 100), mean: mean(d.sale) },
-    })
+  const totalByInstallMonth = db.prepare(`
+    SELECT SUBSTR(install_completed,1,7) as im, COUNT(*) as total
+    FROM project_cache ${base} AND ${has('install_completed')}
+    GROUP BY im
+  `).all(...bp) as Array<{ im: string; total: number }>
+  const totalByInstall = new Map(totalByInstallMonth.map(r => [r.im, r.total]))
+
+  function boxRowsFor(map: Map<string, BucketAcc>, totals: Map<string, number>, monthKey: 'sale_month' | 'install_month') {
+    const out: Array<Record<string, unknown>> = []
+    const sorted = [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
+    for (const [month, d] of sorted) {
+      const totalProj = totals.get(month) || d.inst.length
+      out.push({
+        [monthKey]: month,
+        count: d.inst.length,
+        totalProjects: totalProj,
+        pctPto: totalProj > 0 ? Math.round((d.inst.length / totalProj) * 100) : 0,
+        inst: { p0: pct(d.inst, 0), p25: pct(d.inst, 25), p50: pct(d.inst, 50), p90: pct(d.inst, 90), p100: pct(d.inst, 100), mean: mean(d.inst) },
+        sale: { p0: pct(d.sale, 0), p25: pct(d.sale, 25), p50: pct(d.sale, 50), p90: pct(d.sale, 90), p100: pct(d.sale, 100), mean: mean(d.sale) },
+      })
+    }
+    return out
   }
+  const boxes = boxRowsFor(bySale, totalBySale, 'sale_month')
+  const boxesByInstall = boxRowsFor(byInstall, totalByInstall, 'install_month')
 
   // Aging
   const agingRows = db.prepare(`
@@ -161,7 +203,7 @@ router.get('/', (req: Request, res: Response): void => {
       fireCount: fireList.length,
       staleCount: staleQueue.length,
     },
-    charts: { ptoSubmitted, ptoApproved, timeToPtoBoxes: boxes, aging, installedByMonth: installed },
+    charts: { ptoSubmitted, ptoApproved, timeToPtoBoxes: boxes, timeToPtoBoxesByInstall: boxesByInstall, aging, installedByMonth: installed },
     pivot: { nemUser: nemPivotEnriched },
     lists: { fire: fireList, stale: staleQueue },
     filters: { states: (states as Array<{ value: string }>).map(s => s.value), lenders: (lenders as Array<{ value: string }>).map(l => l.value), epcs: (epcs as Array<{ value: string }>).map(e => e.value), nemUsers: (nemUsers as Array<{ value: string }>).map(n => n.value) },

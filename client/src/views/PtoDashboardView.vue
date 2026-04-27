@@ -20,6 +20,7 @@ const kpi = ref<any>({})
 const ptoSubmitted = ref<any[]>([])
 const ptoApproved = ref<any[]>([])
 const boxes = ref<any[]>([])
+const boxesByInstall = ref<any[]>([])
 const aging = ref<any[]>([])
 const installed = ref<any[]>([])
 const nemPivot = ref<any[]>([])
@@ -104,7 +105,9 @@ async function loadData() {
   try {
     const res = await fetch(`/api/analytics/pto?${p}`, { headers: hdrs() }); const d = await res.json()
     kpi.value = d.kpi; ptoSubmitted.value = d.charts.ptoSubmitted; ptoApproved.value = d.charts.ptoApproved
-    boxes.value = d.charts.timeToPtoBoxes; aging.value = d.charts.aging; installed.value = d.charts.installedByMonth
+    boxes.value = d.charts.timeToPtoBoxes
+    boxesByInstall.value = d.charts.timeToPtoBoxesByInstall || []
+    aging.value = d.charts.aging; installed.value = d.charts.installedByMonth
     nemPivot.value = d.pivot?.nemUser || []; fireList.value = d.lists?.fire || []; staleQueue.value = d.lists?.stale || []
     filterOptions.value = d.filters
   } finally { loading.value = false }
@@ -141,7 +144,19 @@ const apprChart = computed(() => ({ tooltip: { trigger: 'axis' as const }, grid:
 
 const boxXAxisName = computed(() => boxMetric.value === 'inst' ? 'Install Completed Date' : 'Sale Date')
 const boxYAxisName = computed(() => (boxMetric.value === 'inst' ? 'Install to PTO' : 'Sale to PTO') + ' (' + dayUnit.value + ')')
-const boxSlice = computed(() => boxes.value.slice(-13))
+
+// Pick the right dataset for the metric: install-month buckets when looking at
+// Inst→PTO (so "April installs" actually appear under April), sale-month
+// buckets for Sale→PTO. Each bucketing has its own pctPto denominator (cohort
+// size for that calendar month under that bucketing).
+const boxSlice = computed(() => {
+  const src = boxMetric.value === 'inst' ? boxesByInstall.value : boxes.value
+  return src.slice(-13)
+})
+// Each row carries the month under either `install_month` or `sale_month`
+// depending on which dataset it came from. Resolve here so chart + table
+// share one accessor.
+function boxMonth(r: any): string { return r.install_month || r.sale_month || '' }
 
 const boxChart = computed(() => {
   const d = boxSlice.value; const m = boxMetric.value; const c = m === 'inst' ? '#3b82f6' : '#f59e0b'
@@ -152,7 +167,7 @@ const boxChart = computed(() => {
         `Mean: ${x?.mean ?? '?'} ${dayUnit.value}<br/>Min: ${p.value[0]}<br/>P25: ${p.value[1]}<br/>P50: ${p.value[2]}<br/>P90: ${p.value[3]}<br/>Max: ${p.value[4]}`
     }},
     grid: { top: 10, bottom: 5, left: 5, right: 5, containLabel: true },
-    xAxis: { type: 'category' as const, data: d.map((r: any) => fp(r.sale_month)), axisLabel: { fontSize: 9 } },
+    xAxis: { type: 'category' as const, data: d.map((r: any) => fp(boxMonth(r))), axisLabel: { fontSize: 9 } },
     yAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } },
     series: [
       { type: 'boxplot' as const, data: d.map((r: any) => { const x = r[m]; return [x.p0, x.p25, x.p50, x.p90, x.p100] }), itemStyle: { color: c, borderColor: c } },
@@ -273,16 +288,16 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache() })
           <table class="w-full text-[10px]" style="table-layout:fixed">
             <tbody>
               <tr>
-                <td v-for="r in boxSlice" :key="r.sale_month" class="text-center text-red-600 font-bold py-0.5">{{ r[boxMetric]?.mean ?? '—' }}</td>
+                <td v-for="r in boxSlice" :key="boxMonth(r)" class="text-center text-red-600 font-bold py-0.5">{{ r[boxMetric]?.mean ?? '—' }}</td>
               </tr>
               <tr>
-                <td v-for="r in boxSlice" :key="r.sale_month" class="text-center text-muted-foreground py-0.5">{{ r.pctPto }}%</td>
+                <td v-for="r in boxSlice" :key="boxMonth(r)" class="text-center text-muted-foreground py-0.5">{{ r.pctPto }}%</td>
               </tr>
             </tbody>
           </table>
           <div class="flex gap-4 mt-1 text-[9px] text-muted-foreground">
             <span class="flex items-center gap-1"><span class="inline-block w-2 h-2 bg-red-500 rotate-45" /> Mean ({{ dayUnit }})</span>
-            <span>% = PTO rate for sale month</span>
+            <span>% = PTO rate for {{ boxMetric === 'inst' ? 'install' : 'sale' }} month</span>
           </div>
         </div>
       </div>
