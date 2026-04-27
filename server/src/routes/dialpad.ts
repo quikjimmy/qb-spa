@@ -827,13 +827,31 @@ interface DialpadSubscriptionRow {
 // plan, fall back to "inbound" as the minimum viable (receiving customer
 // replies is the main value add — outbound texts a PC sends they already
 // know about).
+// Per the Dialpad OpenAPI spec (CreateSmsEventSubscription): when
+// `status` is false (the default), the subscription delivers actual
+// SMS events with the `text` body. When `status` is true, the
+// subscription delivers delivery-status updates *without* `text`.
+// We explicitly set status:false so a tenant whose subscription was
+// previously created with status:true (which strips text) gets fixed
+// when /sms-subscription/repair runs.
 async function createSmsSubscription(cfg: { apiKey: string; officeId: string | null }, webhookId: string): Promise<{ ok: boolean; id: string | null; status: number; body: string }> {
+  const numWebhookId = Number(webhookId)
+  const baseBody: Record<string, unknown> = {
+    // The spec uses endpoint_id; older code used webhook_id. Send both
+    // so we work whether Dialpad accepts the old name as an alias or
+    // requires the new one. Dialpad ignores unknown fields silently.
+    endpoint_id: Number.isFinite(numWebhookId) ? numWebhookId : webhookId,
+    webhook_id: webhookId,
+    direction: 'all',
+    enabled: true,
+    status: false,            // ← critical: false means the SMS event payload includes `text`
+    include_internal: false,
+  }
   const candidates: Array<Record<string, unknown>> = [
-    { webhook_id: webhookId, direction: 'all' },
-    { webhook_id: webhookId, direction: 'all', enabled: true },
-    ...(cfg.officeId ? [{ webhook_id: webhookId, direction: 'all', target_type: 'office', target_id: Number(cfg.officeId) }] : []),
-    { webhook_id: webhookId, direction: 'inbound' },
-    { webhook_id: webhookId, direction: 'outbound' },
+    baseBody,
+    ...(cfg.officeId ? [{ ...baseBody, target_type: 'office', target_id: Number(cfg.officeId) }] : []),
+    { ...baseBody, direction: 'inbound' },
+    { ...baseBody, direction: 'outbound' },
   ]
   let lastStatus = 0
   let lastBody = ''
@@ -844,8 +862,6 @@ async function createSmsSubscription(cfg: { apiKey: string; officeId: string | n
     }
     lastStatus = r.status
     lastBody = r.text
-    // Only keep trying when the error looks like a shape problem — auth or
-    // not-found errors won't improve with a different body.
     if (r.status !== 400 && r.status !== 422) break
   }
   return { ok: false, id: null, status: lastStatus, body: lastBody }
@@ -1034,6 +1050,67 @@ router.delete('/webhook-subscription', async (_req: Request, res: Response): Pro
   }
 })
 
+// ── SMS subscription repair (admin) ──────────────────────
+// Recreates the SMS event subscription with status:false so future
+// webhook payloads include the `text` body. Use when historical
+// payloads in dialpad_events show only `message_status` fields and
+// no text — that indicates the subscription was created with
+// status:true (delivery-status mode).
+router.post('/sms-subscription/repair', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user || !req.user.roles.includes('admin')) {
+    res.status(403).json({ error: 'Admin only' }); return
+  }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API key not configured' }); return }
+
+  const row = db.prepare(`SELECT webhook_id, sms_subscription_id FROM dialpad_config WHERE id = 1`)
+    .get() as { webhook_id: string | null; sms_subscription_id: string | null }
+  if (!row.webhook_id) {
+    res.status(400).json({ error: 'No webhook registered yet — run auto-subscribe first.' })
+    return
+  }
+
+  const trace: Record<string, unknown> = {}
+  try {
+    // Inspect current subscription so the response shows what was wrong.
+    if (row.sms_subscription_id) {
+      const get = await dialpadApi(cfg, 'GET', `/subscriptions/sms/${encodeURIComponent(row.sms_subscription_id)}`)
+      trace['previous'] = { status: get.status, body: get.text.slice(0, 500) }
+      const del = await dialpadApi(cfg, 'DELETE', `/subscriptions/sms/${encodeURIComponent(row.sms_subscription_id)}`)
+      trace['delete'] = { status: del.status }
+    }
+
+    const created = await createSmsSubscription(cfg, row.webhook_id)
+    trace['create'] = {
+      ok: created.ok, status: created.status, body: created.body.slice(0, 500),
+    }
+
+    if (!created.ok) {
+      res.status(500).json({ error: 'Failed to recreate SMS subscription', trace })
+      return
+    }
+
+    db.prepare(`UPDATE dialpad_config SET sms_subscription_id = ?, sms_subscription_error = NULL, updated_at = datetime('now') WHERE id = 1`)
+      .run(created.id)
+
+    // Verify status:false on the newly created subscription so the
+    // admin sees confirmation in the response.
+    if (created.id) {
+      const verify = await dialpadApi(cfg, 'GET', `/subscriptions/sms/${encodeURIComponent(created.id)}`)
+      trace['verify'] = { status: verify.status, body: verify.text.slice(0, 500) }
+    }
+
+    res.json({
+      ok: true,
+      sms_subscription_id: created.id,
+      trace,
+      next_steps: 'Send a test SMS in Dialpad. The next /sms/thread fetch should show text bubbles for messages received after the repair.',
+    })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e), trace })
+  }
+})
+
 // ── Dev mirror token ────────────────────────────────────
 // Mints a long-lived JWT the admin can paste into their local .env as
 // DIALPAD_MIRROR_TOKEN so the local server can poll prod's /events/recent
@@ -1171,209 +1248,36 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
   }
   const isAdmin = req.user.roles.includes('admin')
 
-  // ── Body resolution: cache → payload extraction → Dialpad API ──
-  // Each row gets a body via:
-  //   1. text_body cache column (already backfilled — instant)
-  //   2. extractBody() on raw_json (works when the webhook included text)
-  //   3. Dialpad's GET /sms/{id} REST API (the slow path; for status-
-  //      only events that arrived without text). Results cache to
-  //      text_body so subsequent loads are fast.
-  // Step 3 is parallel-fetched for the current page, capped at 30
-  // requests so we never blast Dialpad. Bodies that resolve via API
-  // are written back to the row before we respond, so the response
-  // and DB stay in sync.
-  interface MissingRow { rowIndex: number; smsId: string }
-  const missing: MissingRow[] = []
-  const initialBodies: Array<string | null> = rows.map((r, idx) => {
+  // Body resolution — webhook payload only. Per the Dialpad OpenAPI
+  // spec there is NO REST endpoint to retrieve a single SMS body or
+  // to list SMS records (only POST /api/v2/sms to send). The body
+  // must arrive in the webhook itself, which only happens when the
+  // SMS event subscription is configured with status:false. If you're
+  // seeing status-only payloads, hit /sms-subscription/repair to
+  // rebuild the subscription with the correct flag.
+  const initialBodies: Array<string | null> = rows.map(r => {
     if (typeof r.text_body === 'string' && r.text_body.trim()) return r.text_body
-    let body: string | null = null
     try {
       const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
-      body = extractBody(p)
+      const body = extractBody(p)
+      if (body) {
+        // Cache so reopening the thread is instant and subsequent
+        // queries don't keep re-extracting from raw_json.
+        try {
+          db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
+            .run(body, r.id as number)
+        } catch { /* ignore */ }
+        return body
+      }
     } catch { /* leave null */ }
-    if (!body) {
-      // Dialpad's outbound message id is captured into call_id at ingest.
-      // It's a numeric string we can pass to /sms/{id}.
-      const smsId = (() => {
-        const v = r.call_id ? String(r.call_id).trim() : ''
-        return v && /^\d+$/.test(v) ? v : ''
-      })()
-      if (smsId) missing.push({ rowIndex: idx, smsId })
-    }
-    return body
+    return null
   })
 
-  // Diagnostic — collected per-row so the admin UI can see why a body
-  // didn't resolve. Maps rowIndex → "GET /sms/123 → 404: not found".
+  // No Dialpad REST endpoint exists to retrieve SMS bodies; we used to
+  // try /sms/{id} and /sms list-with-filter as fallbacks but the
+  // OpenAPI spec confirms only POST /api/v2/sms is exposed for SMS.
+  // Bodies must come through the webhook subscription with status:false.
   const lookupErrors: Record<number, string> = {}
-
-  if (missing.length > 0) {
-    const cfg = loadDialpadConfig()
-    if (!cfg) {
-      for (const m of missing) lookupErrors[m.rowIndex] = 'no Dialpad config'
-    } else {
-      const slice = missing.slice(0, 30)
-
-      // Strategy 1 — single-message GET. Dialpad has historically used
-      // /sms/{id} for this; some tenants/older API revs use /messages/{id}.
-      // We try a small ladder per id so we don't have to hard-code which
-      // tenant we're on.
-      const SINGLE_PATHS = (id: string) => [
-        `/sms/${encodeURIComponent(id)}`,
-        `/messages/${encodeURIComponent(id)}`,
-        `/sms_records/${encodeURIComponent(id)}`,
-      ]
-      const tryFetchOne = async (id: string): Promise<{ body: string | null; trace: string[] }> => {
-        const trace: string[] = []
-        for (const path of SINGLE_PATHS(id)) {
-          try {
-            const r = await dialpadApi(cfg, 'GET', path)
-            trace.push(`${path} → ${r.status}${r.ok ? '' : ': ' + r.text.slice(0, 120)}`)
-            if (r.ok) {
-              const body = extractBody(r.data) || (typeof r.data['text'] === 'string' ? String(r.data['text']) : null)
-              if (body && body.trim()) return { body: body.trim(), trace }
-            }
-          } catch (e) {
-            trace.push(`${path} threw: ${e instanceof Error ? e.message : String(e)}`)
-          }
-        }
-        return { body: null, trace }
-      }
-
-      const singleResults = await Promise.allSettled(slice.map(async m => {
-        const out = await tryFetchOne(m.smsId)
-        return { ...m, ...out }
-      }))
-
-      const stillMissing: typeof slice = []
-      const traceByIndex: Record<number, string[]> = {}
-      for (let i = 0; i < singleResults.length; i++) {
-        const r = singleResults[i]
-        if (r?.status !== 'fulfilled') { stillMissing.push(slice[i]!); continue }
-        const v = r.value
-        traceByIndex[v.rowIndex] = v.trace
-        if (v.body) {
-          initialBodies[v.rowIndex] = v.body
-          try {
-            db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
-              .run(v.body, rows[v.rowIndex]!.id as number)
-          } catch { /* ignore */ }
-        } else {
-          stillMissing.push(slice[i]!)
-        }
-      }
-
-      // Strategy 2 — fall back to the list endpoint, which we already
-      // know works on this tenant via fetchSmsRecords. Group missing
-      // rows by (target_id, day) so each Dialpad list call returns the
-      // exact slice that contains them. We extract target.id (the
-      // agent's Dialpad id) from raw_json so the list call is scoped
-      // and not pulling the entire org's traffic.
-      if (stillMissing.length > 0) {
-        interface Window {
-          targetId: string
-          startSec: number
-          endSec: number
-          group: Array<{ rowIndex: number; smsId: string }>
-        }
-        const windows = new Map<string, Window>()
-        for (const m of stillMissing) {
-          const r = rows[m.rowIndex]!
-          let targetId = ''
-          try {
-            const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
-            const t = p['target'] as Record<string, unknown> | undefined
-            if (t && t['id'] != null) targetId = String(t['id'])
-          } catch { /* leave empty */ }
-          const t = r.received_at ? new Date(String(r.received_at).replace(' ', 'T') + 'Z').getTime() : Date.now()
-          // Snap to the day in epoch seconds and grab a 24h window
-          // around the event so we always cover it even if Dialpad's
-          // event_timestamp is slightly off from received_at.
-          const dayStart = Math.floor(t / 1000 / 86400) * 86400
-          const startSec = dayStart - 86400
-          const endSec = dayStart + 2 * 86400
-          const key = `${targetId}|${startSec}`
-          let win = windows.get(key)
-          if (!win) {
-            win = { targetId, startSec, endSec, group: [] }
-            windows.set(key, win)
-          }
-          win.group.push(m)
-        }
-
-        for (const win of windows.values()) {
-          // Try the most specific filter first (target-scoped), fall
-          // back to no-target if Dialpad rejects the param.
-          const queries: Array<URLSearchParams> = []
-          if (win.targetId) {
-            const q = new URLSearchParams()
-            q.set('limit', '1000')
-            q.set('start_time', String(win.startSec))
-            q.set('end_time', String(win.endSec))
-            q.set('target_id', win.targetId)
-            q.set('target_type', 'user')
-            queries.push(q)
-          }
-          const noTarget = new URLSearchParams()
-          noTarget.set('limit', '1000')
-          noTarget.set('start_time', String(win.startSec))
-          noTarget.set('end_time', String(win.endSec))
-          queries.push(noTarget)
-
-          let allItems: Array<Record<string, unknown>> = []
-          let lastTrace = ''
-          for (const q of queries) {
-            try {
-              const r = await dialpadApi(cfg, 'GET', `/sms?${q}`)
-              lastTrace = `list /sms?${q} → ${r.status}`
-              if (r.ok) {
-                const items = (r.data['items'] as Array<Record<string, unknown>> | undefined) || []
-                lastTrace += ` (${items.length} items)`
-                if (items.length > 0) { allItems = items; break }
-                // 200 + 0 items: fall through to the next, less filtered query.
-              } else {
-                lastTrace += `: ${r.text.slice(0, 200)}`
-                // Auth/scope errors don't improve with fewer params.
-                if (r.status === 401 || r.status === 403) break
-              }
-            } catch (e) {
-              lastTrace = `list /sms threw: ${e instanceof Error ? e.message : String(e)}`
-              break
-            }
-          }
-
-          const byId = new Map<string, Record<string, unknown>>()
-          for (const it of allItems) {
-            const id = it['id']
-            if (id != null) byId.set(String(id), it)
-          }
-          for (const m of win.group) {
-            const item = byId.get(m.smsId)
-            const body = item ? (extractBody(item) || (typeof item['text'] === 'string' ? String(item['text']) : null)) : null
-            const matchTrace = item ? `matched id ${m.smsId}` : `no match for ${m.smsId} (got ${allItems.length} items)`
-            if (body && body.trim()) {
-              initialBodies[m.rowIndex] = body.trim()
-              try {
-                db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
-                  .run(body.trim(), rows[m.rowIndex]!.id as number)
-              } catch { /* ignore */ }
-              ;(traceByIndex[m.rowIndex] ||= []).push(`${lastTrace}, ${matchTrace} ✓`)
-            } else {
-              ;(traceByIndex[m.rowIndex] ||= []).push(`${lastTrace}, ${matchTrace}`)
-            }
-          }
-        }
-      }
-
-      for (const [idxStr, trace] of Object.entries(traceByIndex)) {
-        const idx = Number(idxStr)
-        if (initialBodies[idx]) continue
-        lookupErrors[idx] = trace.join(' | ')
-      }
-      const firstErr = Object.values(lookupErrors)[0]
-      if (firstErr) console.error('[sms/thread] backfill miss:', firstErr)
-    }
-  }
 
   const messages = rows.map((r, idx) => {
     const body = initialBodies[idx]
