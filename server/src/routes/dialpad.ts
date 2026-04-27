@@ -1050,6 +1050,75 @@ router.delete('/webhook-subscription', async (_req: Request, res: Response): Pro
   }
 })
 
+// ── SMS body backfill via Stats API (admin) ─────────────
+// Pulls a CSV of every SMS via Dialpad's Stats endpoint
+// (stat_type=texts, export_type=records), which DOES include the
+// message text. Updates dialpad_events.text_body for any row whose
+// call_id (== Dialpad message id) matches a CSV row. One-shot
+// recovery for historical events that arrived without text because
+// the webhook subscription was in status:true mode.
+//
+// Synchronous — Stats jobs take 15s–3min. Admin tolerates the wait
+// for a one-time backfill.
+router.post('/sms-backfill', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user || !req.user.roles.includes('admin')) {
+    res.status(403).json({ error: 'Admin only' }); return
+  }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API key not configured' }); return }
+
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { days?: number }
+  const days = Math.min(Math.max(parseInt(String(body.days ?? 30), 10) || 30, 1), 90)
+
+  try {
+    const result = await runStatsExport(cfg, {
+      stat_type: 'texts',
+      export_type: 'records',
+      days_ago_start: days,
+      days_ago_end: 0,
+      timezone: 'UTC',
+    })
+
+    // The CSV column names depend on Dialpad's export schema; we try
+    // common variants for the id and text columns. Once we see the
+    // first row we'll know which column carries the body.
+    const idCols = ['id', 'message_id', 'sms_id', 'msg_id']
+    const textCols = ['text', 'message', 'body', 'message_body', 'content']
+    const updateStmt = db.prepare(
+      `UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now')
+       WHERE call_id = ? AND event_kind = 'sms' AND (text_body IS NULL OR text_body = '')`
+    )
+
+    let matched = 0
+    let unmatched = 0
+    let skipped = 0
+    for (const row of result.rows) {
+      const id = idCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
+      const text = textCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
+      if (!id) { skipped++; continue }
+      if (!text) { unmatched++; continue }
+      const r = updateStmt.run(String(text), String(id))
+      if (r.changes > 0) matched++
+      else unmatched++
+    }
+
+    res.json({
+      ok: true,
+      window_days: days,
+      total_rows: result.rows.length,
+      matched,
+      unmatched,
+      skipped,
+      sample_headers: Object.keys(result.rows[0] || {}),
+      next_steps: matched > 0
+        ? 'Reload any SMS thread to see text bubbles populated from this backfill.'
+        : 'No matches updated — check sample_headers for the actual column names Dialpad returned.',
+    })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // ── SMS subscription repair (admin) ──────────────────────
 // Recreates the SMS event subscription with status:false so future
 // webhook payloads include the `text` body. Use when historical

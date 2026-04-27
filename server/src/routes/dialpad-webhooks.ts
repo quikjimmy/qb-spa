@@ -103,7 +103,23 @@ function inferKind(payload: Record<string, unknown>): 'call' | 'sms' | 'generic'
 // Turn a decoded payload into a row for insertion. Accepts both call and sms
 // shapes; kind argument picks which extractor to use. When 'generic', infer
 // from payload shape.
-function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEvent, 'id' | 'received_at'> {
+// Walk common Dialpad payload shapes for the message body. Dialpad's
+// SMS events deliver the text at the top level (per the OpenAPI spec's
+// SMSProto), but we also tolerate nested shapes seen on some tenants.
+function findSmsText(payload: Record<string, unknown>): string | null {
+  const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body'] || payload['content']
+  if (typeof direct === 'string' && direct.trim()) return direct
+  for (const key of ['data', 'sms', 'message_object', 'event']) {
+    const nested = payload[key]
+    if (nested && typeof nested === 'object') {
+      const inner = findSmsText(nested as Record<string, unknown>)
+      if (inner) return inner
+    }
+  }
+  return null
+}
+
+function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEvent, 'id' | 'received_at'> & { text_body?: string | null } {
   if (kind === 'generic') kind = inferKind(payload)
   if (kind === 'sms') {
     const p = payload as SmsPayload
@@ -118,6 +134,10 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
       external_number: firstNonEmpty(dir.includes('in') ? p.from_number : p.to_number),
       direction: dir.includes('in') ? 'incoming' : dir.includes('out') ? 'outgoing' : null,
       raw_json: JSON.stringify(payload),
+      // Populated when the subscription is configured with status:false
+      // and Dialpad delivers the actual SMS event with text. Status-only
+      // payloads have no text and we fall back to null.
+      text_body: findSmsText(payload),
     }
   }
   // call or generic — Dialpad's payload shape varies across event types.
@@ -209,9 +229,14 @@ function makeHandler(kind: 'call' | 'sms' | 'generic') {
 
     const flat = flatten(kind, payload)
     const result = db.prepare(
-      `INSERT INTO dialpad_events (event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(flat.event_kind, flat.event_state, flat.call_id, flat.user_email, flat.user_name, flat.external_number, flat.direction, flat.raw_json)
+      `INSERT INTO dialpad_events (event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, text_body, text_body_fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      flat.event_kind, flat.event_state, flat.call_id, flat.user_email, flat.user_name,
+      flat.external_number, flat.direction, flat.raw_json,
+      ('text_body' in flat ? flat.text_body : null) || null,
+      ('text_body' in flat && flat.text_body) ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null,
+    )
     const row = db.prepare(
       `SELECT id, event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, received_at
        FROM dialpad_events WHERE id = ?`
