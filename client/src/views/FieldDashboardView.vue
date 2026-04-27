@@ -637,27 +637,33 @@ watch(preset, load)
           <p class="text-[11px] font-semibold uppercase tracking-widest pb-1 border-b" :class="g.color">
             {{ g.label }} <span class="ml-1 text-muted-foreground">({{ g.rows.length }})</span>
           </p>
-          <div class="grid gap-2">
+          <!-- grid-cols-1 + min-w-0 on each track keeps cards from stretching
+               past their row width when long template names / crew labels /
+               5-chip Install rows would otherwise force horizontal overflow. -->
+          <div class="grid grid-cols-1 gap-2 min-w-0">
             <a v-for="t in g.rows" :key="String(qbv(t, 3))"
               :href="projectUrl(t) || undefined" target="_blank" rel="noopener"
-              class="block rounded-xl border-l-[3px] border bg-card p-3 transition-transform active:scale-[0.99]"
+              class="block rounded-xl border-l-[3px] border bg-card p-3 transition-transform active:scale-[0.99] min-w-0 overflow-hidden"
               :class="getTaskStatus(t).borderCls"
             >
-              <div class="flex items-start justify-between gap-2 mb-0.5">
+              <div class="flex items-start justify-between gap-2 mb-0.5 min-w-0">
                 <p class="font-semibold text-sm flex-1 min-w-0 truncate">
                   {{ statusEmoji(t) }} {{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') || 'Unknown' }}
                 </p>
-                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0" :class="getTaskStatus(t).pillCls">{{ getTaskStatus(t).label }}</span>
-                <span v-if="lateBadgeFor(t)" class="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide shrink-0" :class="lateBadgeFor(t)!.cls">{{ lateBadgeFor(t)!.label }}</span>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 whitespace-nowrap" :class="getTaskStatus(t).pillCls">{{ getTaskStatus(t).label }}</span>
+                <span v-if="lateBadgeFor(t)" class="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide shrink-0 whitespace-nowrap" :class="lateBadgeFor(t)!.cls">{{ lateBadgeFor(t)!.label }}</span>
               </div>
-              <p class="text-[11px] text-muted-foreground truncate mb-1">
+              <p class="text-[11px] text-muted-foreground truncate mb-1 min-w-0">
                 {{ fmtDateTime(qbv(t, fieldIds!.scheduledDateTime)) }} ·
                 {{ String(qbv(t, fieldIds!.templateName) || 'Task') }}
                 <template v-if="parseFloat(String(qbv(t, fieldIds!.kw) || '0')) > 0"> · {{ parseFloat(String(qbv(t, fieldIds!.kw) || '0')).toFixed(1) }} kW</template>
                 · {{ getCrewName(t) || 'TBA' }}
               </p>
-              <div class="flex flex-wrap gap-1">
-                <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded" :class="c.cls">{{ c.label }}</span>
+              <!-- Each chip is whitespace-nowrap so it never breaks mid-label,
+                   but the row flex-wraps so 5 install chips stack onto two
+                   rows on 390px screens instead of forcing the card wider. -->
+              <div class="flex flex-wrap gap-1 min-w-0">
+                <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap" :class="c.cls">{{ c.label }}</span>
               </div>
               <a v-if="qbv(t, fieldIds!.taskUrl)" :href="String(qbv(t, fieldIds!.taskUrl))" target="_blank" rel="noopener" class="text-[11px] text-sky-600 font-semibold mt-1 inline-block" @click.stop>Open in Arrivy ↗</a>
             </a>
