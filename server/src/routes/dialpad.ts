@@ -1095,7 +1095,12 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
   const externalNumber = String(req.query['external_number'] || '').trim()
   if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
-  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '200'), 10) || 200, 1), 1000)
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '30'), 10) || 30, 1), 100)
+  // Cursor — fetch messages strictly older than this id. dialpad_events.id
+  // is monotonic (INTEGER PRIMARY KEY AUTOINCREMENT) so it sorts cleanly
+  // even when received_at ties on bulk ingest.
+  const beforeIdRaw = req.query['before_id']
+  const beforeId = beforeIdRaw ? parseInt(String(beforeIdRaw), 10) : null
 
   // Match digits-only on both sides so "+14077459738" and "(407) 745-9738"
   // resolve to the same conversation. Last 10 digits is the canonical match
@@ -1103,21 +1108,36 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
   const digits = externalNumber.replace(/\D/g, '')
   const last10 = digits.slice(-10)
 
+  // Pull `limit + 1` rows DESC and trim to compute has_more without a
+  // second query. Ordered DESC so we get the most recent slice first;
+  // the response is reversed to ASC before returning so the client can
+  // append/prepend chronologically.
   // No user filter — a thread is a shared conversation with the contact.
   // If two agents have texted the same customer, the user looking at this
   // thread wants to see the full back-and-forth, not just their slice.
-  // Authorization to see comms data is gated upstream by the comms route.
-  const rows = db.prepare(`
+  const where: string[] = [
+    `e.event_kind = 'sms'`,
+    `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(e.external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?`,
+  ]
+  const params: unknown[] = [req.user.userId, last10]
+  if (beforeId && beforeId > 0) {
+    where.push(`e.id < ?`)
+    params.push(beforeId)
+  }
+  params.push(limit + 1)
+  const fetched = db.prepare(`
     SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
            e.received_at, e.raw_json,
            CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
     FROM dialpad_events e
     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
-    WHERE e.event_kind = 'sms'
-      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(e.external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?
-    ORDER BY e.received_at ASC
+    WHERE ${where.join(' AND ')}
+    ORDER BY e.id DESC
     LIMIT ?
-  `).all(req.user.userId, last10, limit) as Array<Record<string, unknown>>
+  `).all(...params) as Array<Record<string, unknown>>
+
+  const hasMore = fetched.length > limit
+  const rows = (hasMore ? fetched.slice(0, limit) : fetched).reverse()
 
   // Try several Dialpad payload shapes for the SMS body. New webhook
   // schemas occasionally nest the text inside "data" or "sms" so we walk
@@ -1169,6 +1189,9 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
     external_number: externalNumber,
     messages,
     count: messages.length,
+    has_more: hasMore,
+    oldest_id: messages.length ? Number(messages[0]!.id) : null,
+    newest_id: messages.length ? Number(messages[messages.length - 1]!.id) : null,
     // Counts so the UI can say "12 events, 3 with text" if needed for
     // debugging, instead of rendering "no messages" when there's data.
     text_count: messages.filter(m => m.body).length,

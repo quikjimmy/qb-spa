@@ -12,6 +12,7 @@
   "dependencies": {
     "@dialpad/dialtone-icons": "^4.51.0",
     "@tanstack/vue-table": "^8.21.3",
+    "@tanstack/vue-virtual": "^3.13.24",
     "@vueuse/core": "^14.2.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
