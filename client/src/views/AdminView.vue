@@ -848,6 +848,43 @@ async function probeSubscription() {
   } finally { subBusy.value = false }
 }
 
+// SMS body recovery — repair the subscription so future webhooks include
+// text, then run the Stats-API backfill to populate text_body for every
+// historical SMS event we've already stored. Both are admin-only and
+// idempotent (safe to re-run).
+const smsRepairBusy = ref(false)
+const smsRepairResult = ref<string>('')
+async function repairSmsSubscription() {
+  smsRepairBusy.value = true
+  smsRepairResult.value = ''
+  try {
+    const res = await fetch('/api/dialpad/sms-subscription/repair', { method: 'POST', headers: hdrs() })
+    const body = await res.json()
+    smsRepairResult.value = JSON.stringify(body, null, 2)
+    await loadSubStatus()
+  } catch (e) {
+    smsRepairResult.value = `Error: ${e instanceof Error ? e.message : String(e)}`
+  } finally { smsRepairBusy.value = false }
+}
+
+const smsBackfillBusy = ref(false)
+const smsBackfillDays = ref(30)
+const smsBackfillResult = ref<string>('')
+async function runSmsBackfill() {
+  smsBackfillBusy.value = true
+  smsBackfillResult.value = 'Running Stats job — this can take 15s to 3min…'
+  try {
+    const res = await fetch('/api/dialpad/sms-backfill', {
+      method: 'POST', headers: hdrs(),
+      body: JSON.stringify({ days: smsBackfillDays.value }),
+    })
+    const body = await res.json()
+    smsBackfillResult.value = JSON.stringify(body, null, 2)
+  } catch (e) {
+    smsBackfillResult.value = `Error: ${e instanceof Error ? e.message : String(e)}`
+  } finally { smsBackfillBusy.value = false }
+}
+
 // Webhook deliveries viewer — shows the last N POSTs that hit our
 // /api/webhooks/dialpad endpoint, including rejected-signature / missing-
 // body ones, so we can tell "Dialpad didn't send" from "Dialpad sent but
@@ -1830,6 +1867,53 @@ onMounted(async () => {
                     </button>
                   </div>
                   <pre v-if="probeResult" class="text-[9px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-48">{{ probeResult }}</pre>
+
+                  <!-- ─── SMS body recovery ─── -->
+                  <!-- Two-step flow when SMS threads are showing status pings
+                       instead of message text. Repair fixes the subscription
+                       so future webhooks include the body; Backfill pulls
+                       text from Dialpad's Stats API for messages we already
+                       have in storage but couldn't read. -->
+                  <div class="rounded-md border bg-muted/10 p-2.5 space-y-2">
+                    <div class="flex items-baseline justify-between gap-2 flex-wrap">
+                      <p class="text-[11px] font-semibold">SMS body recovery</p>
+                      <p class="text-[10px] text-muted-foreground">Two one-time fixes if threads show only status pings.</p>
+                    </div>
+
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <button
+                        class="text-[10px] rounded border px-2 py-0.5 hover:bg-muted transition-colors disabled:opacity-50"
+                        :disabled="smsRepairBusy"
+                        @click="repairSmsSubscription"
+                      >
+                        {{ smsRepairBusy ? 'Repairing…' : '1. Repair SMS subscription' }}
+                      </button>
+                      <span class="text-[10px] text-muted-foreground">Rebuilds the subscription with status:false so new webhooks include text.</span>
+                    </div>
+                    <pre v-if="smsRepairResult" class="text-[9px] leading-snug bg-background rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-48 border">{{ smsRepairResult }}</pre>
+
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <button
+                        class="text-[10px] rounded border px-2 py-0.5 hover:bg-muted transition-colors disabled:opacity-50"
+                        :disabled="smsBackfillBusy"
+                        @click="runSmsBackfill"
+                      >
+                        {{ smsBackfillBusy ? 'Running…' : '2. Backfill bodies from Stats API' }}
+                      </button>
+                      <label class="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                        last
+                        <input
+                          v-model.number="smsBackfillDays"
+                          type="number" min="1" max="90"
+                          class="w-12 rounded border bg-background px-1 py-0.5 text-[10px] tabular-nums"
+                          :disabled="smsBackfillBusy"
+                        />
+                        days
+                      </label>
+                      <span class="text-[10px] text-muted-foreground">Stats jobs take 15s–3min; the response shows matched/unmatched counts.</span>
+                    </div>
+                    <pre v-if="smsBackfillResult" class="text-[9px] leading-snug bg-background rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-64 border">{{ smsBackfillResult }}</pre>
+                  </div>
 
                   <!-- Delivery log table — condensed columns so it's scannable
                        on mobile. status_code + signature_ok tell the story. -->
