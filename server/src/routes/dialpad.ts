@@ -1263,58 +1263,103 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
         }
       }
 
-      // Strategy 2 — fall back to the list endpoint. fetchSmsRecords
-      // already wraps GET /sms?start_time=&end_time=&limit=, which is
-      // documented as returning items with a `text` field. We pull a
-      // small window around the event_timestamp on each missing row,
-      // then look up the message by id. Cheap when there are a few
-      // missing rows; capped to limit fan-out.
+      // Strategy 2 — fall back to the list endpoint, which we already
+      // know works on this tenant via fetchSmsRecords. Group missing
+      // rows by (target_id, day) so each Dialpad list call returns the
+      // exact slice that contains them. We extract target.id (the
+      // agent's Dialpad id) from raw_json so the list call is scoped
+      // and not pulling the entire org's traffic.
       if (stillMissing.length > 0) {
-        const idsByWindow = new Map<string, Array<{ rowIndex: number; smsId: string }>>()
+        interface Window {
+          targetId: string
+          startSec: number
+          endSec: number
+          group: Array<{ rowIndex: number; smsId: string }>
+        }
+        const windows = new Map<string, Window>()
         for (const m of stillMissing) {
           const r = rows[m.rowIndex]!
+          let targetId = ''
+          try {
+            const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+            const t = p['target'] as Record<string, unknown> | undefined
+            if (t && t['id'] != null) targetId = String(t['id'])
+          } catch { /* leave empty */ }
           const t = r.received_at ? new Date(String(r.received_at).replace(' ', 'T') + 'Z').getTime() : Date.now()
-          // 6-hour window snapped to the hour to maximize cache hits
-          // when several missing rows fall in the same period.
-          const winStart = Math.floor(t / 1000 / 3600) * 3600 - 3 * 3600
-          const winEnd = winStart + 6 * 3600
-          const key = `${winStart}:${winEnd}`
-          if (!idsByWindow.has(key)) idsByWindow.set(key, [])
-          idsByWindow.get(key)!.push(m)
+          // Snap to the day in epoch seconds and grab a 24h window
+          // around the event so we always cover it even if Dialpad's
+          // event_timestamp is slightly off from received_at.
+          const dayStart = Math.floor(t / 1000 / 86400) * 86400
+          const startSec = dayStart - 86400
+          const endSec = dayStart + 2 * 86400
+          const key = `${targetId}|${startSec}`
+          let win = windows.get(key)
+          if (!win) {
+            win = { targetId, startSec, endSec, group: [] }
+            windows.set(key, win)
+          }
+          win.group.push(m)
         }
 
-        for (const [key, group] of idsByWindow.entries()) {
-          const [s, e] = key.split(':').map(n => parseInt(n, 10))
-          const qs = new URLSearchParams()
-          qs.set('limit', '500')
-          qs.set('start_time', String(s))
-          qs.set('end_time', String(e))
-          try {
-            const res = await dialpadApi(cfg, 'GET', `/sms?${qs}`)
-            const items = (res.data['items'] as Array<Record<string, unknown>> | undefined) || []
-            const byId = new Map<string, Record<string, unknown>>()
-            for (const it of items) {
-              const id = it['id']
-              if (id != null) byId.set(String(id), it)
-            }
-            for (const m of group) {
-              const item = byId.get(m.smsId)
-              const body = item ? (extractBody(item) || (typeof item['text'] === 'string' ? String(item['text']) : null)) : null
-              const traceLine = `list /sms?start=${s}&end=${e} → ${res.status} (${items.length} items, ${item ? 'matched' : 'no match for id ' + m.smsId})`
-              if (body && body.trim()) {
-                initialBodies[m.rowIndex] = body.trim()
-                try {
-                  db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
-                    .run(body.trim(), rows[m.rowIndex]!.id as number)
-                } catch { /* ignore */ }
-                ;(traceByIndex[m.rowIndex] ||= []).push(traceLine + ' ✓ body found')
+        for (const win of windows.values()) {
+          // Try the most specific filter first (target-scoped), fall
+          // back to no-target if Dialpad rejects the param.
+          const queries: Array<URLSearchParams> = []
+          if (win.targetId) {
+            const q = new URLSearchParams()
+            q.set('limit', '1000')
+            q.set('start_time', String(win.startSec))
+            q.set('end_time', String(win.endSec))
+            q.set('target_id', win.targetId)
+            q.set('target_type', 'user')
+            queries.push(q)
+          }
+          const noTarget = new URLSearchParams()
+          noTarget.set('limit', '1000')
+          noTarget.set('start_time', String(win.startSec))
+          noTarget.set('end_time', String(win.endSec))
+          queries.push(noTarget)
+
+          let allItems: Array<Record<string, unknown>> = []
+          let lastTrace = ''
+          for (const q of queries) {
+            try {
+              const r = await dialpadApi(cfg, 'GET', `/sms?${q}`)
+              lastTrace = `list /sms?${q} → ${r.status}`
+              if (r.ok) {
+                const items = (r.data['items'] as Array<Record<string, unknown>> | undefined) || []
+                lastTrace += ` (${items.length} items)`
+                if (items.length > 0) { allItems = items; break }
+                // 200 + 0 items: fall through to the next, less filtered query.
               } else {
-                ;(traceByIndex[m.rowIndex] ||= []).push(traceLine)
+                lastTrace += `: ${r.text.slice(0, 200)}`
+                // Auth/scope errors don't improve with fewer params.
+                if (r.status === 401 || r.status === 403) break
               }
+            } catch (e) {
+              lastTrace = `list /sms threw: ${e instanceof Error ? e.message : String(e)}`
+              break
             }
-          } catch (e) {
-            for (const m of group) {
-              ;(traceByIndex[m.rowIndex] ||= []).push(`list /sms threw: ${e instanceof Error ? e.message : String(e)}`)
+          }
+
+          const byId = new Map<string, Record<string, unknown>>()
+          for (const it of allItems) {
+            const id = it['id']
+            if (id != null) byId.set(String(id), it)
+          }
+          for (const m of win.group) {
+            const item = byId.get(m.smsId)
+            const body = item ? (extractBody(item) || (typeof item['text'] === 'string' ? String(item['text']) : null)) : null
+            const matchTrace = item ? `matched id ${m.smsId}` : `no match for ${m.smsId} (got ${allItems.length} items)`
+            if (body && body.trim()) {
+              initialBodies[m.rowIndex] = body.trim()
+              try {
+                db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
+                  .run(body.trim(), rows[m.rowIndex]!.id as number)
+              } catch { /* ignore */ }
+              ;(traceByIndex[m.rowIndex] ||= []).push(`${lastTrace}, ${matchTrace} ✓`)
+            } else {
+              ;(traceByIndex[m.rowIndex] ||= []).push(`${lastTrace}, ${matchTrace}`)
             }
           }
         }
