@@ -59,7 +59,11 @@ watch(() => [props.open, props.externalNumber], load)
 onMounted(load)
 
 // ── Day grouping + smart timestamp display ──
-interface RenderItem { kind: 'day'; label: string } | { kind: 'msg'; msg: Message; showTime: boolean }
+// Day rows separate the chronological stream into groups; msg rows wrap a
+// single message with whether to render its timestamp above the bubble.
+type RenderItem =
+  | { kind: 'day'; label: string }
+  | { kind: 'msg'; msg: Message; showTime: boolean }
 const items = computed<RenderItem[]>(() => {
   const out: RenderItem[] = []
   let lastDay = ''
