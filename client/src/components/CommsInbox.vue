@@ -8,6 +8,8 @@ import DtIconVoicemail from '@dialpad/dialtone-icons/vue3/voicemail'
 import DtIconMic from '@dialpad/dialtone-icons/vue3/mic'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
+import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 
 interface InboxRow {
   item_kind: 'call' | 'sms'
@@ -119,6 +121,19 @@ function openProject(rid: number) {
 function callBack(number: string | null) {
   if (!number) return
   window.location.href = `tel:${number}`
+}
+
+// Thread/timeline dialogs — clicking an inbox row opens the appropriate
+// modal. Only one is open at a time, parameterized by the row clicked.
+const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
+const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
+function openItem(r: InboxRow) {
+  if (r.item_kind === 'sms' && r.external_number) {
+    const matched = projectMatches.value[r.external_number]?.[0]?.customer_name || ''
+    smsThread.value = { open: true, number: r.external_number, name: matched }
+  } else if (r.item_kind === 'call' && r.call_id) {
+    callTimeline.value = { open: true, callId: r.call_id, number: r.external_number || '' }
+  }
 }
 
 // Audio expansion state — lazily show the <audio> element only after the
@@ -290,6 +305,22 @@ watch([tab, scope], load)
 
           <!-- Action buttons -->
           <div class="flex items-center gap-1.5 pt-0.5 flex-wrap">
+            <!-- Primary CTA per kind: SMS → open thread; call → open
+                 timeline. Sits first so it's visually most prominent. -->
+            <button v-if="r.item_kind === 'sms' && r.external_number"
+              class="inline-flex items-center gap-1 rounded-md bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-medium hover:bg-primary/90 transition-colors"
+              @click="openItem(r)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              Thread
+            </button>
+            <button v-else-if="r.item_kind === 'call' && r.call_id"
+              class="inline-flex items-center gap-1 rounded-md bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-medium hover:bg-primary/90 transition-colors"
+              @click="openItem(r)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+              Timeline
+            </button>
             <button v-if="r.external_number"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
               @click="callBack(r.external_number)"
@@ -325,7 +356,7 @@ watch([tab, scope], load)
           <!-- Inline audio player. Rendered only after the user opens it
                (preload="none" is belt-and-suspenders since we only even
                set src after the click). -->
-          <div v-if="audioOpen[r.call_id]" class="pt-1.5">
+          <div v-if="r.call_id && audioOpen[r.call_id]" class="pt-1.5">
             <audio
               :src="audioSrc(r.call_id)"
               controls
@@ -336,5 +367,19 @@ watch([tab, scope], load)
         </div>
       </div>
     </div>
+
+    <!-- Modals — one of each, parameterized by the row clicked -->
+    <SmsThreadDialog
+      :open="smsThread.open"
+      :external-number="smsThread.number"
+      :contact-name="smsThread.name"
+      @close="smsThread.open = false"
+    />
+    <CallTimelineDialog
+      :open="callTimeline.open"
+      :call-id="callTimeline.callId"
+      :external-number="callTimeline.number"
+      @close="callTimeline.open = false"
+    />
   </div>
 </template>

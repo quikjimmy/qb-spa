@@ -1086,6 +1086,106 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   res.json({ rows, limit, since_id: sinceId })
 })
 
+// ── SMS thread (iOS-style conversation view) ───────────
+// Returns every SMS event between this Dialpad user and the given external
+// number, ordered oldest→newest, with the message body extracted from the
+// raw_json blob so the client doesn't have to parse it itself. Optional
+// scope=me|all controls whether to limit to the requesting user's emails.
+router.get('/sms/thread', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const externalNumber = String(req.query['external_number'] || '').trim()
+  if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
+  const scopeAll = req.query['scope'] === 'all' && req.user.roles.includes('admin')
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '200'), 10) || 200, 1), 1000)
+
+  // Match digits-only on both sides so "+14077459738" and "(407) 745-9738"
+  // resolve to the same conversation. Last 10 digits is the canonical match
+  // (same convention we use for project lookup).
+  const digits = externalNumber.replace(/\D/g, '')
+  const last10 = digits.slice(-10)
+
+  const where: string[] = [`e.event_kind = 'sms'`, `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(e.external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?`]
+  const params: unknown[] = [last10]
+  if (!scopeAll) {
+    where.push(`LOWER(TRIM(COALESCE(e.user_email, ''))) IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`)
+    params.push(req.user.userId)
+  }
+
+  const rows = db.prepare(`
+    SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
+           e.received_at, e.raw_json,
+           CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
+    FROM dialpad_events e
+    LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
+    WHERE ${where.join(' AND ')}
+    ORDER BY e.received_at ASC
+    LIMIT ?
+  `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
+
+  const messages = rows.map(r => {
+    let body: string | null = null
+    try {
+      const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+      body = String(p['text'] || p['message'] || p['body'] || p['message_body'] || '') || null
+    } catch { /* leave null */ }
+    return {
+      id: r.id, direction: r.direction, body, user_email: r.user_email,
+      user_name: r.user_name, external_number: r.external_number,
+      received_at: r.received_at, is_read: r.is_read,
+    }
+  })
+
+  res.json({ external_number: externalNumber, messages, count: messages.length })
+})
+
+// ── Call timeline (state journey for one call_id) ───────
+// Returns every webhook event we received for this call_id, in order,
+// with derived per-step duration so the UI can render a vertical
+// timeline that shows the path through ringing / queued / connected /
+// transferred / hangup etc.
+router.get('/call/:callId/timeline', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const callId = String(req.params['callId'] || '').trim()
+  if (!callId) { res.status(400).json({ error: 'callId required' }); return }
+  const rows = db.prepare(`
+    SELECT id, event_state, user_email, user_name, direction, external_number,
+           entry_point_target_kind, raw_json, received_at
+    FROM dialpad_events
+    WHERE call_id = ?
+    ORDER BY received_at ASC, id ASC
+  `).all(callId) as Array<Record<string, unknown>>
+
+  // Compute duration since the previous event so the UI can show "+12s"
+  // labels next to each state. Also pull the entry-point target name from
+  // the raw payload when available so we can render the IVR/Office leg.
+  let prevTs: number | null = null
+  const events = rows.map((r, idx) => {
+    const ts = new Date(String(r.received_at).replace(' ', 'T') + (String(r.received_at).endsWith('Z') ? '' : 'Z')).getTime()
+    const sincePrev = prevTs ? Math.max(0, Math.round((ts - prevTs) / 1000)) : 0
+    prevTs = ts
+    let entryPointName: string | null = null
+    let target: string | null = null
+    let raw: Record<string, unknown> | null = null
+    try {
+      raw = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+      const epKind = String(r.entry_point_target_kind || '')
+      const ep = (raw['entry_point'] || raw['entry_point_target']) as Record<string, unknown> | undefined
+      entryPointName = epKind || (ep ? String(ep['name'] || ep['type'] || '') : null) || null
+      const t = raw['target'] as Record<string, unknown> | undefined
+      target = t ? String(t['name'] || t['email'] || '') : null
+    } catch { /* leave nulls */ }
+    return {
+      id: r.id, state: r.event_state || 'unknown',
+      direction: r.direction, external_number: r.external_number,
+      user_email: r.user_email, user_name: r.user_name,
+      entry_point: entryPointName, target,
+      received_at: r.received_at,
+      step_index: idx, sec_since_prev: sincePrev,
+    }
+  })
+  res.json({ call_id: callId, events, count: events.length })
+})
+
 // ── Audio proxy for recordings + voicemails ────────────
 // Dialpad stores recording/voicemail audio behind auth'd URLs. We fetch the
 // call detail from Dialpad, extract any audio URL present (recording first,

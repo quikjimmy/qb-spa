@@ -2,6 +2,8 @@
 import { ref } from 'vue'
 import { bucketMeta, formatPhone, splitStartedAt } from '@/lib/callBuckets'
 import { useDialpadLive, type LiveEvent } from '@/lib/dialpadLive'
+import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
@@ -21,6 +23,29 @@ const {
 } = useDialpadLive()
 
 const expanded = ref<Record<number, boolean>>({})
+
+// Dialog state — clicking a row opens either the SMS thread or call timeline.
+// Keeping these inline rather than per-row: only one is open at a time.
+const smsThread = ref<{ open: boolean; number: string }>({ open: false, number: '' })
+const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
+
+function openEvent(e: LiveEvent) {
+  if (e.event_kind === 'sms' && e.external_number) {
+    smsThread.value = { open: true, number: e.external_number }
+  } else if (e.event_kind === 'call' && e.call_id) {
+    callTimeline.value = { open: true, callId: e.call_id, number: e.external_number || '' }
+  }
+}
+
+// Pull message body out of the raw_json blob for SMS rows so we can render
+// the actual text inline instead of a `[no body]` block of JSON.
+function smsBody(e: LiveEvent): string {
+  try {
+    const p = JSON.parse(e.raw_json || '{}') as Record<string, unknown>
+    const s = p['text'] || p['message'] || p['body'] || p['message_body']
+    return s ? String(s) : ''
+  } catch { return '' }
+}
 
 interface EventVisual { icon: unknown; label: string; colorClass: string; bgClass: string; sublabel: string }
 function visualFor(e: LiveEvent): EventVisual {
@@ -101,7 +126,12 @@ function formatRaw(raw: string): string {
           </div>
           <div class="flex-1 min-w-0">
             <p class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
-            <p class="text-[10px] text-muted-foreground truncate flex items-center gap-1">
+            <!-- For SMS rows, show the actual message body as the secondary
+                 line when the row is collapsed. Calls keep the state arc. -->
+            <p v-if="e.event_kind === 'sms' && smsBody(e)" class="text-[11px] truncate" :class="e.direction === 'outgoing' ? 'text-emerald-700' : 'text-foreground'">
+              <span v-if="e.direction === 'outgoing'" class="text-muted-foreground">You: </span>{{ smsBody(e) }}
+            </p>
+            <p v-else class="text-[10px] text-muted-foreground truncate flex items-center gap-1">
               <template v-if="e.call_id && stateHistory[e.call_id]">
                 <span v-for="(s, i) in stateHistory[e.call_id]" :key="i" class="inline-flex items-center gap-1">
                   <span v-if="i > 0" class="text-muted-foreground/60">→</span>
@@ -117,8 +147,70 @@ function formatRaw(raw: string): string {
             <p class="text-[10px] text-muted-foreground">{{ splitStartedAt(e.received_at).date }}</p>
           </div>
         </div>
-        <pre v-if="expanded[e.id]" class="mt-2 text-[9px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all">{{ formatRaw(e.raw_json) }}</pre>
+
+        <!-- Expanded view — replaces the old <pre>raw json</pre> with a
+             type-specific summary + a single CTA that opens the right
+             modal (SMS thread or Call timeline). Raw JSON is one click
+             away in case we still need it for debugging. -->
+        <div v-if="expanded[e.id]" class="mt-2 rounded-md bg-muted/30 px-3 py-2 space-y-2 text-[11px]">
+          <!-- SMS expansion: bubble preview + Open thread CTA -->
+          <template v-if="e.event_kind === 'sms'">
+            <div class="flex" :class="e.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
+              <div class="max-w-[85%] px-3 py-1.5 rounded-2xl text-[12px] leading-snug whitespace-pre-wrap break-words"
+                :class="e.direction === 'outgoing' ? 'bg-sky-500 text-white rounded-br-sm' : 'bg-card text-foreground rounded-bl-sm border'">
+                <template v-if="smsBody(e)">{{ smsBody(e) }}</template>
+                <span v-else class="opacity-60 italic">[no message body]</span>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 pt-1">
+              <button v-if="e.external_number"
+                class="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
+                @click.stop="openEvent(e)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                Open thread
+              </button>
+              <span class="text-[10px] text-muted-foreground">{{ e.user_name || e.user_email }} · {{ formatPhone(e.external_number) }}</span>
+            </div>
+          </template>
+
+          <!-- Call expansion: state path + Open timeline CTA -->
+          <template v-else-if="e.event_kind === 'call'">
+            <div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+              <template v-for="(s, i) in (e.call_id && stateHistory[e.call_id] ? stateHistory[e.call_id]! : [e.event_state || 'unknown'])" :key="i">
+                <span v-if="i > 0" class="opacity-60">→</span>
+                <span class="px-1.5 py-0.5 rounded-full bg-card border text-foreground" :class="i === (stateHistory[e.call_id || '']!.length - 1) ? 'font-semibold' : ''">{{ s }}</span>
+              </template>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] text-muted-foreground">{{ formatPhone(e.external_number) || 'Unknown' }}<template v-if="e.user_name"> · {{ e.user_name }}</template></span>
+              <button v-if="e.call_id"
+                class="ml-auto inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
+                @click.stop="openEvent(e)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+                Open timeline
+              </button>
+            </div>
+          </template>
+
+          <!-- Generic / unknown event: still keep a raw JSON peek for debug. -->
+          <pre v-else class="text-[9px] leading-snug bg-card border rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all">{{ formatRaw(e.raw_json) }}</pre>
+        </div>
       </div>
     </div>
+
+    <!-- Mounted dialogs — one of each, parameterized by event clicked. -->
+    <SmsThreadDialog
+      :open="smsThread.open"
+      :external-number="smsThread.number"
+      @close="smsThread.open = false"
+    />
+    <CallTimelineDialog
+      :open="callTimeline.open"
+      :call-id="callTimeline.callId"
+      :external-number="callTimeline.number"
+      @close="callTimeline.open = false"
+    />
   </div>
 </template>
