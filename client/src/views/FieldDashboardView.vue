@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, inject } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 
@@ -304,7 +304,25 @@ function drillEventType(type: string) {
   drillTitle.value = type
   drillTasks.value = tasks
 }
-function exitDrill() { drillTitle.value = ''; drillTasks.value = [] }
+function exitDrill() {
+  drillTitle.value = ''
+  drillTasks.value = []
+  // Scroll the main container back to top so re-entering the dashboard
+  // doesn't leave you mid-page.
+  if (typeof window !== 'undefined') {
+    const main = document.querySelector('main')
+    main?.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+}
+
+// Escape key escapes drill-down. Mobile-friendly bonus: clicking anywhere
+// on the sticky back-row also returns (handled by the row buttons).
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && drilling.value) {
+    e.preventDefault()
+    exitDrill()
+  }
+}
 
 // Drill rows grouped by status — same order as the example.
 const drillGroups = computed(() => {
@@ -458,17 +476,37 @@ const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefre
 onMounted(() => {
   load()
   registerRefresh?.(async () => { await load() })
+  window.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 watch(preset, load)
 </script>
 
 <template>
   <div class="grid gap-3 min-w-0">
-    <!-- Header -->
-    <div class="flex items-baseline gap-2 flex-wrap">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ drilling ? drillTitle : 'Field' }}</h1>
-      <span v-if="drilling" class="text-xs text-muted-foreground">· {{ drillTasks.length }} tasks</span>
-      <Button v-if="drilling" variant="ghost" size="sm" class="ml-auto h-7 text-xs" @click="exitDrill">← Back</Button>
+    <!-- Header — when drilling, this row sticks to the top of the scroll
+         container so the back-out path is always one tap away no matter
+         how far down you've scrolled. Big tap target (44px) for mobile. -->
+    <div
+      class="flex items-center gap-2 flex-wrap"
+      :class="drilling ? 'sticky top-0 z-30 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2 bg-background/95 backdrop-blur-sm border-b' : ''"
+    >
+      <button
+        v-if="drilling"
+        type="button"
+        class="size-11 -ml-2 rounded-lg flex items-center justify-center hover:bg-muted/60 active:bg-muted transition-colors shrink-0"
+        title="Back to Field"
+        @click="exitDrill"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <div class="flex-1 min-w-0">
+        <h1 class="text-2xl font-semibold tracking-tight truncate">{{ drilling ? drillTitle : 'Field' }}</h1>
+        <p v-if="drilling" class="text-[11px] text-muted-foreground -mt-0.5">{{ drillTasks.length }} {{ drillTasks.length === 1 ? 'task' : 'tasks' }} · tap arrow to return</p>
+      </div>
+      <Button v-if="drilling" variant="outline" size="sm" class="h-9 text-xs shrink-0" @click="exitDrill">All Field</Button>
     </div>
 
     <template v-if="!drilling">
