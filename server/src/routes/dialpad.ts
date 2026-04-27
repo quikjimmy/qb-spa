@@ -1091,7 +1091,7 @@ router.get('/events/recent', (req: Request, res: Response): void => {
 // number, ordered oldest→newest, with the message body extracted from the
 // raw_json blob so the client doesn't have to parse it itself. Optional
 // scope=me|all controls whether to limit to the requesting user's emails.
-router.get('/sms/thread', (req: Request, res: Response): void => {
+router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => {
   if (!req.user) { res.status(401).end(); return }
   const externalNumber = String(req.query['external_number'] || '').trim()
   if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
@@ -1127,7 +1127,7 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
   params.push(limit + 1)
   const fetched = db.prepare(`
     SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
-           e.received_at, e.raw_json,
+           e.received_at, e.raw_json, e.text_body, e.text_body_fetched_at,
            CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
     FROM dialpad_events e
     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
@@ -1170,22 +1170,80 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
     return 'status'
   }
   const isAdmin = req.user.roles.includes('admin')
-  const messages = rows.map(r => {
+
+  // ── Body resolution: cache → payload extraction → Dialpad API ──
+  // Each row gets a body via:
+  //   1. text_body cache column (already backfilled — instant)
+  //   2. extractBody() on raw_json (works when the webhook included text)
+  //   3. Dialpad's GET /sms/{id} REST API (the slow path; for status-
+  //      only events that arrived without text). Results cache to
+  //      text_body so subsequent loads are fast.
+  // Step 3 is parallel-fetched for the current page, capped at 30
+  // requests so we never blast Dialpad. Bodies that resolve via API
+  // are written back to the row before we respond, so the response
+  // and DB stay in sync.
+  interface MissingRow { rowIndex: number; smsId: string }
+  const missing: MissingRow[] = []
+  const initialBodies: Array<string | null> = rows.map((r, idx) => {
+    if (typeof r.text_body === 'string' && r.text_body.trim()) return r.text_body
     let body: string | null = null
-    let status: string | null = null
-    let rawPreview: string | null = null
     try {
       const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
       body = extractBody(p)
-      if (!body) status = classifyStatus(p)
     } catch { /* leave null */ }
-    // Admin-only diagnostic — when no body could be extracted, ship the
-    // raw JSON (truncated) so the operator can see exactly which keys
-    // Dialpad sent. Lets us identify mis-named body fields without an
-    // SSH session.
-    if (isAdmin && !body) {
-      const raw = String(r.raw_json || '')
-      rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+    if (!body) {
+      // Dialpad's outbound message id is captured into call_id at ingest.
+      // It's a numeric string we can pass to /sms/{id}.
+      const smsId = (() => {
+        const v = r.call_id ? String(r.call_id).trim() : ''
+        return v && /^\d+$/.test(v) ? v : ''
+      })()
+      if (smsId) missing.push({ rowIndex: idx, smsId })
+    }
+    return body
+  })
+
+  if (missing.length > 0) {
+    const cfg = loadDialpadConfig()
+    if (cfg) {
+      const slice = missing.slice(0, 30)
+      const results = await Promise.allSettled(slice.map(async m => {
+        try {
+          const r = await dialpadApi(cfg, 'GET', `/sms/${encodeURIComponent(m.smsId)}`)
+          if (!r.ok) return { ...m, body: null as string | null }
+          const body = extractBody(r.data) || (typeof r.data['text'] === 'string' ? String(r.data['text']) : null)
+          return { ...m, body: body && body.trim() ? body : null }
+        } catch {
+          return { ...m, body: null as string | null }
+        }
+      }))
+      const updateStmt = db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue
+        const { rowIndex, body } = r.value
+        if (!body) continue
+        initialBodies[rowIndex] = body
+        try { updateStmt.run(body, rows[rowIndex]!.id as number) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  const messages = rows.map((r, idx) => {
+    const body = initialBodies[idx]
+    let status: string | null = null
+    let rawPreview: string | null = null
+    if (!body) {
+      try {
+        const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+        status = classifyStatus(p)
+      } catch { /* leave null */ }
+      // Admin-only diagnostic — when no body could be extracted (and the
+      // API backfill also failed), ship the raw JSON so the operator
+      // can inspect what Dialpad actually sent.
+      if (isAdmin) {
+        const raw = String(r.raw_json || '')
+        rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+      }
     }
     return {
       id: r.id, direction: r.direction, body, status,

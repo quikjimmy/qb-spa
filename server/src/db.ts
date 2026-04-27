@@ -406,6 +406,17 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_received ON dialpad_events(rec
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_email ON dialpad_events(user_email, received_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_call ON dialpad_events(call_id)`)
 
+// Additive migration — text_body caches the SMS body once we've extracted
+// it from the webhook payload OR backfilled it via Dialpad's /sms/{id}
+// API. Outbound SMS status webhooks don't include the body, so we have to
+// look it up. Caching here keeps the thread fast on subsequent loads.
+{
+  const cols = db.prepare(`PRAGMA table_info(dialpad_events)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('text_body')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN text_body TEXT`)
+  if (!names.has('text_body_fetched_at')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN text_body_fetched_at TEXT`)
+}
+
 // Diagnostic log — every single POST that hits /api/webhooks/dialpad* is
 // recorded BEFORE signature verification, so we can tell "nothing arrived"
 // apart from "arrived but was rejected". Kept small (short body preview)
@@ -786,6 +797,10 @@ db.exec(`
     body_json TEXT,
     error TEXT,
     read_at TEXT,
+    review_status TEXT NOT NULL DEFAULT 'pending' CHECK (review_status IN ('pending', 'approved', 'dismissed', 'commented')),
+    review_comment TEXT,
+    reviewed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TEXT,
     deleted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )
@@ -796,9 +811,45 @@ db.exec(`
   if (!names.has('deleted_at')) {
     try { db.exec(`ALTER TABLE agent_delivery_items ADD COLUMN deleted_at TEXT`) } catch { /* already exists */ }
   }
+  if (!names.has('review_status')) {
+    try { db.exec(`ALTER TABLE agent_delivery_items ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'`) } catch { /* already exists */ }
+  }
+  if (!names.has('review_comment')) {
+    try { db.exec(`ALTER TABLE agent_delivery_items ADD COLUMN review_comment TEXT`) } catch { /* already exists */ }
+  }
+  if (!names.has('reviewed_by_user_id')) {
+    try { db.exec(`ALTER TABLE agent_delivery_items ADD COLUMN reviewed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`) } catch { /* already exists */ }
+  }
+  if (!names.has('reviewed_at')) {
+    try { db.exec(`ALTER TABLE agent_delivery_items ADD COLUMN reviewed_at TEXT`) } catch { /* already exists */ }
+  }
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_delivery_items_user ON agent_delivery_items(user_id, read_at, created_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_delivery_items_run ON agent_delivery_items(task_run_id)`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_work_items (
+    id INTEGER PRIMARY KEY,
+    source_delivery_item_id INTEGER REFERENCES agent_delivery_items(id) ON DELETE SET NULL,
+    task_run_id INTEGER REFERENCES agent_task_runs(id) ON DELETE SET NULL,
+    project_rid TEXT,
+    project_name TEXT,
+    title TEXT NOT NULL,
+    detail TEXT,
+    category TEXT,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'done', 'dismissed')),
+    assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_by_agent_role_id INTEGER REFERENCES agent_roles(id) ON DELETE SET NULL,
+    action_payload_json TEXT,
+    due_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_assigned ON agent_work_items(assigned_user_id, status, updated_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_delivery ON agent_work_items(source_delivery_item_id)`)
 
 // --- Seed starter departments (idempotent) ---
 const seedDept = db.prepare(`INSERT OR IGNORE INTO departments (name, description) VALUES (?, ?)`)
@@ -957,6 +1008,76 @@ const seedAgentOrgTxn = db.transaction(() => {
     1,
     0,
   )
+  upsertAgentRole.run(
+    'Permit Intelligence Worker',
+    'pc-permit-intelligence-worker',
+    'Detects permit aging, rejection risk, and AHJ-specific follow-up needs for Project Coordinators.',
+    'Surface permit risk early and package the right next action for Project Coordinators.',
+    'worker',
+    ariId,
+    'Project Coordinators',
+    'active',
+    'builtin-worker',
+    120000,
+    1,
+    0,
+  )
+  upsertAgentRole.run(
+    'Inspection / PTO Worker',
+    'pc-inspection-pto-worker',
+    'Monitors inspection and PTO handoffs after install complete.',
+    'Shrink install-complete to inspection and inspection to PTO delays for Project Coordinators.',
+    'worker',
+    ariId,
+    'Project Coordinators',
+    'active',
+    'builtin-worker',
+    120000,
+    1,
+    0,
+  )
+  upsertAgentRole.run(
+    'Schedule Integrity Worker',
+    'pc-schedule-integrity-worker',
+    'Checks scheduled installs and surveys for missing prerequisites or risky sequencing.',
+    'Catch scheduling issues before crews roll and turn them into reviewable action items.',
+    'worker',
+    ariId,
+    'Project Coordinators',
+    'active',
+    'builtin-worker',
+    120000,
+    1,
+    0,
+  )
+  upsertAgentRole.run(
+    'Review Readiness Worker',
+    'pc-review-readiness-worker',
+    'Identifies customers ready for review outreach and packages approval-ready drafts.',
+    'Help Project Coordinators run a reliable review-generation workflow without unsafe auto-send behavior.',
+    'worker',
+    ariId,
+    'Project Coordinators',
+    'active',
+    'builtin-worker',
+    100000,
+    1,
+    0,
+  )
+  upsertAgentRole.run(
+    'PC Inbox Draft Worker',
+    'pc-inbox-draft-worker',
+    'Drafts coordinator-facing and homeowner-facing messages for review.',
+    'Prepare safe draft communication for Project Coordinators without direct send behavior.',
+    'worker',
+    ariId,
+    'Project Coordinators',
+    'active',
+    'builtin-worker',
+    100000,
+    1,
+    0,
+  )
 
   insertGoalIfMissing.run(ariId, 'Coordinate PC agent work', 'Route approved Project Coordinator requests to the right worker role and return concise outcomes.', 'PC users get the right routed workflow with visible run status.', 1, 'active', ariId, 'Coordinate PC agent work')
   insertGoalIfMissing.run(ariId, 'Keep production work controlled', 'Require approval before irreversible actions and keep production workflows bounded.', 'No irreversible action executes without approval.', 1, 'active', ariId, 'Keep production work controlled')
@@ -1010,12 +1131,36 @@ const seedAgentOrgTxn = db.transaction(() => {
   insertTaskIfMissing.run(notesId, 'Recent notes digest', 'digest', 'Summarize the most recent notes for a project or coordinator queue.', '{"scope":"recent_notes"}', '{"result":"digest"}', 1, notesId, 'Recent notes digest')
   insertTaskIfMissing.run(notesId, 'Key activity summary', 'summary', 'Summarize key project activity and notable changes.', '{"scope":"activity"}', '{"result":"activity_summary"}', 1, notesId, 'Key activity summary')
 
-  for (const slug of ['ari-pc-manager', 'pc-outreach-worker', 'pc-status-summary-worker', 'pc-risk-hold-worker', 'pc-notes-digest-worker']) {
+  const permitIntelId = (roleIdBySlug.get('pc-permit-intelligence-worker') as { id: number }).id
+  insertGoalIfMissing.run(permitIntelId, 'Surface permit blockers early', 'Detect permits that are aging, rejected, or moving outside expected AHJ timelines.', 'Permit risks appear in Agent Ops before they turn into fire drills.', 1, 'active', permitIntelId, 'Surface permit blockers early')
+  insertTaskIfMissing.run(permitIntelId, 'Permit aging alert scan', 'classification', 'Scan active projects for permits past expected aging thresholds and package the next coordinator action.', '{"scope":"permit_aging","permit_days":21}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, permitIntelId, 'Permit aging alert scan')
+  insertTaskIfMissing.run(permitIntelId, 'Draft AHJ follow-up call script', 'outreach', 'Draft an AHJ follow-up script for a coordinator to review before any external outreach.', '{"scope":"permit_follow_up"}', '{"result":"draft_call_script","approval_required":true}', 1, permitIntelId, 'Draft AHJ follow-up call script')
+
+  const inspectionPtoId = (roleIdBySlug.get('pc-inspection-pto-worker') as { id: number }).id
+  insertGoalIfMissing.run(inspectionPtoId, 'Reduce post-install drag', 'Detect stalled projects between install complete, inspection, and PTO.', 'Project Coordinators get reviewable exception lists before cashflow-impacting delays grow.', 1, 'active', inspectionPtoId, 'Reduce post-install drag')
+  insertTaskIfMissing.run(inspectionPtoId, 'Install complete without inspection follow-up', 'classification', 'Scan for install-complete projects with no inspection follow-up and package the recommended next step.', '{"scope":"ic_no_inspection","inspection_days":7}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, inspectionPtoId, 'Install complete without inspection follow-up')
+  insertTaskIfMissing.run(inspectionPtoId, 'Inspection passed without PTO follow-up', 'classification', 'Scan for inspection-passed projects that are still waiting on PTO follow-up.', '{"scope":"inspection_no_pto","inspection_days":7}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, inspectionPtoId, 'Inspection passed without PTO follow-up')
+
+  const scheduleIntegrityId = (roleIdBySlug.get('pc-schedule-integrity-worker') as { id: number }).id
+  insertGoalIfMissing.run(scheduleIntegrityId, 'Catch risky scheduling early', 'Flag installs or surveys that are moving without the right prerequisites.', 'Crew-impacting schedule problems are reviewed before they become day-of surprises.', 2, 'active', scheduleIntegrityId, 'Catch risky scheduling early')
+  insertTaskIfMissing.run(scheduleIntegrityId, 'Install scheduled without permit check', 'classification', 'Review upcoming installs for projects that still do not show permit approval.', '{"scope":"scheduled_without_permit","schedule_window_days":2}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, scheduleIntegrityId, 'Install scheduled without permit check')
+
+  const reviewReadyId = (roleIdBySlug.get('pc-review-readiness-worker') as { id: number }).id
+  insertGoalIfMissing.run(reviewReadyId, 'Package review-ready outreach safely', 'Identify strong review candidates and stage coordinator-approved outreach.', 'Review asks are consistent, trackable, and never auto-sent.', 3, 'active', reviewReadyId, 'Package review-ready outreach safely')
+  insertTaskIfMissing.run(reviewReadyId, 'Draft review request outreach', 'outreach', 'Prepare a draft review request for a coordinator-approved customer outreach sequence.', '{"scope":"review_request"}', '{"result":"draft_message","approval_required":true}', 1, reviewReadyId, 'Draft review request outreach')
+
+  const inboxDraftId = (roleIdBySlug.get('pc-inbox-draft-worker') as { id: number }).id
+  insertGoalIfMissing.run(inboxDraftId, 'Keep coordinator communication draft-first', 'Prepare useful coordinator and homeowner-facing drafts without bypassing human review.', 'Coordinators can approve, edit, or discard suggested communication quickly.', 3, 'active', inboxDraftId, 'Keep coordinator communication draft-first')
+  insertTaskIfMissing.run(inboxDraftId, 'Draft homeowner status update', 'outreach', 'Draft a homeowner-facing project update for coordinator review before any send action.', '{"scope":"homeowner_update"}', '{"result":"draft_message","approval_required":true}', 1, inboxDraftId, 'Draft homeowner status update')
+
+  for (const slug of ['ari-pc-manager', 'pc-outreach-worker', 'pc-status-summary-worker', 'pc-risk-hold-worker', 'pc-notes-digest-worker', 'pc-permit-intelligence-worker', 'pc-inspection-pto-worker', 'pc-schedule-integrity-worker', 'pc-review-readiness-worker', 'pc-inbox-draft-worker']) {
     const roleId = (roleIdBySlug.get(slug) as { id: number }).id
     insertPermissionIfMissing.run(roleId, 'projects', 'read', null, roleId, 'projects', 'read')
     insertPermissionIfMissing.run(roleId, 'notes', 'read', null, roleId, 'notes', 'read')
     insertPermissionIfMissing.run(roleId, 'tickets', 'read', null, roleId, 'tickets', 'read')
     insertPermissionIfMissing.run(roleId, 'notifications', 'summarize', null, roleId, 'notifications', 'summarize')
+    insertPermissionIfMissing.run(roleId, 'arrivy', 'read', null, roleId, 'arrivy', 'read')
+    insertPermissionIfMissing.run(roleId, 'front', 'read', null, roleId, 'front', 'read')
     insertPermissionIfMissing.run(roleId, 'external_message', 'request_approval', '{"mode":"draft_only"}', roleId, 'external_message', 'request_approval')
   }
 })
