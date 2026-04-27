@@ -1095,7 +1095,6 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
   const externalNumber = String(req.query['external_number'] || '').trim()
   if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
-  const scopeAll = req.query['scope'] === 'all' && req.user.roles.includes('admin')
   const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '200'), 10) || 200, 1), 1000)
 
   // Match digits-only on both sides so "+14077459738" and "(407) 745-9738"
@@ -1104,36 +1103,55 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
   const digits = externalNumber.replace(/\D/g, '')
   const last10 = digits.slice(-10)
 
-  const where: string[] = [`e.event_kind = 'sms'`, `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(e.external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?`]
-  const params: unknown[] = [last10]
-  if (!scopeAll) {
-    where.push(`LOWER(TRIM(COALESCE(e.user_email, ''))) IN (SELECT uel.email FROM user_email_lookup uel WHERE uel.user_id = ? AND uel.system IN ('', 'dialpad'))`)
-    params.push(req.user.userId)
-  }
-
+  // No user filter — a thread is a shared conversation with the contact.
+  // If two agents have texted the same customer, the user looking at this
+  // thread wants to see the full back-and-forth, not just their slice.
+  // Authorization to see comms data is gated upstream by the comms route.
   const rows = db.prepare(`
     SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
            e.received_at, e.raw_json,
            CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
     FROM dialpad_events e
     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
-    WHERE ${where.join(' AND ')}
+    WHERE e.event_kind = 'sms'
+      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(e.external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?
     ORDER BY e.received_at ASC
     LIMIT ?
-  `).all(req.user.userId, ...params, limit) as Array<Record<string, unknown>>
+  `).all(req.user.userId, last10, limit) as Array<Record<string, unknown>>
 
-  const messages = rows.map(r => {
+  // Try several Dialpad payload shapes for the SMS body. New webhook
+  // schemas occasionally nest the text inside "data" or "sms" so we walk
+  // those before giving up.
+  function extractBody(payload: Record<string, unknown>): string | null {
+    const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body'] || payload['content']
+    if (typeof direct === 'string' && direct.trim()) return direct
+    for (const key of ['data', 'sms', 'message_object', 'event']) {
+      const nested = payload[key]
+      if (nested && typeof nested === 'object') {
+        const inner = extractBody(nested as Record<string, unknown>)
+        if (inner) return inner
+      }
+    }
+    return null
+  }
+
+  // Drop status-only events (delivery confirmations, read receipts, etc.)
+  // — they have no body and just clutter the thread. Keep events that
+  // actually carried text so the conversation reads cleanly.
+  const messages: Array<Record<string, unknown>> = []
+  for (const r of rows) {
     let body: string | null = null
     try {
       const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
-      body = String(p['text'] || p['message'] || p['body'] || p['message_body'] || '') || null
+      body = extractBody(p)
     } catch { /* leave null */ }
-    return {
+    if (!body) continue
+    messages.push({
       id: r.id, direction: r.direction, body, user_email: r.user_email,
       user_name: r.user_name, external_number: r.external_number,
       received_at: r.received_at, is_read: r.is_read,
-    }
-  })
+    })
+  }
 
   res.json({ external_number: externalNumber, messages, count: messages.length })
 })

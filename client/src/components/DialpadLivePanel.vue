@@ -61,13 +61,26 @@ function openEvent(e: LiveEvent) {
 }
 
 // Pull message body out of the raw_json blob for SMS rows so we can render
-// the actual text inline instead of a `[no body]` block of JSON.
+// the actual text inline instead of a `[no body]` block of JSON. Walks
+// the common Dialpad payload shapes (text/message/body/content + nested
+// data/sms wrappers) since the schema varies by event type.
 function smsBody(e: LiveEvent): string {
   try {
     const p = JSON.parse(e.raw_json || '{}') as Record<string, unknown>
-    const s = p['text'] || p['message'] || p['body'] || p['message_body']
-    return s ? String(s) : ''
+    return findBody(p)
   } catch { return '' }
+}
+function findBody(payload: Record<string, unknown>): string {
+  const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body'] || payload['content']
+  if (typeof direct === 'string' && direct.trim()) return direct
+  for (const key of ['data', 'sms', 'message_object', 'event']) {
+    const nested = payload[key]
+    if (nested && typeof nested === 'object') {
+      const inner = findBody(nested as Record<string, unknown>)
+      if (inner) return inner
+    }
+  }
+  return ''
 }
 
 interface EventVisual { icon: unknown; label: string; colorClass: string; bgClass: string; sublabel: string }
@@ -181,15 +194,22 @@ function formatRaw(raw: string): string {
              modal (SMS thread or Call timeline). Raw JSON is one click
              away in case we still need it for debugging. -->
         <div v-if="expanded[e.id]" class="mt-2 rounded-md bg-muted/30 px-3 py-2 space-y-2 text-[11px]">
-          <!-- SMS expansion: bubble preview + Open thread CTA -->
+          <!-- SMS expansion: bubble preview + Open thread CTA. We only
+               render a bubble when there's actual text — Dialpad sends
+               empty-body events for delivery confirmations and other
+               status pings, and rendering them as fake messages was
+               misleading. Empty events still show the row metadata above
+               and the Open thread button below. -->
           <template v-if="e.event_kind === 'sms'">
-            <div class="flex" :class="e.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
+            <div v-if="smsBody(e)" class="flex" :class="e.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
               <div class="max-w-[85%] px-3 py-1.5 rounded-2xl text-[12px] leading-snug whitespace-pre-wrap break-words"
                 :class="e.direction === 'outgoing' ? 'bg-sky-500 text-white rounded-br-sm' : 'bg-card text-foreground rounded-bl-sm border'">
-                <template v-if="smsBody(e)">{{ smsBody(e) }}</template>
-                <span v-else class="opacity-60 italic">[no message body]</span>
+                {{ smsBody(e) }}
               </div>
             </div>
+            <p v-else class="text-[10px] text-muted-foreground italic px-1">
+              Status update — open the thread to see the full conversation.
+            </p>
             <div class="flex flex-wrap items-center gap-1.5 pt-1">
               <button v-if="e.external_number"
                 class="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
