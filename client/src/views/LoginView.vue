@@ -3,7 +3,6 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import LoginShader from '@/components/LoginShader.vue'
-import KinGlyph from '@/components/KinGlyph.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -46,8 +45,8 @@ async function handleLogin() {
     <main class="ope-stage">
       <section class="ope-card" :class="{ 'is-submitting': submitting }">
         <header class="ope-eyebrow">
-          <KinGlyph :size="22" color="#F4EDE4" />
-          <span>Kin Home · Ope</span>
+          <img src="/img/kin-logo-white.png" alt="" class="ope-logo" />
+          <span>Kin Home · Ops GSD</span>
         </header>
 
         <h1 class="ope-title">Welcome back</h1>
@@ -173,6 +172,13 @@ async function handleLogin() {
   text-transform: uppercase;
   font-weight: 600;
   color: #f4ede4;
+}
+
+.ope-logo {
+  display: block;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
 }
 
 .ope-title {
