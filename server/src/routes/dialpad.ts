@@ -1169,19 +1169,30 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
     }
     return 'status'
   }
+  const isAdmin = req.user.roles.includes('admin')
   const messages = rows.map(r => {
     let body: string | null = null
     let status: string | null = null
+    let rawPreview: string | null = null
     try {
       const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
       body = extractBody(p)
       if (!body) status = classifyStatus(p)
     } catch { /* leave null */ }
+    // Admin-only diagnostic — when no body could be extracted, ship the
+    // raw JSON (truncated) so the operator can see exactly which keys
+    // Dialpad sent. Lets us identify mis-named body fields without an
+    // SSH session.
+    if (isAdmin && !body) {
+      const raw = String(r.raw_json || '')
+      rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+    }
     return {
       id: r.id, direction: r.direction, body, status,
       user_email: r.user_email, user_name: r.user_name,
       external_number: r.external_number,
       received_at: r.received_at, is_read: r.is_read,
+      raw_preview: rawPreview,
     }
   })
 

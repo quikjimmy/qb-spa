@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { formatPhone } from '@/lib/callBuckets'
 import { useSmsThread, type ThreadMessage } from '@/composables/useSmsThread'
+import { useAuthStore } from '@/stores/auth'
 
 interface Props {
   externalNumber: string
@@ -13,6 +14,9 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 // ─── Thread state ──────────────────────────────────────────
+const auth = useAuthStore()
+const expandedRaw = ref<Record<number, boolean>>({})
+
 const externalNumberRef = computed(() => props.externalNumber)
 const {
   messages, hasMore, loading, loadingOlder, error,
@@ -323,14 +327,29 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                           </div>
                         </template>
 
-                        <!-- Status-only event: compact centered pill -->
+                        <!-- Status-only event: compact centered pill.
+                             Admins can click to inspect the raw Dialpad
+                             payload — useful for figuring out why no
+                             body was extracted (e.g. the field is named
+                             something we haven't seen yet). -->
                         <template v-else>
-                          <div class="flex justify-center">
-                            <span class="text-[10px] font-medium tracking-wider uppercase text-muted-foreground/80 px-2.5 py-0.5 rounded-full bg-foreground/[0.05]">
+                          <div class="flex flex-col items-center gap-1">
+                            <button
+                              type="button"
+                              class="text-[10px] font-medium tracking-wider uppercase text-muted-foreground/80 px-2.5 py-0.5 rounded-full bg-foreground/[0.05] transition-colors"
+                              :class="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview ? 'hover:bg-foreground/10 cursor-pointer' : 'cursor-default'"
+                              :disabled="!auth.isAdmin || !(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview"
+                              @click="(auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview) && (expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] = !expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id])"
+                            >
                               {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.status || 'status' }}
                               ·
                               {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction || 'sms' }}
-                            </span>
+                              <span v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview" class="ml-1 normal-case tracking-normal opacity-70">{{ expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] ? '▾' : '▸' }} raw</span>
+                            </button>
+                            <pre
+                              v-if="auth.isAdmin && expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview"
+                              class="w-full max-w-[90%] text-[10px] leading-snug bg-foreground/[0.04] rounded-md p-2 whitespace-pre-wrap break-all font-mono text-muted-foreground/90"
+                            >{{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview }}</pre>
                           </div>
                         </template>
                       </div>

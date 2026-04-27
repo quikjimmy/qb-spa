@@ -16,6 +16,7 @@ export interface ThreadMessage {
   external_number: string | null
   received_at: string
   is_read: number
+  raw_preview?: string | null
 }
 
 interface ThreadResponse {
