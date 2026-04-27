@@ -1092,18 +1092,25 @@ router.post('/sms-backfill', async (req: Request, res: Response): Promise<void> 
        WHERE call_id = ? AND event_kind = 'sms' AND (text_body IS NULL OR text_body = '')`
     )
 
+    // Wrap the update loop in a single transaction so SQLite groups all
+    // writes into one fsync — without this, a 10K-row backfill takes
+    // 30+ seconds and holds the event loop long enough for the HTTP
+    // request to time out before the response ships.
     let matched = 0
     let unmatched = 0
     let skipped = 0
-    for (const row of result.rows) {
-      const id = idCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
-      const text = textCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
-      if (!id) { skipped++; continue }
-      if (!text) { unmatched++; continue }
-      const r = updateStmt.run(String(text), String(id))
-      if (r.changes > 0) matched++
-      else unmatched++
-    }
+    const applyAll = db.transaction((rows: typeof result.rows) => {
+      for (const row of rows) {
+        const id = idCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
+        const text = textCols.map(c => row[c]).find(v => v && String(v).trim()) || ''
+        if (!id) { skipped++; continue }
+        if (!text) { unmatched++; continue }
+        const r = updateStmt.run(String(text), String(id))
+        if (r.changes > 0) matched++
+        else unmatched++
+      }
+    })
+    applyAll(result.rows)
 
     res.json({
       ok: true,
@@ -1248,7 +1255,8 @@ router.post('/sms-backfill-qb', async (req: Request, res: Response): Promise<voi
 
     // 4) Update dialpad_events.text_body where call_id matches the QB
     // message id field. SMS rows store the Dialpad message id in call_id
-    // at ingest time.
+    // at ingest time. Transaction-wrapped so even a few thousand rows
+    // commit fast enough to stay inside the request timeout.
     const updateStmt = db.prepare(
       `UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now')
        WHERE call_id = ? AND event_kind = 'sms' AND (text_body IS NULL OR text_body = '')`
@@ -1256,17 +1264,20 @@ router.post('/sms-backfill-qb', async (req: Request, res: Response): Promise<voi
     let matched = 0
     let unmatched = 0
     let blank = 0
-    for (const row of allRows) {
-      const idCell = row[String(msgIdPick.id)]
-      const bodyCell = row[String(bodyPick.id)]
-      const id = idCell ? String(idCell.value ?? '').trim() : ''
-      const text = bodyCell ? String(bodyCell.value ?? '').trim() : ''
-      if (!id) { unmatched++; continue }
-      if (!text) { blank++; continue }
-      const r = updateStmt.run(text, id)
-      if (r.changes > 0) matched++
-      else unmatched++
-    }
+    const applyAll = db.transaction((rows: typeof allRows) => {
+      for (const row of rows) {
+        const idCell = row[String(msgIdPick.id)]
+        const bodyCell = row[String(bodyPick.id)]
+        const id = idCell ? String(idCell.value ?? '').trim() : ''
+        const text = bodyCell ? String(bodyCell.value ?? '').trim() : ''
+        if (!id) { unmatched++; continue }
+        if (!text) { blank++; continue }
+        const r = updateStmt.run(text, id)
+        if (r.changes > 0) matched++
+        else unmatched++
+      }
+    })
+    applyAll(allRows)
 
     res.json({
       ok: true,
