@@ -885,6 +885,27 @@ async function runSmsBackfill() {
   } finally { smsBackfillBusy.value = false }
 }
 
+// Pull SMS bodies from a QuickBase mirror table when Dialpad's API
+// scope blocks record-level text access (which it does on this tenant).
+const smsQbBusy = ref(false)
+const smsQbDays = ref(30)
+const smsQbTable = ref('bvjf44d7d')
+const smsQbResult = ref<string>('')
+async function runSmsBackfillQb() {
+  smsQbBusy.value = true
+  smsQbResult.value = 'Querying QuickBase…'
+  try {
+    const res = await fetch('/api/dialpad/sms-backfill-qb', {
+      method: 'POST', headers: hdrs(),
+      body: JSON.stringify({ table_id: smsQbTable.value.trim(), days: smsQbDays.value }),
+    })
+    const body = await res.json()
+    smsQbResult.value = JSON.stringify(body, null, 2)
+  } catch (e) {
+    smsQbResult.value = `Error: ${e instanceof Error ? e.message : String(e)}`
+  } finally { smsQbBusy.value = false }
+}
+
 // Webhook deliveries viewer — shows the last N POSTs that hit our
 // /api/webhooks/dialpad endpoint, including rejected-signature / missing-
 // body ones, so we can tell "Dialpad didn't send" from "Dialpad sent but
@@ -1913,6 +1934,41 @@ onMounted(async () => {
                       <span class="text-[10px] text-muted-foreground">Stats jobs take 15s–3min; the response shows matched/unmatched counts.</span>
                     </div>
                     <pre v-if="smsBackfillResult" class="text-[9px] leading-snug bg-background rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-64 border">{{ smsBackfillResult }}</pre>
+
+                    <!-- QB-mirror fallback: when the Dialpad API key has no
+                         record-level text scope (returns 401 "No access to
+                         text records, only stats"), pull bodies from the
+                         QuickBase table that mirrors SMS content. -->
+                    <div class="flex items-center gap-2 flex-wrap pt-1">
+                      <button
+                        class="text-[10px] rounded border px-2 py-0.5 hover:bg-muted transition-colors disabled:opacity-50"
+                        :disabled="smsQbBusy"
+                        @click="runSmsBackfillQb"
+                      >
+                        {{ smsQbBusy ? 'Querying QB…' : '3. Backfill bodies from QuickBase' }}
+                      </button>
+                      <label class="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                        table
+                        <input
+                          v-model="smsQbTable"
+                          type="text" maxlength="20"
+                          class="w-24 rounded border bg-background px-1 py-0.5 text-[10px] font-mono"
+                          :disabled="smsQbBusy"
+                        />
+                      </label>
+                      <label class="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                        last
+                        <input
+                          v-model.number="smsQbDays"
+                          type="number" min="1" max="365"
+                          class="w-12 rounded border bg-background px-1 py-0.5 text-[10px] tabular-nums"
+                          :disabled="smsQbBusy"
+                        />
+                        days
+                      </label>
+                      <span class="text-[10px] text-muted-foreground">Use this when the Stats backfill returns 401 'No access to text records'.</span>
+                    </div>
+                    <pre v-if="smsQbResult" class="text-[9px] leading-snug bg-background rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-64 border">{{ smsQbResult }}</pre>
                   </div>
 
                   <!-- Delivery log table — condensed columns so it's scannable

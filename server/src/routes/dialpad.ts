@@ -1133,6 +1133,161 @@ router.post('/sms-backfill', async (req: Request, res: Response): Promise<void> 
   }
 })
 
+// ── SMS body backfill from QuickBase (admin) ────────────
+// Dialpad's API key on this tenant only has access to text *stats*,
+// not record-level text (returns 401 "No access to text records, only
+// stats"). The body is mirrored into a QB table by another integration
+// — bvjf44d7d — so we pull from there. Auto-discovers the message-id
+// and text-body fields by label, queries the table in batches, and
+// updates dialpad_events.text_body where call_id matches.
+router.post('/sms-backfill-qb', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user || !req.user.roles.includes('admin')) {
+    res.status(403).json({ error: 'Admin only' }); return
+  }
+  const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+  const token = process.env['QB_USER_TOKEN'] || ''
+  if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not set' }); return }
+
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+    table_id?: string
+    message_id_fid?: number
+    body_fid?: number
+    days?: number
+  }
+  const tableId = (body.table_id || 'bvjf44d7d').trim()
+
+  const qbHeaders = {
+    'QB-Realm-Hostname': realm,
+    'Authorization': `QB-USER-TOKEN ${token}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  }
+
+  try {
+    // 1) Discover fields. Returns [{id, label, fieldType}, ...]
+    const fieldsRes = await fetch(`https://api.quickbase.com/v1/fields?tableId=${encodeURIComponent(tableId)}`, {
+      headers: qbHeaders,
+    })
+    if (!fieldsRes.ok) {
+      const text = await fieldsRes.text()
+      res.status(500).json({ error: 'QB fields probe failed', status: fieldsRes.status, body: text.slice(0, 500) })
+      return
+    }
+    const fields = await fieldsRes.json() as Array<{ id: number; label: string; fieldType: string }>
+
+    // 2) Pick fids — caller-provided overrides win, otherwise auto-pick.
+    function pickFid(want: 'message_id' | 'body'): { id: number | null; via: string } {
+      const rules = want === 'message_id'
+        ? [
+            (f: { label: string; fieldType: string }) => /^(sms|message|msg)\s*id$/i.test(f.label),
+            (f: { label: string; fieldType: string }) => /\b(message|sms|msg)\b.*\bid\b/i.test(f.label),
+            (f: { label: string; fieldType: string }) => /^id$/i.test(f.label) && /num/i.test(f.fieldType),
+            (f: { label: string; fieldType: string }) => /dialpad.*id|external.*id/i.test(f.label),
+          ]
+        : [
+            (f: { label: string; fieldType: string }) => /^(text|body|message|content)$/i.test(f.label),
+            (f: { label: string; fieldType: string }) => /\b(message body|text body|sms text|message text)\b/i.test(f.label),
+            (f: { label: string; fieldType: string }) => /^(message|text|body|content)/i.test(f.label) && /text|rich/i.test(f.fieldType),
+          ]
+      for (const rule of rules) {
+        const hit = fields.find(rule)
+        if (hit) return { id: hit.id, via: rule.toString().slice(0, 80) }
+      }
+      return { id: null, via: 'no match' }
+    }
+
+    const msgIdPick = body.message_id_fid ? { id: body.message_id_fid, via: 'caller-provided' } : pickFid('message_id')
+    const bodyPick = body.body_fid ? { id: body.body_fid, via: 'caller-provided' } : pickFid('body')
+
+    if (!msgIdPick.id || !bodyPick.id) {
+      res.status(400).json({
+        error: 'Could not auto-discover field IDs',
+        message_id_fid: msgIdPick,
+        body_fid: bodyPick,
+        fields_sample: fields.slice(0, 50).map(f => ({ id: f.id, label: f.label, fieldType: f.fieldType })),
+        next_steps: 'Inspect the fields_sample, then re-call with explicit message_id_fid + body_fid in the request body.',
+      })
+      return
+    }
+
+    // 3) Query records in batches. Optional days filter narrows to recent.
+    // QB's [Date Created] is field 1; we don't filter by date unless asked.
+    const days = body.days != null ? Math.min(Math.max(parseInt(String(body.days), 10) || 30, 1), 365) : null
+    let where = ''
+    if (days) {
+      // QB date arithmetic: {1}.OAF.'today-Nd'
+      where = `{1.OAF.'today-${days}d'}`
+    }
+
+    const allRows: Array<Record<string, { value: unknown }>> = []
+    let skip = 0
+    const top = 1000
+    while (true) {
+      const qRes = await fetch('https://api.quickbase.com/v1/records/query', {
+        method: 'POST',
+        headers: qbHeaders,
+        body: JSON.stringify({
+          from: tableId,
+          select: [3, msgIdPick.id, bodyPick.id],
+          ...(where ? { where } : {}),
+          options: { skip, top },
+        }),
+      })
+      if (!qRes.ok) {
+        const text = await qRes.text()
+        res.status(500).json({ error: 'QB records/query failed', status: qRes.status, body: text.slice(0, 500), where, fids: { msg: msgIdPick.id, body: bodyPick.id } })
+        return
+      }
+      const data = await qRes.json() as { data?: Array<Record<string, { value: unknown }>>; metadata?: { numRecords?: number } }
+      const batch = data.data || []
+      allRows.push(...batch)
+      if (batch.length < top) break
+      skip += top
+      if (skip > 50_000) break  // safety cap
+    }
+
+    // 4) Update dialpad_events.text_body where call_id matches the QB
+    // message id field. SMS rows store the Dialpad message id in call_id
+    // at ingest time.
+    const updateStmt = db.prepare(
+      `UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now')
+       WHERE call_id = ? AND event_kind = 'sms' AND (text_body IS NULL OR text_body = '')`
+    )
+    let matched = 0
+    let unmatched = 0
+    let blank = 0
+    for (const row of allRows) {
+      const idCell = row[String(msgIdPick.id)]
+      const bodyCell = row[String(bodyPick.id)]
+      const id = idCell ? String(idCell.value ?? '').trim() : ''
+      const text = bodyCell ? String(bodyCell.value ?? '').trim() : ''
+      if (!id) { unmatched++; continue }
+      if (!text) { blank++; continue }
+      const r = updateStmt.run(text, id)
+      if (r.changes > 0) matched++
+      else unmatched++
+    }
+
+    res.json({
+      ok: true,
+      table_id: tableId,
+      message_id_fid: msgIdPick,
+      body_fid: bodyPick,
+      window_days: days,
+      total_qb_rows: allRows.length,
+      matched,
+      unmatched,
+      blank,
+      sample_qb_row: allRows[0] || null,
+      next_steps: matched > 0
+        ? 'Reload any SMS thread to see text bubbles populated from QuickBase.'
+        : 'Zero rows matched. Verify message_id_fid points to the same id space Dialpad webhooks send.',
+    })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // ── SMS subscription repair (admin) ──────────────────────
 // Recreates the SMS event subscription with status:false so future
 // webhook payloads include the `text` body. Use when historical
