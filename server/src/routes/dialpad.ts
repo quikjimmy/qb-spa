@@ -1213,41 +1213,120 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
       for (const m of missing) lookupErrors[m.rowIndex] = 'no Dialpad config'
     } else {
       const slice = missing.slice(0, 30)
-      // Try a small ladder of likely Dialpad endpoints. /sms/{id} is the
-      // documented single-message path on most Dialpad plans, but some
-      // tenants only expose /messages/{id}. We use whichever returns
-      // 200 first.
-      const PATHS = (id: string) => [`/sms/${encodeURIComponent(id)}`, `/messages/${encodeURIComponent(id)}`]
-      const results = await Promise.allSettled(slice.map(async m => {
-        let lastErr = ''
-        for (const path of PATHS(m.smsId)) {
+
+      // Strategy 1 — single-message GET. Dialpad has historically used
+      // /sms/{id} for this; some tenants/older API revs use /messages/{id}.
+      // We try a small ladder per id so we don't have to hard-code which
+      // tenant we're on.
+      const SINGLE_PATHS = (id: string) => [
+        `/sms/${encodeURIComponent(id)}`,
+        `/messages/${encodeURIComponent(id)}`,
+        `/sms_records/${encodeURIComponent(id)}`,
+      ]
+      const tryFetchOne = async (id: string): Promise<{ body: string | null; trace: string[] }> => {
+        const trace: string[] = []
+        for (const path of SINGLE_PATHS(id)) {
           try {
             const r = await dialpadApi(cfg, 'GET', path)
+            trace.push(`${path} → ${r.status}${r.ok ? '' : ': ' + r.text.slice(0, 120)}`)
             if (r.ok) {
               const body = extractBody(r.data) || (typeof r.data['text'] === 'string' ? String(r.data['text']) : null)
-              if (body && body.trim()) return { ...m, body: body, error: '' }
-              lastErr = `${path} → 200 but no text field`
-            } else {
-              lastErr = `${path} → ${r.status}: ${r.text.slice(0, 200)}`
+              if (body && body.trim()) return { body: body.trim(), trace }
             }
           } catch (e) {
-            lastErr = `${path} threw: ${e instanceof Error ? e.message : String(e)}`
+            trace.push(`${path} threw: ${e instanceof Error ? e.message : String(e)}`)
           }
         }
-        return { ...m, body: null as string | null, error: lastErr }
+        return { body: null, trace }
+      }
+
+      const singleResults = await Promise.allSettled(slice.map(async m => {
+        const out = await tryFetchOne(m.smsId)
+        return { ...m, ...out }
       }))
-      const updateStmt = db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
-      for (const r of results) {
-        if (r.status !== 'fulfilled') continue
-        const { rowIndex, body, error } = r.value
-        if (body) {
-          initialBodies[rowIndex] = body
-          try { updateStmt.run(body, rows[rowIndex]!.id as number) } catch { /* ignore */ }
-        } else if (error) {
-          lookupErrors[rowIndex] = error
-          if (rowIndex === 0) console.error('[sms/thread] backfill miss:', error)
+
+      const stillMissing: typeof slice = []
+      const traceByIndex: Record<number, string[]> = {}
+      for (let i = 0; i < singleResults.length; i++) {
+        const r = singleResults[i]
+        if (r?.status !== 'fulfilled') { stillMissing.push(slice[i]!); continue }
+        const v = r.value
+        traceByIndex[v.rowIndex] = v.trace
+        if (v.body) {
+          initialBodies[v.rowIndex] = v.body
+          try {
+            db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
+              .run(v.body, rows[v.rowIndex]!.id as number)
+          } catch { /* ignore */ }
+        } else {
+          stillMissing.push(slice[i]!)
         }
       }
+
+      // Strategy 2 — fall back to the list endpoint. fetchSmsRecords
+      // already wraps GET /sms?start_time=&end_time=&limit=, which is
+      // documented as returning items with a `text` field. We pull a
+      // small window around the event_timestamp on each missing row,
+      // then look up the message by id. Cheap when there are a few
+      // missing rows; capped to limit fan-out.
+      if (stillMissing.length > 0) {
+        const idsByWindow = new Map<string, Array<{ rowIndex: number; smsId: string }>>()
+        for (const m of stillMissing) {
+          const r = rows[m.rowIndex]!
+          const t = r.received_at ? new Date(String(r.received_at).replace(' ', 'T') + 'Z').getTime() : Date.now()
+          // 6-hour window snapped to the hour to maximize cache hits
+          // when several missing rows fall in the same period.
+          const winStart = Math.floor(t / 1000 / 3600) * 3600 - 3 * 3600
+          const winEnd = winStart + 6 * 3600
+          const key = `${winStart}:${winEnd}`
+          if (!idsByWindow.has(key)) idsByWindow.set(key, [])
+          idsByWindow.get(key)!.push(m)
+        }
+
+        for (const [key, group] of idsByWindow.entries()) {
+          const [s, e] = key.split(':').map(n => parseInt(n, 10))
+          const qs = new URLSearchParams()
+          qs.set('limit', '500')
+          qs.set('start_time', String(s))
+          qs.set('end_time', String(e))
+          try {
+            const res = await dialpadApi(cfg, 'GET', `/sms?${qs}`)
+            const items = (res.data['items'] as Array<Record<string, unknown>> | undefined) || []
+            const byId = new Map<string, Record<string, unknown>>()
+            for (const it of items) {
+              const id = it['id']
+              if (id != null) byId.set(String(id), it)
+            }
+            for (const m of group) {
+              const item = byId.get(m.smsId)
+              const body = item ? (extractBody(item) || (typeof item['text'] === 'string' ? String(item['text']) : null)) : null
+              const traceLine = `list /sms?start=${s}&end=${e} → ${res.status} (${items.length} items, ${item ? 'matched' : 'no match for id ' + m.smsId})`
+              if (body && body.trim()) {
+                initialBodies[m.rowIndex] = body.trim()
+                try {
+                  db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
+                    .run(body.trim(), rows[m.rowIndex]!.id as number)
+                } catch { /* ignore */ }
+                ;(traceByIndex[m.rowIndex] ||= []).push(traceLine + ' ✓ body found')
+              } else {
+                ;(traceByIndex[m.rowIndex] ||= []).push(traceLine)
+              }
+            }
+          } catch (e) {
+            for (const m of group) {
+              ;(traceByIndex[m.rowIndex] ||= []).push(`list /sms threw: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          }
+        }
+      }
+
+      for (const [idxStr, trace] of Object.entries(traceByIndex)) {
+        const idx = Number(idxStr)
+        if (initialBodies[idx]) continue
+        lookupErrors[idx] = trace.join(' | ')
+      }
+      const firstErr = Object.values(lookupErrors)[0]
+      if (firstErr) console.error('[sms/thread] backfill miss:', firstErr)
     }
   }
 
@@ -1669,6 +1748,190 @@ router.delete('/inbox/:itemId/read', (req: Request, res: Response): void => {
     db.prepare(`DELETE FROM dialpad_inbox_reads WHERE user_id = ? AND call_id = ?`).run(req.user.userId, itemId)
   }
   res.json({ ok: true })
+})
+
+// ── Team Live: per-agent counters + presence for today ─
+// Aggregates real-time activity from dialpad_events (the webhook
+// stream). Calls are counted per distinct call_id so the multi-event
+// lifecycle of one call doesn't inflate volume; SMS is counted per
+// distinct call_id (Dialpad's message id is stored in call_id for SMS
+// rows). Connect/answer rates are computed from whether the call ever
+// reached the 'connected' state during its lifecycle.
+//
+// Presence is derived from very recent activity:
+//   on_call: there is a call event in the last 5 minutes that has not
+//            yet reached a terminal state (hangup/ended/missed/voicemail/
+//            transferred/abandoned).
+//   active:  any event in the last 10 minutes.
+//   idle:    last activity older than that, or no activity today.
+router.get('/team-live', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+
+  // Window — today in the server's local timezone. The client passes
+  // `?window=today` (default) or `?window=last_24h` if we ever want a
+  // rolling tracker.
+  const win = String(req.query['window'] || 'today')
+  const startClause = win === 'last_24h'
+    ? `e.received_at > datetime('now', '-24 hours')`
+    : `substr(e.received_at, 1, 10) >= date('now', 'localtime')`
+
+  // SMS counts — each distinct call_id is one SMS message; multiple
+  // status webhooks (pending → sent → delivered) for the same message
+  // share the call_id.
+  const smsRows = db.prepare(`
+    SELECT e.user_email AS email,
+           e.user_name AS name,
+           COUNT(DISTINCT CASE WHEN e.direction = 'outgoing' THEN e.call_id END) AS sms_out,
+           COUNT(DISTINCT CASE WHEN e.direction = 'incoming' THEN e.call_id END) AS sms_in,
+           MAX(e.received_at) AS last_sms_at
+    FROM dialpad_events e
+    WHERE e.event_kind = 'sms'
+      AND ${startClause}
+      AND e.call_id IS NOT NULL
+      AND e.user_email IS NOT NULL AND TRIM(e.user_email) != ''
+    GROUP BY e.user_email
+  `).all() as Array<{ email: string; name: string | null; sms_out: number; sms_in: number; last_sms_at: string }>
+
+  // Calls — aggregate the per-call lifecycle in a subquery, then count
+  // distinct calls and connected calls per agent.
+  const callRows = db.prepare(`
+    SELECT user_email AS email, user_name AS name,
+           COUNT(CASE WHEN direction = 'outbound' THEN 1 END) AS calls_out,
+           COUNT(CASE WHEN direction = 'inbound' THEN 1 END) AS calls_in,
+           SUM(CASE WHEN direction = 'outbound' AND has_connected = 1 THEN 1 ELSE 0 END) AS out_connected,
+           SUM(CASE WHEN direction = 'inbound' AND has_connected = 1 THEN 1 ELSE 0 END) AS in_answered,
+           MAX(last_event_at) AS last_call_at
+    FROM (
+      SELECT e.call_id, e.user_email, e.user_name, e.direction,
+             MAX(CASE WHEN LOWER(COALESCE(e.event_state, '')) = 'connected' THEN 1 ELSE 0 END) AS has_connected,
+             MAX(e.received_at) AS last_event_at
+      FROM dialpad_events e
+      WHERE e.event_kind = 'call'
+        AND ${startClause}
+        AND e.call_id IS NOT NULL
+        AND e.user_email IS NOT NULL AND TRIM(e.user_email) != ''
+      GROUP BY e.call_id, e.user_email, e.user_name, e.direction
+    )
+    GROUP BY user_email
+  `).all() as Array<{ email: string; name: string | null; calls_out: number; calls_in: number; out_connected: number; in_answered: number; last_call_at: string }>
+
+  // Active (in-flight) calls — used to mark presence as on_call. Looks
+  // at calls whose last event is recent and has not yet reached a
+  // terminal state.
+  interface ActiveCall { email: string; call_id: string; last_state: string | null; last_event_at: string }
+  const activeCalls = db.prepare(`
+    SELECT user_email AS email, call_id, event_state AS last_state, received_at AS last_event_at
+    FROM dialpad_events e
+    WHERE e.event_kind = 'call'
+      AND e.call_id IS NOT NULL
+      AND e.user_email IS NOT NULL AND TRIM(e.user_email) != ''
+      AND e.received_at > datetime('now', '-15 minutes')
+      AND e.id = (
+        SELECT MAX(e2.id)
+        FROM dialpad_events e2
+        WHERE e2.call_id = e.call_id AND e2.user_email = e.user_email
+      )
+      AND LOWER(COALESCE(e.event_state, '')) NOT IN ('hangup', 'ended', 'missed', 'voicemail', 'abandoned', 'transferred', 'blocked')
+  `).all() as ActiveCall[]
+  const activeCallByEmail = new Map<string, ActiveCall>()
+  for (const c of activeCalls) {
+    const prev = activeCallByEmail.get(c.email)
+    if (!prev || c.last_event_at > prev.last_event_at) activeCallByEmail.set(c.email, c)
+  }
+
+  // Build the merged agent list. Pull the union of email keys from both
+  // SMS and call results, then enrich with portal user info (avatar,
+  // matched user id).
+  const byEmail = new Map<string, {
+    email: string; name: string | null;
+    sms_out: number; sms_in: number;
+    calls_out: number; calls_in: number;
+    out_connected: number; in_answered: number;
+    last_activity_at: string | null;
+  }>()
+  function ensure(email: string, name: string | null) {
+    let cur = byEmail.get(email)
+    if (!cur) {
+      cur = { email, name, sms_out: 0, sms_in: 0, calls_out: 0, calls_in: 0, out_connected: 0, in_answered: 0, last_activity_at: null }
+      byEmail.set(email, cur)
+    } else if (!cur.name && name) cur.name = name
+    return cur
+  }
+  for (const s of smsRows) {
+    const a = ensure(s.email, s.name)
+    a.sms_out = s.sms_out; a.sms_in = s.sms_in
+    if (!a.last_activity_at || s.last_sms_at > a.last_activity_at) a.last_activity_at = s.last_sms_at
+  }
+  for (const c of callRows) {
+    const a = ensure(c.email, c.name)
+    a.calls_out = c.calls_out; a.calls_in = c.calls_in
+    a.out_connected = c.out_connected; a.in_answered = c.in_answered
+    if (!a.last_activity_at || c.last_call_at > a.last_activity_at) a.last_activity_at = c.last_call_at
+  }
+
+  // Portal user lookup so we can show the canonical name + portal id.
+  const emails = [...byEmail.keys()]
+  const portalRows = emails.length
+    ? db.prepare(`
+        SELECT uel.email, u.id AS portal_user_id, u.name AS portal_name
+        FROM user_email_lookup uel
+        JOIN users u ON u.id = uel.user_id
+        WHERE uel.system IN ('', 'dialpad')
+          AND uel.email IN (${emails.map(() => '?').join(',')})
+      `).all(...emails) as Array<{ email: string; portal_user_id: number; portal_name: string | null }>
+    : []
+  const portalByEmail = new Map(portalRows.map(p => [p.email, p]))
+
+  const nowMs = Date.now()
+  const agents = [...byEmail.values()].map(a => {
+    const portal = portalByEmail.get(a.email) || null
+    const display_name = portal?.portal_name || a.name || a.email
+    const lastMs = a.last_activity_at ? new Date(a.last_activity_at.replace(' ', 'T') + 'Z').getTime() : 0
+    const idleMs = lastMs ? nowMs - lastMs : Infinity
+    const onCall = activeCallByEmail.get(a.email)
+    const presence = onCall
+      ? { state: 'on_call' as const, detail: (onCall.last_state || 'on call').toLowerCase(), since: onCall.last_event_at }
+      : idleMs < 10 * 60_000
+        ? { state: 'active' as const, detail: 'active', since: a.last_activity_at }
+        : { state: 'idle' as const, detail: 'idle', since: a.last_activity_at }
+    const total_calls = a.calls_out + a.calls_in
+    const total_sms = a.sms_out + a.sms_in
+    return {
+      email: a.email,
+      name: display_name,
+      portal_user_id: portal?.portal_user_id ?? null,
+      presence,
+      sms_out: a.sms_out,
+      sms_in: a.sms_in,
+      calls_out: a.calls_out,
+      calls_in: a.calls_in,
+      out_connect_pct: a.calls_out > 0 ? a.out_connected / a.calls_out : null,
+      in_answer_pct: a.calls_in > 0 ? a.in_answered / a.calls_in : null,
+      last_activity_at: a.last_activity_at,
+      total_activity: total_calls + total_sms,
+    }
+  })
+  agents.sort((x, y) => y.total_activity - x.total_activity)
+
+  const totals = agents.reduce(
+    (t, a) => ({
+      sms_out: t.sms_out + a.sms_out,
+      sms_in: t.sms_in + a.sms_in,
+      calls_out: t.calls_out + a.calls_out,
+      calls_in: t.calls_in + a.calls_in,
+      on_call: t.on_call + (a.presence.state === 'on_call' ? 1 : 0),
+      active: t.active + (a.presence.state === 'active' ? 1 : 0),
+      agents: t.agents + 1,
+    }),
+    { sms_out: 0, sms_in: 0, calls_out: 0, calls_in: 0, on_call: 0, active: 0, agents: 0 },
+  )
+
+  res.json({
+    window: win,
+    generated_at: new Date().toISOString(),
+    agents,
+    totals,
+  })
 })
 
 // List coordinator names from Dialpad data for filter dropdowns

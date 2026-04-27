@@ -328,10 +328,9 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                         </template>
 
                         <!-- Status-only event: compact centered pill.
-                             Admins can click to inspect the raw Dialpad
-                             payload — useful for figuring out why no
-                             body was extracted (e.g. the field is named
-                             something we haven't seen yet). -->
+                             Admins also see the backfill error inline
+                             (always visible, no expand needed) so we can
+                             diagnose API failures without hunting. -->
                         <template v-else>
                           <div class="flex flex-col items-center gap-1">
                             <button
@@ -346,16 +345,16 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                               {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction || 'sms' }}
                               <span v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview" class="ml-1 normal-case tracking-normal opacity-70">{{ expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] ? '▾' : '▸' }} raw</span>
                             </button>
-                            <div
+                            <!-- Always-visible backfill diagnostic for admins. -->
+                            <p
+                              v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error"
+                              class="w-full max-w-[92%] text-[10px] text-rose-700 bg-rose-50 dark:bg-rose-500/10 dark:text-rose-300 rounded-md px-2 py-1.5 font-mono break-all leading-snug"
+                            >API: {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error }}</p>
+                            <!-- Raw payload, expand on click. -->
+                            <pre
                               v-if="auth.isAdmin && expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview"
-                              class="w-full max-w-[90%] space-y-1.5"
-                            >
-                              <p
-                                v-if="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error"
-                                class="text-[10px] text-rose-600 bg-rose-50 dark:bg-rose-500/10 dark:text-rose-300 rounded-md px-2 py-1.5 font-mono break-all"
-                              >Backfill: {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error }}</p>
-                              <pre class="text-[10px] leading-snug bg-foreground/[0.04] rounded-md p-2 whitespace-pre-wrap break-all font-mono text-muted-foreground/90">{{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview }}</pre>
-                            </div>
+                              class="w-full max-w-[92%] text-[10px] leading-snug bg-foreground/[0.04] rounded-md p-2 whitespace-pre-wrap break-all font-mono text-muted-foreground/90"
+                            >{{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview }}</pre>
                           </div>
                         </template>
                       </div>
