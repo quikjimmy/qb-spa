@@ -63,6 +63,7 @@ const navBottom = [
 const projectSubItems = [
   { label: 'All Projects', to: '/projects' },
   { label: 'PC Dashboard', to: '/projects/pc' },
+  { label: 'Field', to: '/projects/field' },
   { label: 'Inspections', to: '/projects/inspections' },
   { label: 'PTO', to: '/projects/pto' },
 ]

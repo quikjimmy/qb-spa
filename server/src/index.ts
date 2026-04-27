@@ -26,6 +26,7 @@ import { agentLabRouter } from './routes/agent-lab'
 import { agentApprovalsRouter } from './routes/agent-approvals'
 import { dialpadRouter } from './routes/dialpad'
 import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
+import { fieldRouter } from './routes/field'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
@@ -75,6 +76,7 @@ app.use('/api/agent-org/approvals', authenticate, agentApprovalsRouter)
 app.use('/api/agent-lab', authenticate, agentLabRouter)
 app.use('/api/agent-approvals', authenticate, agentApprovalsRouter)
 app.use('/api/dialpad', authenticate, dialpadRouter)
+app.use('/api/field', authenticate, fieldRouter)
 
 // Admin routes — require JWT + admin role
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)

@@ -63,6 +63,11 @@ const router = createRouter({
           component: () => import('../views/PcDashboardView.vue'),
         },
         {
+          path: 'projects/field',
+          name: 'field-dashboard',
+          component: () => import('../views/FieldDashboardView.vue'),
+        },
+        {
           path: 'comms',
           name: 'comms-hub',
           component: () => import('../views/CommsHubView.vue'),

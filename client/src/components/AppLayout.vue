@@ -42,6 +42,7 @@ const routeLabels: Record<string, string> = {
   '/projects/inspections': 'Inspections',
   '/projects/pto': 'PTO',
   '/projects/pc': 'PC Dashboard',
+  '/projects/field': 'Field',
   '/agents': 'Agent Ops',
   '/tickets': 'Tickets',
   '/admin': 'Admin',
