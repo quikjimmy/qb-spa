@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { useDialpadLive, unlockAudio as globalUnlockAudio, type LiveEvent } from '@/lib/dialpadLive'
+import { usePhoneMatches } from '@/composables/usePhoneMatches'
 import { formatPhone } from '@/lib/callBuckets'
 import DtIconPhoneIncoming from '@dialpad/dialtone-icons/vue3/phone-incoming'
 import DtIconPhoneCall from '@dialpad/dialtone-icons/vue3/phone-call'
@@ -12,51 +12,22 @@ import DtIconPhoneCall from '@dialpad/dialtone-icons/vue3/phone-call'
 // call. When the call resolves (connected / hangup / missed) the alert
 // auto-dismisses via the composable's `pendingRinging` computed.
 
-const auth = useAuthStore()
 const { pendingRinging, dismissRinging } = useDialpadLive()
 
-// Per-call contact match cache. Keyed by external_number + call_id so if
-// the same number calls twice we re-match; avoids duplicate network calls
-// while the ring is active.
-interface MatchedProject {
-  record_id: number
-  customer_name: string
-  phone: string
-  status: string
-  state: string
-  coordinator: string
-  closer: string
-  probable?: boolean
-}
-const matches = ref<Record<string, MatchedProject[]>>({})
-const matchLoading = ref<Record<string, boolean>>({})
+// Shared phone → project match cache. Other Comms views (inbox, live
+// panel) prime the same cache so by the time a call rings the customer
+// name is often resolved instantly.
+const { matches: phoneMatches, primeMany } = usePhoneMatches()
 
-function keyFor(ev: LiveEvent): string {
-  return `${ev.call_id || ''}|${ev.external_number || ''}`
-}
-
-async function lookup(ev: LiveEvent) {
-  if (!ev.external_number) return
-  const k = keyFor(ev)
-  if (matches.value[k] || matchLoading.value[k]) return
-  matchLoading.value = { ...matchLoading.value, [k]: true }
-  try {
-    const res = await fetch(`/api/projects/by-phone?number=${encodeURIComponent(ev.external_number)}&limit=5`, {
-      headers: { Authorization: `Bearer ${auth.token}` },
-    })
-    if (res.ok) {
-      const data = await res.json() as { rows: MatchedProject[] }
-      matches.value = { ...matches.value, [k]: data.rows || [] }
-    }
-  } finally {
-    matchLoading.value = { ...matchLoading.value, [k]: false }
-  }
-}
-
-// Auto-lookup whenever a new ringing call appears
+// Auto-lookup whenever a new ringing call appears. primeMany dedupes and
+// batches into one /by-phones request.
 watch(pendingRinging, (list) => {
-  for (const ev of list) lookup(ev)
+  primeMany(list.map(e => e.external_number))
 }, { immediate: true })
+
+function matchesFor(ev: LiveEvent) {
+  return ev.external_number ? (phoneMatches.value[ev.external_number] || []) : []
+}
 
 function openProject(rid: number) {
   // Opens the QuickBase project detail page in a new tab — same pattern as
@@ -108,29 +79,29 @@ const visible = computed(() => pendingRinging.value.slice(0, 3))   // cap to 3 s
             <p class="text-[10px] uppercase tracking-wider text-sky-700 dark:text-sky-300 font-semibold">Incoming call</p>
             <!-- Resolved customer name if we matched, else the raw number -->
             <p class="font-semibold text-[15px] truncate">
-              <template v-if="matches[keyFor(ev)]?.[0]?.customer_name">{{ matches[keyFor(ev)]![0]!.customer_name }}</template>
+              <template v-if="matchesFor(ev)[0]?.customer_name">{{ matchesFor(ev)[0]!.customer_name }}</template>
               <template v-else>{{ formatPhone(ev.external_number) || 'Unknown caller' }}</template>
             </p>
             <p class="text-[11px] text-muted-foreground truncate">
-              <template v-if="matches[keyFor(ev)]?.[0]?.customer_name">{{ formatPhone(ev.external_number) || '' }}</template>
+              <template v-if="matchesFor(ev)[0]?.customer_name">{{ formatPhone(ev.external_number) || '' }}</template>
               <template v-if="ev.user_name"> · to {{ ev.user_name }}</template>
               <span class="ml-1 tabular-nums">· {{ elapsed(ev) }}</span>
             </p>
           </div>
-          <button class="shrink-0 size-6 rounded-full hover:bg-muted/60 flex items-center justify-center" title="Dismiss" @click.stop="ev.call_id && dismissRinging(ev.call_id)">
+          <button class="shrink-0 size-6 rounded-full hover:bg-muted/60 flex items-center justify-center" title="Dismiss" @click.stop="dismissRinging(ev)">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
 
         <!-- Matched projects (if any). Probable-match rows get a subtle
              amber tint so the user doesn't trust an uncertain match blindly. -->
-        <div v-if="matches[keyFor(ev)]?.length" class="border-t bg-muted/30">
+        <div v-if="matchesFor(ev).length" class="border-t bg-muted/30">
           <p class="px-3.5 pt-2 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">
             Related projects
-            <span v-if="matches[keyFor(ev)]!.some(p => p.probable)" class="normal-case tracking-normal text-amber-700 ml-1">· probable match</span>
+            <span v-if="matchesFor(ev).some(p => p.probable)" class="normal-case tracking-normal text-amber-700 ml-1">· probable match</span>
           </p>
           <div class="divide-y">
-            <button v-for="p in matches[keyFor(ev)]" :key="p.record_id"
+            <button v-for="p in matchesFor(ev)" :key="p.record_id"
               class="w-full flex items-center gap-2 px-3.5 py-1.5 hover:bg-muted/60 text-left transition-colors"
               :class="p.probable ? 'bg-amber-50 dark:bg-amber-950/20' : ''"
               @click.stop="openProject(p.record_id)"
@@ -148,7 +119,6 @@ const visible = computed(() => pendingRinging.value.slice(0, 3))   // cap to 3 s
             </button>
           </div>
         </div>
-        <div v-else-if="matchLoading[keyFor(ev)]" class="px-3.5 py-1.5 text-[10px] text-muted-foreground border-t">Looking up caller…</div>
         <div v-else class="px-3.5 py-1.5 text-[10px] text-muted-foreground border-t">No matching project found for this number.</div>
       </div>
     </div>

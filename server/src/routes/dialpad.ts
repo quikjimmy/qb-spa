@@ -1147,43 +1147,51 @@ router.get('/call/:callId/timeline', (req: Request, res: Response): void => {
   if (!req.user) { res.status(401).end(); return }
   const callId = String(req.params['callId'] || '').trim()
   if (!callId) { res.status(400).json({ error: 'callId required' }); return }
-  const rows = db.prepare(`
-    SELECT id, event_state, user_email, user_name, direction, external_number,
-           entry_point_target_kind, raw_json, received_at
-    FROM dialpad_events
-    WHERE call_id = ?
-    ORDER BY received_at ASC, id ASC
-  `).all(callId) as Array<Record<string, unknown>>
+  try {
+    // entry_point_target_kind lives on dialpad_call_records, not dialpad_events.
+    // The entry-point info we need for the timeline is already inside the
+    // raw_json blob (entry_point / entry_point_target), so just read it from
+    // there.
+    const rows = db.prepare(`
+      SELECT id, event_state, user_email, user_name, direction, external_number,
+             raw_json, received_at
+      FROM dialpad_events
+      WHERE call_id = ?
+      ORDER BY received_at ASC, id ASC
+    `).all(callId) as Array<Record<string, unknown>>
 
-  // Compute duration since the previous event so the UI can show "+12s"
-  // labels next to each state. Also pull the entry-point target name from
-  // the raw payload when available so we can render the IVR/Office leg.
-  let prevTs: number | null = null
-  const events = rows.map((r, idx) => {
-    const ts = new Date(String(r.received_at).replace(' ', 'T') + (String(r.received_at).endsWith('Z') ? '' : 'Z')).getTime()
-    const sincePrev = prevTs ? Math.max(0, Math.round((ts - prevTs) / 1000)) : 0
-    prevTs = ts
-    let entryPointName: string | null = null
-    let target: string | null = null
-    let raw: Record<string, unknown> | null = null
-    try {
-      raw = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
-      const epKind = String(r.entry_point_target_kind || '')
-      const ep = (raw['entry_point'] || raw['entry_point_target']) as Record<string, unknown> | undefined
-      entryPointName = epKind || (ep ? String(ep['name'] || ep['type'] || '') : null) || null
-      const t = raw['target'] as Record<string, unknown> | undefined
-      target = t ? String(t['name'] || t['email'] || '') : null
-    } catch { /* leave nulls */ }
-    return {
-      id: r.id, state: r.event_state || 'unknown',
-      direction: r.direction, external_number: r.external_number,
-      user_email: r.user_email, user_name: r.user_name,
-      entry_point: entryPointName, target,
-      received_at: r.received_at,
-      step_index: idx, sec_since_prev: sincePrev,
-    }
-  })
-  res.json({ call_id: callId, events, count: events.length })
+    // Compute duration since the previous event so the UI can show "+12s"
+    // labels next to each state. Also pull the entry-point target name from
+    // the raw payload when available so we can render the IVR/Office leg.
+    let prevTs: number | null = null
+    const events = rows.map((r, idx) => {
+      const recvStr = r.received_at == null ? '' : String(r.received_at)
+      const ts = recvStr ? new Date(recvStr.replace(' ', 'T') + (recvStr.endsWith('Z') ? '' : 'Z')).getTime() : NaN
+      const sincePrev = prevTs && Number.isFinite(ts) ? Math.max(0, Math.round((ts - prevTs) / 1000)) : 0
+      if (Number.isFinite(ts)) prevTs = ts
+      let entryPointName: string | null = null
+      let target: string | null = null
+      try {
+        const raw = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+        const ep = (raw['entry_point'] || raw['entry_point_target']) as Record<string, unknown> | undefined
+        entryPointName = ep ? (String(ep['name'] || ep['type'] || '') || null) : null
+        const t = raw['target'] as Record<string, unknown> | undefined
+        target = t ? String(t['name'] || t['email'] || '') : null
+      } catch { /* leave nulls */ }
+      return {
+        id: r.id, state: r.event_state || 'unknown',
+        direction: r.direction, external_number: r.external_number,
+        user_email: r.user_email, user_name: r.user_name,
+        entry_point: entryPointName, target,
+        received_at: r.received_at,
+        step_index: idx, sec_since_prev: sincePrev,
+      }
+    })
+    res.json({ call_id: callId, events, count: events.length })
+  } catch (e) {
+    console.error('[dialpad/timeline] error for callId', callId, e)
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
 })
 
 // ── Audio proxy for recordings + voicemails ────────────

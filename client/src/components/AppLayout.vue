@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, provide, watch } from 'vue'
+import { ref, provide, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
@@ -15,12 +15,36 @@ import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
+import CommsLiveRail from '@/components/CommsLiveRail.vue'
 import { useDialpadLive, unlockAudio } from '@/lib/dialpadLive'
+import { useCommsRail } from '@/composables/useCommsRail'
+import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
 
 // Initialize the singleton Dialpad live connection at the app shell level
 // so ringing alerts pop no matter which view is active. useDialpadLive()
 // is idempotent — if a child component also calls it, they share one SSE.
-useDialpadLive()
+const { visibleEvents } = useDialpadLive()
+const { open: railOpen, toggle: toggleRail, width: railWidth } = useCommsRail()
+
+// Track desktop vs mobile so we only reserve right-side padding for the
+// rail on screens where it renders as a side rail (md+). Mobile renders
+// it as a bottom sheet that floats above content with no offset needed.
+const isDesktop = ref(false)
+function syncBp() {
+  isDesktop.value = typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches
+}
+let mq: MediaQueryList | null = null
+onMounted(() => {
+  syncBp()
+  if (typeof window !== 'undefined') {
+    mq = window.matchMedia('(min-width: 768px)')
+    mq.addEventListener('change', syncBp)
+  }
+})
+onBeforeUnmount(() => {
+  if (mq) mq.removeEventListener('change', syncBp)
+})
+const railPadding = computed(() => (railOpen.value && isDesktop.value ? `${railWidth.value}px` : '0px'))
 // Browsers require a user gesture before the audio context can start. Any
 // click anywhere in the shell unlocks it once.
 function unlockOnFirstGesture() {
@@ -86,7 +110,13 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
 <template>
   <SidebarProvider>
     <AppSidebar />
-    <SidebarInset>
+    <!-- When the desktop Live Hub rail is open we reserve space on the
+         right so it doesn't overlap content. Bottom sheet on mobile sits
+         above the layout and doesn't need this offset. -->
+    <SidebarInset
+      class="transition-[padding] duration-200"
+      :style="{ paddingRight: railPadding }"
+    >
       <header class="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 border-b px-4 bg-background">
         <SidebarTrigger class="-ml-1" />
         <Separator orientation="vertical" class="mr-2 h-4" />
@@ -103,7 +133,22 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
             </template>
           </BreadcrumbList>
         </Breadcrumb>
-        <div class="ml-auto">
+        <div class="ml-auto flex items-center gap-1">
+          <!-- Live Hub toggle — desktop only; mobile uses the FAB rendered
+               by CommsLiveRail. Badge shows current live event count so
+               users have an at-a-glance "is something happening?" cue. -->
+          <button
+            class="hidden md:inline-flex relative items-center justify-center size-8 rounded-md transition-colors"
+            :class="railOpen ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
+            :title="railOpen ? 'Close Live Hub' : 'Open Live Hub'"
+            @click="toggleRail"
+          >
+            <component :is="DtIconPhone" class="w-4 h-4" />
+            <span
+              v-if="visibleEvents.length > 0 && !railOpen"
+              class="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full bg-sky-500 text-white text-[9px] font-bold tabular-nums flex items-center justify-center ring-2 ring-background"
+            >{{ visibleEvents.length > 99 ? '99+' : visibleEvents.length }}</span>
+          </button>
           <NotificationBell />
         </div>
       </header>
@@ -125,5 +170,9 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
     <!-- Sits above everything else; inner component is absent until a live
          ringing event arrives, so zero cost on render when idle. -->
     <GlobalIncomingCallAlert />
+    <!-- Persistent Live Hub — desktop right rail, mobile bottom sheet.
+         Toggled via the topbar phone button (desktop) or floating FAB
+         (mobile). Hidden by default until the user opens it. -->
+    <CommsLiveRail />
   </SidebarProvider>
 </template>

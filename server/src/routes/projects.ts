@@ -551,6 +551,90 @@ router.get('/by-phone', (req: Request, res: Response): void => {
   res.json({ rows: loose.map(r => ({ ...r, probable: true })), digits: last7, match_quality: loose.length ? 'probable' : 'none' })
 })
 
+// Batch variant of /by-phone — takes up to 200 numbers and returns a
+// { [originalNumber]: MatchedProject[] } map. Used by Comms Hub views to
+// avoid an N-request storm when rendering the inbox or live feed: one SQL
+// pass + one HTTP round-trip instead of one per row.
+router.post('/by-phones', (req: Request, res: Response): void => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { numbers?: unknown }
+  const input = Array.isArray(body.numbers) ? body.numbers : []
+  const limitPer = Math.min(Math.max(parseInt(String((req.query['limit'] || 3)), 10) || 3, 1), 10)
+
+  // Normalize each requested number to last10 / last7. Skip blanks and
+  // anything too short to be meaningful.
+  interface Req { raw: string; last10: string; last7: string }
+  const seen = new Map<string, Req>()  // dedupe by raw input string
+  for (const n of input.slice(0, 200)) {
+    const raw = String(n || '').trim()
+    if (!raw || seen.has(raw)) continue
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length < 7) { seen.set(raw, { raw, last10: '', last7: '' }); continue }
+    seen.set(raw, { raw, last10: digits.slice(-10), last7: digits.slice(-7) })
+  }
+  const entries = [...seen.values()]
+  const matches: Record<string, Array<Record<string, unknown>>> = {}
+  for (const e of entries) matches[e.raw] = []
+
+  if (entries.length === 0) { res.json({ matches }); return }
+
+  // Pull every project that has a phone column ending in any of the
+  // requested last10 OR last7 digits. One scan over project_cache; we
+  // bucket the rows in JS afterward. Project cache is small (low thousands)
+  // so a full scan is fine.
+  interface MatchRow {
+    record_id: number; customer_name: string;
+    phone: string | null; mobile_phone: string | null; alt_phone: string | null;
+    status: string | null; state: string | null; coordinator: string | null;
+  }
+  const rows = db.prepare(`
+    SELECT record_id, customer_name, phone, mobile_phone, alt_phone,
+           status, state, coordinator
+    FROM project_cache
+    WHERE phone IS NOT NULL OR mobile_phone IS NOT NULL OR alt_phone IS NOT NULL
+  `).all() as MatchRow[]
+
+  // Pre-normalize the cache rows once.
+  const norm = (s: string | null | undefined): string => (s || '').replace(/\D/g, '')
+  interface Cached { row: MatchRow; phones10: string[]; phones7: string[] }
+  const cache: Cached[] = rows.map(row => {
+    const all = [norm(row.phone), norm(row.mobile_phone), norm(row.alt_phone)].filter(d => d.length >= 7)
+    return {
+      row,
+      phones10: all.filter(d => d.length >= 10).map(d => d.slice(-10)),
+      phones7: all.map(d => d.slice(-7)),
+    }
+  })
+
+  // For each requested number, prefer strict (last10) hits; fall back to
+  // last7 with `probable: true` if there are no strict matches.
+  for (const e of entries) {
+    if (!e.last10 && !e.last7) continue
+    const strict: Array<Record<string, unknown>> = []
+    const probable: Array<Record<string, unknown>> = []
+    for (const c of cache) {
+      const hitStrict = e.last10 && c.phones10.includes(e.last10)
+      const hitLoose = !hitStrict && c.phones7.includes(e.last7)
+      if (!hitStrict && !hitLoose) continue
+      const out = {
+        record_id: c.row.record_id,
+        customer_name: c.row.customer_name,
+        phone: c.row.phone,
+        mobile_phone: c.row.mobile_phone,
+        alt_phone: c.row.alt_phone,
+        status: c.row.status,
+        state: c.row.state,
+        coordinator: c.row.coordinator,
+        probable: !hitStrict,
+      }
+      if (hitStrict) strict.push(out); else probable.push(out)
+      if (strict.length >= limitPer) break
+    }
+    matches[e.raw] = (strict.length > 0 ? strict : probable).slice(0, limitPer)
+  }
+
+  res.json({ matches })
+})
+
 // Diagnostic: list every phone-type field on the QB projects table. Admin-
 // only. Hit once from the browser dev tools (or curl) and paste the output
 // back so we can add the right fids to the projects sync fieldMap.

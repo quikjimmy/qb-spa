@@ -10,6 +10,7 @@ import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
 import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
+import { usePhoneMatches } from '@/composables/usePhoneMatches'
 
 interface InboxRow {
   item_kind: 'call' | 'sms'
@@ -50,11 +51,12 @@ const tab = ref<'unread' | 'all' | 'missed' | 'vms' | 'recordings' | 'texts'>('u
 const scope = ref<'me' | 'all'>('me')
 const resp = ref<InboxResponse | null>(null)
 const loading = ref(false)
-// Matched projects per call_id so the inbox row can link to a QB project
-// without each row firing its own fetch. We prime the cache for every
-// visible row on load.
-interface MatchedProject { record_id: number; customer_name: string; status: string; state: string; coordinator: string; probable?: boolean }
-const projectMatches = ref<Record<string, MatchedProject[]>>({})
+// Matched projects per phone number so the inbox row can link to a QB
+// project without each row firing its own fetch. The shared
+// usePhoneMatches composable batches every number into a single
+// /by-phones POST so 100 inbox rows produce one round-trip, not one per
+// row.
+const { matches: projectMatches, primeMany } = usePhoneMatches()
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
@@ -66,25 +68,8 @@ async function load() {
   try {
     const res = await fetch(`/api/dialpad/inbox?${p}`, { headers: hdrs() })
     if (res.ok) resp.value = await res.json() as InboxResponse
-    // Prime phone → project cache for each unique external number
-    const numbers = new Set((resp.value?.rows || []).map(r => r.external_number || '').filter(Boolean))
-    for (const n of numbers) primeMatch(n)
+    primeMany((resp.value?.rows || []).map(r => r.external_number))
   } finally { loading.value = false }
-}
-
-async function primeMatch(number: string) {
-  if (projectMatches.value[number] !== undefined) return
-  projectMatches.value = { ...projectMatches.value, [number]: [] }  // reserve
-  try {
-    const res = await fetch(`/api/projects/by-phone?number=${encodeURIComponent(number)}&limit=3`, { headers: hdrs() })
-    if (res.ok) {
-      const data = await res.json() as { rows: MatchedProject[]; match_quality: string }
-      // The `probable` flag is set server-side on each row when the match
-      // came from the 7-digit fallback; UI renders these with a tentative
-      // chip style so the user knows to verify.
-      projectMatches.value = { ...projectMatches.value, [number]: data.rows || [] }
-    }
-  } catch { /* ignore */ }
 }
 
 async function markRead(r: InboxRow) {

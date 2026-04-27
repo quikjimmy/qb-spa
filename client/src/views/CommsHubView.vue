@@ -6,10 +6,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
 import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
 import CommsInbox from '@/components/CommsInbox.vue'
+import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconInbox from '@dialpad/dialtone-icons/vue3/inbox'
 import DtIconBarChart from '@dialpad/dialtone-icons/vue3/bar-chart-2'
 
 const auth = useAuthStore()
+// When the persistent Live Hub rail is open, the inline Live Activity
+// panel below would be a duplicate of the same SSE feed, so we hide
+// the inline copy and let the rail be the single source.
+const { open: railOpen } = useCommsRail()
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -299,8 +304,9 @@ function setMainTab(t: CommsTab) {
       </div>
     </div>
 
-    <!-- Live events panel (SSE) — always visible, above the tabs -->
-    <DialpadLivePanel />
+    <!-- Live events panel (SSE). Hidden when the persistent Live Hub rail
+         is open so we don't render the same feed twice. -->
+    <DialpadLivePanel v-if="!railOpen" />
 
     <!-- Top-level tabs: Inbox vs Reporting -->
     <div class="flex rounded-lg border overflow-hidden bg-muted/20 w-full sm:w-auto sm:self-start">

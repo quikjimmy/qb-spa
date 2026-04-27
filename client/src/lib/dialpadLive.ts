@@ -135,18 +135,25 @@ const RINGING_STATES = new Set(['ringing', 'preanswer', 'queued'])
 const RESOLVED_STATES = new Set(['connected', 'hangup', 'ended', 'missed', 'voicemail', 'transferred', 'abandoned', 'hold'])
 
 export const activeRinging = computed<LiveEvent[]>(() => {
-  const byCall = new Map<string, LiveEvent>()
+  // Dedupe by external_number, not call_id — a single inbound call can
+  // fan out to multiple agents, with Dialpad emitting one webhook per
+  // agent (each with a different call_id). From the user's perspective
+  // it's one alert, not N. We pick the earliest-received ringing event
+  // for each number so the elapsed timer reflects the real ring time.
+  const byNumber = new Map<string, LiveEvent>()
   for (const e of events.value) {
     if (e.event_kind !== 'call' || !e.call_id) continue
     const s = (e.event_state || '').toLowerCase()
-    // Skip if we already saw a later resolution for this call.
     const history = stateHistory.value[e.call_id] || []
     const hasResolution = history.some(st => RESOLVED_STATES.has(st))
     if (hasResolution) continue
-    if (RINGING_STATES.has(s)) byCall.set(e.call_id, e)
+    if (!RINGING_STATES.has(s)) continue
+    const key = e.external_number || `call:${e.call_id}`  // fall back so unknown-number rings still appear
+    const existing = byNumber.get(key)
+    if (!existing || e.received_at < existing.received_at) byNumber.set(key, e)
   }
   // Scope filter
-  const out = [...byCall.values()]
+  const out = [...byNumber.values()]
   if (scope.value === 'me' && myEmail.value) {
     return out.filter(e => (e.user_email || '').toLowerCase() === myEmail.value)
   }
@@ -154,12 +161,22 @@ export const activeRinging = computed<LiveEvent[]>(() => {
 })
 
 // Manual dismissals — an alert can be acknowledged before the call resolves.
-const dismissedCallIds = ref<Set<string>>(new Set())
-export function dismissRinging(callId: string): void {
-  dismissedCallIds.value = new Set([...dismissedCallIds.value, callId])
+// Tracked by external_number so dismissing one fan-out leg dismisses all
+// sibling rings; falls back to call_id when no number is available.
+const dismissedKeys = ref<Set<string>>(new Set())
+function dismissKey(ev: LiveEvent): string {
+  return ev.external_number || (ev.call_id ? `call:${ev.call_id}` : '')
+}
+export function dismissRinging(callOrEvent: string | LiveEvent): void {
+  const key = typeof callOrEvent === 'string' ? `call:${callOrEvent}` : dismissKey(callOrEvent)
+  if (!key) return
+  dismissedKeys.value = new Set([...dismissedKeys.value, key])
 }
 export const pendingRinging = computed<LiveEvent[]>(() =>
-  activeRinging.value.filter(e => e.call_id && !dismissedCallIds.value.has(e.call_id))
+  activeRinging.value.filter(e => {
+    const k = dismissKey(e)
+    return k && !dismissedKeys.value.has(k)
+  })
 )
 
 // ── Ingest ──
@@ -171,11 +188,15 @@ function ingest(ev: LiveEvent): void {
       stateHistory.value = { ...stateHistory.value, [ev.call_id]: [...seq, ev.event_state] }
     }
     // If this event resolves a previously-dismissed ringing call, clean up.
+    // Check both number-keyed and call-id-keyed dismissals.
     if (RESOLVED_STATES.has((ev.event_state || '').toLowerCase())) {
-      if (dismissedCallIds.value.has(ev.call_id)) {
-        const next = new Set(dismissedCallIds.value)
-        next.delete(ev.call_id)
-        dismissedCallIds.value = next
+      const numberKey = ev.external_number || ''
+      const callKey = `call:${ev.call_id}`
+      if (dismissedKeys.value.has(numberKey) || dismissedKeys.value.has(callKey)) {
+        const next = new Set(dismissedKeys.value)
+        next.delete(numberKey)
+        next.delete(callKey)
+        dismissedKeys.value = next
       }
     }
   }

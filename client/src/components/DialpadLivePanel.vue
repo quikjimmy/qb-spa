@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { bucketMeta, formatPhone, splitStartedAt } from '@/lib/callBuckets'
 import { useDialpadLive, type LiveEvent } from '@/lib/dialpadLive'
+import { usePhoneMatches } from '@/composables/usePhoneMatches'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
 import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
@@ -22,16 +23,38 @@ const {
   toggleSound,
 } = useDialpadLive()
 
+// Phone → customer name lookup. Batched in one HTTP call across all
+// visible events; results cached across the inbox + live panel.
+const { matches: phoneMatches, primeMany } = usePhoneMatches()
+watch(visibleEvents, (events) => {
+  primeMany(events.map(e => e.external_number))
+}, { immediate: true, deep: false })
+
+// Eager computed map from raw external_number → customer_name. Renders
+// pull from this rather than calling a function per row, so reactivity
+// tracks via the computed's dependency on the phoneMatches ref.
+const nameByNumber = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {}
+  for (const [num, list] of Object.entries(phoneMatches.value)) {
+    const name = list?.[0]?.customer_name
+    if (name) out[num] = name
+  }
+  return out
+})
+function customerName(e: LiveEvent): string {
+  return e.external_number ? (nameByNumber.value[e.external_number] || '') : ''
+}
+
 const expanded = ref<Record<number, boolean>>({})
 
 // Dialog state — clicking a row opens either the SMS thread or call timeline.
 // Keeping these inline rather than per-row: only one is open at a time.
-const smsThread = ref<{ open: boolean; number: string }>({ open: false, number: '' })
+const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
 const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
 
 function openEvent(e: LiveEvent) {
   if (e.event_kind === 'sms' && e.external_number) {
-    smsThread.value = { open: true, number: e.external_number }
+    smsThread.value = { open: true, number: e.external_number, name: customerName(e) }
   } else if (e.event_kind === 'call' && e.call_id) {
     callTimeline.value = { open: true, callId: e.call_id, number: e.external_number || '' }
   }
@@ -125,13 +148,18 @@ function formatRaw(raw: string): string {
             <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
           </div>
           <div class="flex-1 min-w-0">
-            <p class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
+            <!-- Caller line: matched customer name when we have one; otherwise
+                 the formatted phone. The phone gets a secondary line below
+                 the name so it stays visible for callbacks. -->
+            <p v-if="customerName(e)" class="font-semibold text-[12px] truncate">{{ customerName(e) }}</p>
+            <p v-else class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
             <!-- For SMS rows, show the actual message body as the secondary
                  line when the row is collapsed. Calls keep the state arc. -->
             <p v-if="e.event_kind === 'sms' && smsBody(e)" class="text-[11px] truncate" :class="e.direction === 'outgoing' ? 'text-emerald-700' : 'text-foreground'">
               <span v-if="e.direction === 'outgoing'" class="text-muted-foreground">You: </span>{{ smsBody(e) }}
             </p>
             <p v-else class="text-[10px] text-muted-foreground truncate flex items-center gap-1">
+              <template v-if="customerName(e) && e.external_number"><span class="font-mono">{{ formatPhone(e.external_number) }}</span> · </template>
               <template v-if="e.call_id && stateHistory[e.call_id]">
                 <span v-for="(s, i) in stateHistory[e.call_id]" :key="i" class="inline-flex items-center gap-1">
                   <span v-if="i > 0" class="text-muted-foreground/60">→</span>
@@ -204,6 +232,7 @@ function formatRaw(raw: string): string {
     <SmsThreadDialog
       :open="smsThread.open"
       :external-number="smsThread.number"
+      :contact-name="smsThread.name"
       @close="smsThread.open = false"
     />
     <CallTimelineDialog
