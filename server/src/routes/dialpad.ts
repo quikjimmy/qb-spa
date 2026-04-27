@@ -1071,11 +1071,14 @@ router.post('/sms-backfill', async (req: Request, res: Response): Promise<void> 
   const days = Math.min(Math.max(parseInt(String(body.days ?? 30), 10) || 30, 1), 90)
 
   try {
+    // Dialpad's day-window convention: start=1 (yesterday) ≤ end=N (N days
+    // back). Existing call-stats sync uses { start: 1, end: daysBack }
+    // — match that or Dialpad rejects the request with "POST /stats failed".
     const result = await runStatsExport(cfg, {
       stat_type: 'texts',
       export_type: 'records',
-      days_ago_start: days,
-      days_ago_end: 0,
+      days_ago_start: 1,
+      days_ago_end: days,
       timezone: 'UTC',
     })
 
@@ -1110,11 +1113,22 @@ router.post('/sms-backfill', async (req: Request, res: Response): Promise<void> 
       unmatched,
       skipped,
       sample_headers: Object.keys(result.rows[0] || {}),
+      sample_row: result.rows[0] || null,
       next_steps: matched > 0
         ? 'Reload any SMS thread to see text bubbles populated from this backfill.'
-        : 'No matches updated — check sample_headers for the actual column names Dialpad returned.',
+        : 'No matches updated — check sample_headers / sample_row for the actual column names Dialpad returned and tell Claude to map them.',
     })
   } catch (e) {
+    // DialpadError carries the upstream HTTP status + body so admins
+    // see Dialpad's actual rejection reason instead of just "POST /stats failed".
+    if (e instanceof DialpadError) {
+      res.status(500).json({
+        error: e.message,
+        upstream_status: e.status ?? null,
+        upstream_body: e.body ?? null,
+      })
+      return
+    }
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
 })
