@@ -17,6 +17,7 @@ export interface ThreadMessage {
   received_at: string
   is_read: number
   raw_preview?: string | null
+  lookup_error?: string | null
 }
 
 interface ThreadResponse {

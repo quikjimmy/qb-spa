@@ -1203,27 +1203,50 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
     return body
   })
 
+  // Diagnostic — collected per-row so the admin UI can see why a body
+  // didn't resolve. Maps rowIndex → "GET /sms/123 → 404: not found".
+  const lookupErrors: Record<number, string> = {}
+
   if (missing.length > 0) {
     const cfg = loadDialpadConfig()
-    if (cfg) {
+    if (!cfg) {
+      for (const m of missing) lookupErrors[m.rowIndex] = 'no Dialpad config'
+    } else {
       const slice = missing.slice(0, 30)
+      // Try a small ladder of likely Dialpad endpoints. /sms/{id} is the
+      // documented single-message path on most Dialpad plans, but some
+      // tenants only expose /messages/{id}. We use whichever returns
+      // 200 first.
+      const PATHS = (id: string) => [`/sms/${encodeURIComponent(id)}`, `/messages/${encodeURIComponent(id)}`]
       const results = await Promise.allSettled(slice.map(async m => {
-        try {
-          const r = await dialpadApi(cfg, 'GET', `/sms/${encodeURIComponent(m.smsId)}`)
-          if (!r.ok) return { ...m, body: null as string | null }
-          const body = extractBody(r.data) || (typeof r.data['text'] === 'string' ? String(r.data['text']) : null)
-          return { ...m, body: body && body.trim() ? body : null }
-        } catch {
-          return { ...m, body: null as string | null }
+        let lastErr = ''
+        for (const path of PATHS(m.smsId)) {
+          try {
+            const r = await dialpadApi(cfg, 'GET', path)
+            if (r.ok) {
+              const body = extractBody(r.data) || (typeof r.data['text'] === 'string' ? String(r.data['text']) : null)
+              if (body && body.trim()) return { ...m, body: body, error: '' }
+              lastErr = `${path} → 200 but no text field`
+            } else {
+              lastErr = `${path} → ${r.status}: ${r.text.slice(0, 200)}`
+            }
+          } catch (e) {
+            lastErr = `${path} threw: ${e instanceof Error ? e.message : String(e)}`
+          }
         }
+        return { ...m, body: null as string | null, error: lastErr }
       }))
       const updateStmt = db.prepare(`UPDATE dialpad_events SET text_body = ?, text_body_fetched_at = datetime('now') WHERE id = ?`)
       for (const r of results) {
         if (r.status !== 'fulfilled') continue
-        const { rowIndex, body } = r.value
-        if (!body) continue
-        initialBodies[rowIndex] = body
-        try { updateStmt.run(body, rows[rowIndex]!.id as number) } catch { /* ignore */ }
+        const { rowIndex, body, error } = r.value
+        if (body) {
+          initialBodies[rowIndex] = body
+          try { updateStmt.run(body, rows[rowIndex]!.id as number) } catch { /* ignore */ }
+        } else if (error) {
+          lookupErrors[rowIndex] = error
+          if (rowIndex === 0) console.error('[sms/thread] backfill miss:', error)
+        }
       }
     }
   }
@@ -1232,17 +1255,19 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
     const body = initialBodies[idx]
     let status: string | null = null
     let rawPreview: string | null = null
+    let lookupError: string | null = null
     if (!body) {
       try {
         const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
         status = classifyStatus(p)
       } catch { /* leave null */ }
       // Admin-only diagnostic — when no body could be extracted (and the
-      // API backfill also failed), ship the raw JSON so the operator
-      // can inspect what Dialpad actually sent.
+      // API backfill also failed), ship the raw JSON + the API error
+      // so the operator can see the failure mode without ssh-ing.
       if (isAdmin) {
         const raw = String(r.raw_json || '')
         rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+        lookupError = lookupErrors[idx] || null
       }
     }
     return {
@@ -1251,6 +1276,7 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
       external_number: r.external_number,
       received_at: r.received_at, is_read: r.is_read,
       raw_preview: rawPreview,
+      lookup_error: lookupError,
     }
   })
 
