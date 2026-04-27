@@ -25,6 +25,7 @@ interface Message {
   id: number
   direction: 'incoming' | 'outgoing' | string
   body: string | null
+  status: string | null
   user_email: string | null
   user_name: string | null
   external_number: string | null
@@ -32,6 +33,7 @@ interface Message {
   is_read: number
 }
 const messages = ref<Message[]>([])
+const textCount = ref(0)
 const loading = ref(false)
 const error = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
@@ -45,8 +47,9 @@ async function load() {
   try {
     const res = await fetch(`/api/dialpad/sms/thread?external_number=${encodeURIComponent(props.externalNumber)}&limit=200`, { headers: hdrs() })
     if (!res.ok) { error.value = `HTTP ${res.status}`; return }
-    const data = await res.json() as { messages: Message[] }
+    const data = await res.json() as { messages: Message[]; text_count?: number }
     messages.value = data.messages || []
+    textCount.value = data.text_count ?? messages.value.filter(m => m.body).length
     // Scroll to bottom (latest) once layout settles.
     await nextTick()
     if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
@@ -132,9 +135,16 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
         <div ref="scrollEl" class="flex-1 overflow-y-auto bg-background px-3 py-3 space-y-1.5">
           <p v-if="loading" class="text-center text-[11px] text-muted-foreground py-6">Loading thread…</p>
           <p v-else-if="error" class="text-center text-[11px] text-red-600 py-6">{{ error }}</p>
-          <p v-else-if="messages.length === 0" class="text-center text-[11px] text-muted-foreground py-6">No messages with this contact yet.</p>
+          <p v-else-if="messages.length === 0" class="text-center text-[11px] text-muted-foreground py-6">No SMS events recorded for this contact yet.</p>
+          <!-- Diagnostic banner: when we received events but couldn't extract
+               text from any of them, show that explicitly so the user knows
+               activity exists but our parser isn't finding the body. -->
+          <p v-else-if="textCount === 0" class="text-center text-[11px] text-amber-700 bg-amber-50 rounded px-3 py-2 mx-2">
+            {{ messages.length }} SMS event<template v-if="messages.length !== 1">s</template> received but no readable text body —
+            likely status pings (delivery / read receipts) only. The events are listed below.
+          </p>
 
-          <template v-else v-for="(it, i) in items" :key="i">
+          <template v-for="(it, i) in items" :key="i">
             <!-- Day divider -->
             <div v-if="it.kind === 'day'" class="text-center pt-3 pb-1">
               <span class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">{{ it.label }}</span>
@@ -143,16 +153,22 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
             <!-- Message -->
             <template v-else>
               <p v-if="it.showTime" class="text-center text-[10px] text-muted-foreground/80 pt-2 pb-0.5">{{ fmtTime(it.msg.received_at) }}</p>
-              <div class="flex" :class="it.msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
+              <!-- Real message: chat bubble. -->
+              <div v-if="it.msg.body" class="flex" :class="it.msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
                 <div
                   class="max-w-[78%] px-3 py-1.5 rounded-2xl text-[14px] leading-snug whitespace-pre-wrap break-words"
                   :class="it.msg.direction === 'outgoing'
                     ? 'bg-sky-500 text-white rounded-br-sm'
                     : 'bg-muted text-foreground rounded-bl-sm'"
-                >
-                  <template v-if="it.msg.body">{{ it.msg.body }}</template>
-                  <span v-else class="opacity-60 italic">[no message body]</span>
-                </div>
+                >{{ it.msg.body }}</div>
+              </div>
+              <!-- Status-only event: small centered pill so the user sees
+                   that *something* happened without us pretending it was a
+                   chat message. -->
+              <div v-else class="flex justify-center">
+                <span class="text-[10px] text-muted-foreground bg-muted/50 rounded-full px-2 py-0.5">
+                  {{ it.msg.status || 'status' }} · {{ it.msg.direction || 'sms' }}
+                </span>
               </div>
             </template>
           </template>

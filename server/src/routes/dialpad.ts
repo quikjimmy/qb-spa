@@ -1135,25 +1135,44 @@ router.get('/sms/thread', (req: Request, res: Response): void => {
     return null
   }
 
-  // Drop status-only events (delivery confirmations, read receipts, etc.)
-  // — they have no body and just clutter the thread. Keep events that
-  // actually carried text so the conversation reads cleanly.
-  const messages: Array<Record<string, unknown>> = []
-  for (const r of rows) {
+  // Surface every SMS-flagged event for this number. Text-bearing rows
+  // become real chat bubbles in the UI; status-only rows (delivery
+  // confirmations, read receipts) are returned with body=null and a
+  // status hint so the client can render a compact pill instead of
+  // pretending nothing happened. This makes "no body" debuggable from
+  // the UI rather than appearing as an empty thread.
+  function classifyStatus(payload: Record<string, unknown>): string {
+    const fields = ['event_type', 'type', 'state', 'event_state', 'status']
+    for (const f of fields) {
+      const v = payload[f]
+      if (typeof v === 'string' && v) return v
+    }
+    return 'status'
+  }
+  const messages = rows.map(r => {
     let body: string | null = null
+    let status: string | null = null
     try {
       const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
       body = extractBody(p)
+      if (!body) status = classifyStatus(p)
     } catch { /* leave null */ }
-    if (!body) continue
-    messages.push({
-      id: r.id, direction: r.direction, body, user_email: r.user_email,
-      user_name: r.user_name, external_number: r.external_number,
+    return {
+      id: r.id, direction: r.direction, body, status,
+      user_email: r.user_email, user_name: r.user_name,
+      external_number: r.external_number,
       received_at: r.received_at, is_read: r.is_read,
-    })
-  }
+    }
+  })
 
-  res.json({ external_number: externalNumber, messages, count: messages.length })
+  res.json({
+    external_number: externalNumber,
+    messages,
+    count: messages.length,
+    // Counts so the UI can say "12 events, 3 with text" if needed for
+    // debugging, instead of rendering "no messages" when there's data.
+    text_count: messages.filter(m => m.body).length,
+  })
 })
 
 // ── Call timeline (state journey for one call_id) ───────
