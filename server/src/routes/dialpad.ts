@@ -2223,6 +2223,11 @@ router.get('/heatmap', (req: Request, res: Response): void => {
   const userEmail = String(req.query['user_email'] || '').trim()
   const departmentId = parseInt(String(req.query['department_id'] || ''), 10) || null
   const contactCenter = String(req.query['contact_center'] || '').trim()
+  // Timezone for day-of-week + hour-of-day bucketing. Default
+  // America/Denver (Kin's HQ tz). Intl.DateTimeFormat handles DST
+  // correctly so a Friday 23:00 MST event in summer (MDT) and
+  // winter (MST) both land in the right cell.
+  const tz = String(req.query['tz'] || 'America/Denver').trim() || 'America/Denver'
 
   // Default window: trailing 30 days.
   const today = new Date()
@@ -2230,6 +2235,29 @@ router.get('/heatmap', (req: Request, res: Response): void => {
   const defaultFrom = new Date(today); defaultFrom.setDate(defaultFrom.getDate() - 30)
   const from = fromStr || defaultFrom.toISOString().slice(0, 10)
   const to = toStr || todayIso
+
+  // Pre-build a tz-aware bucketer. Caller passes a UTC ISO string;
+  // we ask Intl to format the equivalent local moment, then read the
+  // weekday + hour parts out of it. Avoids any manual UTC offset
+  // math (which would break across DST transitions).
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', hour12: false })
+  function bucketOf(utcIso: string): { dow: number; hour: number } | null {
+    if (!utcIso) return null
+    const d = new Date(utcIso.includes('T') ? utcIso : utcIso.replace(' ', 'T') + (utcIso.endsWith('Z') ? '' : 'Z'))
+    if (isNaN(d.getTime())) return null
+    const parts = fmt.formatToParts(d)
+    const wd = parts.find(p => p.type === 'weekday')?.value || ''
+    const hrStr = parts.find(p => p.type === 'hour')?.value || ''
+    // Intl quirk: en-US hour with hour12:false sometimes returns "24"
+    // for midnight — clamp.
+    let hr = parseInt(hrStr, 10)
+    if (!Number.isFinite(hr)) return null
+    if (hr === 24) hr = 0
+    const dow = dayMap[wd]
+    if (dow === undefined) return null
+    return { dow, hour: hr }
+  }
 
   // Department membership → set of user_emails. Empty set means we
   // skip the filter (no department restriction).
@@ -2275,18 +2303,18 @@ router.get('/heatmap', (req: Request, res: Response): void => {
     callWhere.push(`r.entry_point_target_kind = ?`)
     callParams.push(contactCenter)
   }
-  // strftime('%w') = day of week (0 = Sunday, 6 = Saturday)
-  // strftime('%H') = hour 00–23. SQLite default is UTC; we leave it
-  // UTC for now (the client renders the labels as-is). The Z suffix
-  // is required so SQLite parses these as ISO-8601, not local.
+  // Aggregate by (date, utc-hour) on the SQL side — that's at most
+  // (windowDays × 24) rows, way fewer than the row-by-row population
+  // — then re-bucket each (date, utc-hour) into the local tz in JS
+  // so DST + timezone math is correct.
   const callRows = db.prepare(`
-    SELECT CAST(strftime('%w', r.started_at) AS INTEGER) AS dow,
-           CAST(strftime('%H', r.started_at) AS INTEGER) AS hour,
+    SELECT substr(r.started_at, 1, 10) AS date,
+           CAST(strftime('%H', r.started_at) AS INTEGER) AS hour_utc,
            COUNT(*) AS count
     FROM dialpad_call_records r
     WHERE ${callWhere.join(' AND ')}
-    GROUP BY dow, hour
-  `).all(...callParams) as Array<{ dow: number; hour: number; count: number }>
+    GROUP BY date, hour_utc
+  `).all(...callParams) as Array<{ date: string; hour_utc: number; count: number }>
 
   // ── SMS (received only) ──
   const smsWhere: string[] = [
@@ -2311,16 +2339,18 @@ router.get('/heatmap', (req: Request, res: Response): void => {
   const smsRows = contactCenter
     ? []
     : db.prepare(`
-        SELECT CAST(strftime('%w', e.received_at) AS INTEGER) AS dow,
-               CAST(strftime('%H', e.received_at) AS INTEGER) AS hour,
+        SELECT substr(e.received_at, 1, 10) AS date,
+               CAST(strftime('%H', e.received_at) AS INTEGER) AS hour_utc,
                COUNT(*) AS count
         FROM dialpad_events e
         WHERE ${smsWhere.join(' AND ')}
-        GROUP BY dow, hour
-      `).all(...smsParams) as Array<{ dow: number; hour: number; count: number }>
+        GROUP BY date, hour_utc
+      `).all(...smsParams) as Array<{ date: string; hour_utc: number; count: number }>
 
   // Merge into a single 7×24 matrix, also tracking the per-source
-  // splits so the tooltip can show "X calls + Y texts".
+  // splits so the tooltip can show "X calls + Y texts". For each
+  // SQL-aggregated (date, hour_utc) row we ask Intl what local
+  // weekday + hour that moment is in `tz`, then accumulate.
   const grid = new Map<string, { calls: number; sms: number }>()
   function bump(dow: number, hour: number, kind: 'calls' | 'sms', n: number) {
     const k = `${dow}:${hour}`
@@ -2328,8 +2358,16 @@ router.get('/heatmap', (req: Request, res: Response): void => {
     if (!cur) { cur = { calls: 0, sms: 0 }; grid.set(k, cur) }
     cur[kind] += n
   }
-  for (const r of callRows) bump(r.dow, r.hour, 'calls', r.count)
-  for (const r of smsRows) bump(r.dow, r.hour, 'sms', r.count)
+  function ingest(rows: Array<{ date: string; hour_utc: number; count: number }>, kind: 'calls' | 'sms') {
+    for (const r of rows) {
+      const utcIso = `${r.date}T${String(r.hour_utc).padStart(2, '0')}:00:00Z`
+      const b = bucketOf(utcIso)
+      if (!b) continue
+      bump(b.dow, b.hour, kind, r.count)
+    }
+  }
+  ingest(callRows, 'calls')
+  ingest(smsRows, 'sms')
 
   let maxBucket = 0
   let totalCalls = 0, totalSms = 0
@@ -2345,6 +2383,7 @@ router.get('/heatmap', (req: Request, res: Response): void => {
 
   res.json({
     window: { from, to },
+    timezone: tz,
     filters_applied: {
       user_email: userEmail || null,
       department_id: departmentId,

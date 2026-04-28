@@ -29,6 +29,7 @@ interface FilterOptions {
 }
 interface HeatmapResp {
   window: { from: string; to: string }
+  timezone: string
   filters_applied: { user_email: string | null; department_id: number | null; contact_center: string | null }
   buckets: Bucket[]
   max_bucket: number
@@ -39,13 +40,20 @@ interface HeatmapResp {
 const auth = useAuthStore()
 
 // ─── Filter state ─────────────────────────────────────────
-type DatePreset = 'last_30' | 'last_60' | 'last_90' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
+type DatePreset =
+  | 'today' | 'this_week' | 'last_7'
+  | 'last_30' | 'last_60' | 'last_90'
+  | 'this_month' | 'this_quarter' | 'this_year'
+  | 'custom'
 const datePreset = ref<DatePreset>('last_30')
 const fromDate = ref('')
 const toDate = ref('')
 const fUser = ref('')
 const fDept = ref<number | ''>('')
 const fContactCenter = ref('')
+// Locked to America/Denver per request — Mountain time, DST-aware.
+// Future: surface as a select if other regions need different views.
+const tz = 'America/Denver'
 
 function fmtLocalDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -56,7 +64,16 @@ function applyPreset(key: DatePreset) {
   const today = new Date()
   const to = fmtLocalDate(today)
   const back = (n: number) => { const d = new Date(today); d.setDate(d.getDate() - n); return fmtLocalDate(d) }
-  if (key === 'last_30') { fromDate.value = back(29); toDate.value = to }
+  if (key === 'today') { fromDate.value = to; toDate.value = to }
+  else if (key === 'this_week') {
+    // Mon-anchored week; matches the Mon–Sun convention used elsewhere
+    // in the app per docs/ui-component-specs.md.
+    const day = today.getDay()
+    const monOffset = day === 0 ? 6 : day - 1
+    fromDate.value = back(monOffset); toDate.value = to
+  }
+  else if (key === 'last_7') { fromDate.value = back(6); toDate.value = to }
+  else if (key === 'last_30') { fromDate.value = back(29); toDate.value = to }
   else if (key === 'last_60') { fromDate.value = back(59); toDate.value = to }
   else if (key === 'last_90') { fromDate.value = back(89); toDate.value = to }
   else if (key === 'this_month') { fromDate.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`; toDate.value = to }
@@ -80,6 +97,7 @@ async function load() {
     if (fUser.value) p.set('user_email', fUser.value)
     if (fDept.value) p.set('department_id', String(fDept.value))
     if (fContactCenter.value) p.set('contact_center', fContactCenter.value)
+    p.set('tz', tz)
     const res = await fetch(`/api/dialpad/heatmap?${p}`, {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
@@ -174,13 +192,25 @@ const chartOption = computed(() => {
       orient: 'horizontal',
       left: 'center',
       bottom: 0,
-      itemWidth: 12,
-      itemHeight: 8,
+      itemWidth: 14,
+      itemHeight: 10,
       textStyle: { fontSize: 10, color: '#64748b' },
-      // Editorial calm palette: from the page bg tone up through sky
-      // and into violet at the high end. No reds.
+      // Bolder, higher-contrast palette so low-volume cells are
+      // clearly distinct from empty-ish ones and the peak cells
+      // really pop. Stays editorial — cyan → blue → indigo → violet
+      // — no anxiety reds. Empty/zero cells render at the lightest
+      // step, and we add a soft border so even a 1-event cell is
+      // findable on a busy chart.
       inRange: {
-        color: ['#f1f5f9', '#dbeafe', '#bae6fd', '#7dd3fc', '#38bdf8', '#0ea5e9', '#6366f1', '#7c3aed'],
+        color: [
+          '#e0f2fe',  // cyan-100 — barely-there, but distinct from card bg
+          '#7dd3fc',  // sky-300 — clearly something
+          '#38bdf8',  // sky-400
+          '#0284c7',  // sky-700 — the workhorse mid-range
+          '#1e40af',  // blue-800
+          '#3730a3',  // indigo-800
+          '#5b21b6',  // violet-800 — peak
+        ],
       },
     },
     series: [
@@ -190,8 +220,10 @@ const chartOption = computed(() => {
         label: { show: false },
         emphasis: {
           itemStyle: {
-            shadowBlur: 8,
-            shadowColor: 'rgba(15, 23, 42, 0.25)',
+            shadowBlur: 10,
+            shadowColor: 'rgba(15, 23, 42, 0.35)',
+            borderColor: '#0f172a',
+            borderWidth: 1.5,
           },
         },
         progressive: 1000,
@@ -230,6 +262,9 @@ const peakCell = computed<{ day: string; hour: string; total: number } | null>((
     <div class="grid gap-2 min-w-0">
       <div class="flex flex-wrap items-center gap-1.5 min-w-0">
         <button v-for="p in [
+          { k: 'today', l: 'Today' },
+          { k: 'this_week', l: 'This Wk' },
+          { k: 'last_7', l: 'Last 7' },
           { k: 'last_30', l: '30d' },
           { k: 'last_60', l: '60d' },
           { k: 'last_90', l: '90d' },
@@ -324,7 +359,7 @@ const peakCell = computed<{ day: string; hour: string; total: number } | null>((
       <div class="rounded-xl border bg-card min-w-0 overflow-hidden">
         <div class="px-3 pt-3 pb-1 flex items-center justify-between flex-wrap gap-1">
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Inbound volume · day × hour</p>
-          <p class="text-[10px] text-muted-foreground">Hour buckets in UTC · max cell = {{ data.max_bucket }}</p>
+          <p class="text-[10px] text-muted-foreground">{{ data.timezone }} · max cell = {{ data.max_bucket }}</p>
         </div>
         <div class="px-0 sm:px-2 pb-2">
           <VChart :option="chartOption" autoresize style="height: 280px;" class="w-full" />
