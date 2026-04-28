@@ -108,6 +108,23 @@ function applyPreset(key: DatePreset) {
 }
 applyPreset('last_90')
 
+// When the user types into either date input, drop out of preset mode
+// so the active state on the preset buttons doesn't lie.
+function onCustomDate() { datePreset.value = 'custom' }
+
+// Mobile breakpoint — used to thin chart margins below sm so bars
+// fill more horizontal space on a 390px screen.
+const isMobile = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches)
+let mq: MediaQueryList | null = null
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    mq = window.matchMedia('(max-width: 639px)')
+    const sync = () => { isMobile.value = mq!.matches }
+    mq.addEventListener('change', sync)
+    sync()
+  }
+})
+
 // ─── Data ─────────────────────────────────────────────────
 const data = ref<PerfResp | null>(null)
 const loading = ref(false)
@@ -162,8 +179,14 @@ function fmtBucket(bucket: string, granularity: string): string {
 const chartOption = computed(() => {
   const series = data.value?.series || []
   const granularity = data.value?.granularity || 'day'
+  // Tighter horizontal margins on mobile so bars fill the screen.
+  // containLabel still pads inside for axis labels — we just don't
+  // reserve dead space for them on top of that.
+  const grid = isMobile.value
+    ? { top: 32, right: 4, bottom: 36, left: 4, containLabel: true }
+    : { top: 32, right: 16, bottom: 36, left: 44, containLabel: true }
   return {
-    grid: { top: 32, right: 16, bottom: 36, left: 44, containLabel: true },
+    grid,
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
@@ -306,7 +329,24 @@ const dimensionLabelUpper = computed(() => dimensionLabel.value.toUpperCase())
           :class="datePreset === p.k ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
           @click="applyPreset(p.k)"
         >{{ p.l }}</button>
-        <span class="text-[10px] text-muted-foreground tabular-nums">{{ fromDate }} → {{ toDate }}</span>
+      </div>
+      <!-- Custom from/to inputs — same shape as ProjectsView so the
+           pattern feels consistent across the app. Typing in either
+           switches the preset row to "custom" so the highlight is
+           honest. -->
+      <div class="flex items-center gap-1.5 flex-wrap min-w-0">
+        <input
+          v-model="fromDate" type="date"
+          class="h-7 w-[125px] rounded border bg-card px-2 text-[11px] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @change="onCustomDate"
+        />
+        <span class="text-[11px] text-muted-foreground">—</span>
+        <input
+          v-model="toDate" type="date"
+          class="h-7 w-[125px] rounded border bg-card px-2 text-[11px] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @change="onCustomDate"
+        />
+        <span v-if="datePreset === 'custom'" class="text-[10px] text-muted-foreground">custom</span>
       </div>
 
       <div class="flex items-center gap-2 flex-wrap min-w-0">
@@ -345,13 +385,18 @@ const dimensionLabelUpper = computed(() => dimensionLabel.value.toUpperCase())
         </div>
       </div>
 
-      <!-- Time series chart -->
-      <div class="rounded-xl border bg-card p-3 min-w-0 overflow-hidden">
-        <div class="flex items-center justify-between mb-1 flex-wrap gap-1">
+      <!-- Time series chart — header keeps p-3, but the chart body
+           drops side padding on mobile so the bars fill the full
+           viewport width. ECharts grid margins also tighten on
+           mobile (see chartOption). -->
+      <div class="rounded-xl border bg-card min-w-0 overflow-hidden">
+        <div class="px-3 pt-3 pb-1 flex items-center justify-between flex-wrap gap-1">
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Volume by {{ data.granularity }}</p>
           <p class="text-[10px] text-muted-foreground">{{ data.granularity === 'week' ? 'Mon–Sun · ' : '' }}x-axis: {{ data.granularity }}</p>
         </div>
-        <VChart :option="chartOption" autoresize style="height: 260px;" class="w-full" />
+        <div class="px-0 sm:px-3 pb-3">
+          <VChart :option="chartOption" autoresize :style="{ height: isMobile ? '300px' : '260px' }" class="w-full" />
+        </div>
       </div>
 
       <!-- Pivot table — title leads with dimension; dimension chip strip

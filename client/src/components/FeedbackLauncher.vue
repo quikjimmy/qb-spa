@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,18 @@ const category = ref<'bug' | 'idea' | 'question' | ''>('')
 const body = ref('')
 const submitting = ref(false)
 const justSent = ref(false)
+
+// Minimized state — when collapsed, the launcher shrinks to a tiny
+// edge tab (vertical pill on the right edge) that can be tapped to
+// re-expand. Persisted in localStorage so the user's preference
+// survives reloads.
+const STORAGE_KEY = 'feedback.minimized'
+const minimized = ref<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY) === '1')
+watch(minimized, (v) => {
+  try { localStorage.setItem(STORAGE_KEY, v ? '1' : '0') } catch { /* ignore */ }
+})
+function minimize() { minimized.value = true }
+function restore() { minimized.value = false }
 
 const canShow = computed(() => {
   if (!auth.token) return false
@@ -50,14 +62,46 @@ async function submit() {
 
 <template>
   <div v-if="canShow" class="pointer-events-none">
-    <button
-      type="button"
-      class="pointer-events-auto fixed bottom-4 right-4 z-50 inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl transition-all px-3.5 h-10 text-xs font-semibold active:scale-95"
-      :title="'Send feedback about ' + route.path"
-      @click="open = true"
+    <!-- Full launcher: pill button bottom-right with an inline ✕ to
+         minimize. Click the pill body to open the dialog; click ✕ to
+         collapse to the edge tab. -->
+    <div
+      v-if="!minimized"
+      class="pointer-events-auto fixed bottom-4 right-4 z-50 inline-flex items-stretch rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl transition-all overflow-hidden"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Feedback
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 pl-3.5 pr-2.5 h-10 text-xs font-semibold active:scale-95 transition-transform"
+        :title="'Send feedback about ' + route.path"
+        @click="open = true"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Feedback
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center justify-center w-7 border-l border-primary-foreground/20 hover:bg-primary-foreground/10 active:bg-primary-foreground/20 transition-colors"
+        title="Minimize"
+        aria-label="Minimize feedback"
+        @click="minimize"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Minimized state: thin vertical pill anchored to the right
+         edge, mid-height, with rotated label. Tap to restore. The
+         goal is "out of the way but discoverable" — tiny enough not
+         to obstruct content, visible enough to find when needed. -->
+    <button
+      v-else
+      type="button"
+      class="pointer-events-auto fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-primary text-primary-foreground shadow-lg hover:shadow-xl active:scale-95 transition-all rounded-l-md py-2.5 px-1.5"
+      title="Show feedback launcher"
+      aria-label="Show feedback launcher"
+      @click="restore"
+    >
+      <span class="text-[10px] font-semibold uppercase tracking-widest [writing-mode:vertical-rl] [text-orientation:mixed]">Feedback</span>
     </button>
 
     <Dialog v-model:open="open">
