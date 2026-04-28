@@ -68,7 +68,34 @@ function qbStr(rec: QbRecord, fid: number): string {
   const v = rec[String(fid)]
   if (!v) return ''
   const val = v.value
-  if (val === null || val === undefined) return ''
+  // Multi-user / multi-select fields come back as an array of user
+  // objects. assignedCrew (fid 197) on this tenant is exactly this
+  // shape — without array handling, every task that only has crew
+  // info on assignedCrew falls through to '' and the leaderboard
+  // buckets it as "Unassigned." Prefer name, fall back to email.
+  if (Array.isArray(val)) {
+    const names = (val as Array<unknown>)
+      .map(item => {
+        if (item && typeof item === 'object') {
+          const o = item as { name?: unknown; email?: unknown }
+          return o.name || o.email || ''
+        }
+        return item ? String(item) : ''
+      })
+      .filter(Boolean)
+      .map(String)
+    return names.join(', ')
+  }
+  if (val === null || val === undefined) {
+    // Some QB API shapes put name/email at the top of the field cell
+    // instead of inside .value. The example HTML's qbStr fallback
+    // handles this exact case — losing it dropped crew names that
+    // landed in this older shape.
+    const top = v as unknown as { name?: unknown; email?: unknown }
+    if (top.name) return String(top.name)
+    if (top.email) return String(top.email)
+    return ''
+  }
   if (typeof val === 'object') {
     const obj = val as { name?: unknown; email?: unknown }
     if (obj.name) return String(obj.name)
