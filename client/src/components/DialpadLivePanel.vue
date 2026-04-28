@@ -45,8 +45,6 @@ function customerName(e: LiveEvent): string {
   return e.external_number ? (nameByNumber.value[e.external_number] || '') : ''
 }
 
-const expanded = ref<Record<number, boolean>>({})
-
 // Dialog state — clicking a row opens either the SMS thread or call timeline.
 // Keeping these inline rather than per-row: only one is open at a time.
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
@@ -114,9 +112,6 @@ function visualFor(e: LiveEvent): EventVisual {
   return { ...bucketMeta('other'), icon: DtIconPhone, sublabel: e.event_kind }
 }
 
-function formatRaw(raw: string): string {
-  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
-}
 </script>
 
 <template>
@@ -156,7 +151,17 @@ function formatRaw(raw: string): string {
 
     <div v-else class="divide-y max-h-[360px] overflow-y-auto">
       <div v-for="e in visibleEvents" :key="e.call_id || `evt-${e.id}`" class="px-3 sm:px-4 py-2">
-        <div class="flex items-center gap-2.5 sm:gap-3 cursor-pointer" @click="expanded[e.id] = !expanded[e.id]">
+        <!-- Row click goes straight to the SMS thread or call timeline
+             dialog — the inline-expansion preview was redundant with
+             what the dialog already shows. -->
+        <div
+          class="flex items-center gap-2.5 sm:gap-3 cursor-pointer hover:bg-muted/30 -mx-3 sm:-mx-4 px-3 sm:px-4 py-1 -my-1 rounded-md transition-colors"
+          role="button"
+          tabindex="0"
+          @click="openEvent(e)"
+          @keydown.enter.prevent="openEvent(e)"
+          @keydown.space.prevent="openEvent(e)"
+        >
           <div class="shrink-0 size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
             <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
           </div>
@@ -189,62 +194,6 @@ function formatRaw(raw: string): string {
           </div>
         </div>
 
-        <!-- Expanded view — replaces the old <pre>raw json</pre> with a
-             type-specific summary + a single CTA that opens the right
-             modal (SMS thread or Call timeline). Raw JSON is one click
-             away in case we still need it for debugging. -->
-        <div v-if="expanded[e.id]" class="mt-2 rounded-md bg-muted/30 px-3 py-2 space-y-2 text-[11px]">
-          <!-- SMS expansion: bubble preview + Open thread CTA. We only
-               render a bubble when there's actual text — Dialpad sends
-               empty-body events for delivery confirmations and other
-               status pings, and rendering them as fake messages was
-               misleading. Empty events still show the row metadata above
-               and the Open thread button below. -->
-          <template v-if="e.event_kind === 'sms'">
-            <div v-if="smsBody(e)" class="flex" :class="e.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
-              <div class="max-w-[85%] px-3 py-1.5 rounded-2xl text-[12px] leading-snug whitespace-pre-wrap break-words"
-                :class="e.direction === 'outgoing' ? 'bg-sky-500 text-white rounded-br-sm' : 'bg-card text-foreground rounded-bl-sm border'">
-                {{ smsBody(e) }}
-              </div>
-            </div>
-            <p v-else class="text-[10px] text-muted-foreground italic px-1">
-              Status update — open the thread to see the full conversation.
-            </p>
-            <div class="flex flex-wrap items-center gap-1.5 pt-1">
-              <button v-if="e.external_number"
-                class="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
-                @click.stop="openEvent(e)"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                Open thread
-              </button>
-              <span class="text-[10px] text-muted-foreground">{{ e.user_name || e.user_email }} · {{ formatPhone(e.external_number) }}</span>
-            </div>
-          </template>
-
-          <!-- Call expansion: state path + Open timeline CTA -->
-          <template v-else-if="e.event_kind === 'call'">
-            <div class="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-              <template v-for="(s, i) in (e.call_id && stateHistory[e.call_id] ? stateHistory[e.call_id]! : [e.event_state || 'unknown'])" :key="i">
-                <span v-if="i > 0" class="opacity-60">→</span>
-                <span class="px-1.5 py-0.5 rounded-full bg-card border text-foreground" :class="i === (stateHistory[e.call_id || '']!.length - 1) ? 'font-semibold' : ''">{{ s }}</span>
-              </template>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-[10px] text-muted-foreground">{{ formatPhone(e.external_number) || 'Unknown' }}<template v-if="e.user_name"> · {{ e.user_name }}</template></span>
-              <button v-if="e.call_id"
-                class="ml-auto inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"
-                @click.stop="openEvent(e)"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
-                Open timeline
-              </button>
-            </div>
-          </template>
-
-          <!-- Generic / unknown event: still keep a raw JSON peek for debug. -->
-          <pre v-else class="text-[9px] leading-snug bg-card border rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all">{{ formatRaw(e.raw_json) }}</pre>
-        </div>
       </div>
     </div>
 
