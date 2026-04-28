@@ -9,6 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { getStatusConfig } from '@/lib/status'
+import DataFreshness from '@/components/DataFreshness.vue'
 import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays } from '@/lib/dates'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -629,9 +630,12 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
   <div class="grid gap-2 sm:gap-3">
     <!-- Header (sticky) -->
     <div class="sticky top-0 z-20 bg-background flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
-      <div class="flex items-baseline gap-2 min-w-0 w-full sm:w-auto">
-        <h1 class="text-2xl font-semibold tracking-tight">PC Dashboard</h1>
-        <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ totalOutreach }}</span>
+      <div class="flex flex-col gap-0.5 min-w-0 w-full sm:w-auto">
+        <div class="flex items-baseline gap-2 min-w-0">
+          <h1 class="text-2xl font-semibold tracking-tight">PC Dashboard</h1>
+          <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ totalOutreach }}</span>
+        </div>
+        <DataFreshness label="Cache" />
       </div>
       <div class="flex items-center gap-1.5 w-full sm:w-auto overflow-x-auto no-scrollbar pb-0.5 sm:pb-0">
         <!-- PC quick filter -->

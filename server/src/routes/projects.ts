@@ -76,11 +76,36 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   if (!names.has('ahj_name')) db.exec(`ALTER TABLE project_cache ADD COLUMN ahj_name TEXT`)
   if (!names.has('utility_company')) db.exec(`ALTER TABLE project_cache ADD COLUMN utility_company TEXT`)
   if (!names.has('mpu_callout')) db.exec(`ALTER TABLE project_cache ADD COLUMN mpu_callout TEXT`)
+  // Tiered cache strategy (added 2026-04-28). Each row knows which
+  // refresh class it belongs to and when QB last said the record was
+  // modified, so the scheduler can pull only what's hot and skip the
+  // rest. last_fetch_started/last_fetch_status power the visible
+  // freshness badge and recover from in-flight crashes.
+  if (!names.has('refresh_tier')) db.exec(`ALTER TABLE project_cache ADD COLUMN refresh_tier TEXT`)
+  if (!names.has('qb_modified_at')) db.exec(`ALTER TABLE project_cache ADD COLUMN qb_modified_at TEXT`)
+  if (!names.has('last_fetch_started')) db.exec(`ALTER TABLE project_cache ADD COLUMN last_fetch_started TEXT`)
+  if (!names.has('last_fetch_status')) db.exec(`ALTER TABLE project_cache ADD COLUMN last_fetch_status TEXT`)
 }
+db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_tier ON project_cache(refresh_tier)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_qb_modified ON project_cache(qb_modified_at)`)
+
+// Per-tier refresh log so the visible freshness badge has a single
+// source of truth for "when did the X tier last finish."
+db.exec(`
+  CREATE TABLE IF NOT EXISTS project_cache_tier_runs (
+    tier TEXT PRIMARY KEY,
+    last_started_at TEXT,
+    last_finished_at TEXT,
+    last_status TEXT,
+    last_rows_changed INTEGER,
+    last_error TEXT
+  )
+`)
 
 // Field mapping: QB field ID → cache column
 const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 3, col: 'record_id' },
+  { fid: 2, col: 'qb_modified_at' },          // QB built-in [Date Modified]
   { fid: 145, col: 'customer_name' },
   { fid: 146, col: 'customer_address' },
   { fid: 149, col: 'email' },
@@ -135,6 +160,270 @@ function val(record: Record<string, { value: unknown }>, fid: number): string {
   return String(v)
 }
 
+// Single source of truth for per-row coercion when writing to
+// project_cache. Handles the typed columns (system_size_kw, inspx_*)
+// and the user-object → name extraction for nem_user. Used by
+// refreshCache (full pass), refreshTier (delta), and fetchOneLive
+// (single record).
+function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
+  return fieldMap.map(f => {
+    if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
+    if (f.col === 'inspx_first_time_pass') return val(record, f.fid) === 'true' ? 1 : 0
+    if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
+    if (f.col === 'inspx_pass_fail') {
+      const v = record[String(f.fid)]?.value
+      return Array.isArray(v) ? v.join(', ') : val(record, f.fid)
+    }
+    if (f.col === 'nem_user') {
+      const raw = record[String(f.fid)]?.value
+      if (raw && typeof raw === 'object' && 'name' in (raw as Record<string, unknown>)) return (raw as { name: string }).name
+    }
+    return val(record, f.fid)
+  })
+}
+
+// ─── Tier classification ─────────────────────────────────
+// Computed at refresh-time per row, stored in refresh_tier so the
+// scheduler can target one tier at a time without re-evaluating
+// every project on every pass. Rules are top-to-bottom — first
+// match wins. Tweak the dates / status patterns below in code so
+// the rules stay inspectable.
+//
+//   Hot    — every 5 min   imminent install, post-install awaiting QA, fresh rejects
+//   Warm   — every 30 min  routine active ops
+//   Cool   — every 6 hr    in-service or stale-but-alive holds
+//   Cold   — every 24 hr   terminal states + holds dormant > 30 days
+
+export type RefreshTier = 'hot' | 'warm' | 'cool' | 'cold'
+
+interface TierInputs {
+  status: string | null
+  install_scheduled: string | null
+  install_completed: string | null
+  inspection_passed: string | null
+  pto_approved: string | null
+  qb_modified_at: string | null
+  permit_rejected?: string | null
+  nem_rejected?: string | null
+}
+
+function daysAgo(n: number): string {
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - n)
+  return d.toISOString().slice(0, 10)
+}
+function daysFromNow(n: number): string {
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+function isSet(v: string | null | undefined): boolean {
+  return !!(v && v.trim() !== '' && v !== '0')
+}
+
+export function classifyTier(p: TierInputs): RefreshTier {
+  const status = (p.status || '').toLowerCase()
+  const isCancelled = /cancel|withdraw|closed lost|closed won|completed/.test(status)
+  if (isCancelled) return 'cold'
+
+  const isHold = status.includes('hold')
+  const isActive = status === 'active'
+  const hasReject = /reject/.test(status) || isSet(p.permit_rejected) || isSet(p.nem_rejected)
+
+  // Hot: imminent install, post-install QA gate, fresh rejects
+  const installSoon = isSet(p.install_scheduled) && p.install_scheduled! >= todayIso() && p.install_scheduled! <= daysFromNow(14) && !isSet(p.install_completed)
+  const postInstallGate = isSet(p.install_completed) && !isSet(p.inspection_passed)
+  const inspectionPassedGate = isSet(p.inspection_passed) && !isSet(p.pto_approved)
+  if (hasReject || installSoon || postInstallGate || inspectionPassedGate) return 'hot'
+
+  // Cool override: PTO approved is in-service — Active but barely changes
+  if (isActive && isSet(p.pto_approved)) return 'cool'
+
+  // Warm: routine active ops
+  if (isActive) return 'warm'
+
+  // Hold tier depends on freshness — recent movement keeps it Warm,
+  // long-dormant holds drop to Cool then Cold.
+  if (isHold) {
+    const modified = p.qb_modified_at || ''
+    if (modified > daysAgo(7)) return 'warm'
+    if (modified > daysAgo(30)) return 'cool'
+    return 'cold'
+  }
+
+  // Anything else (unknown status, etc.) gets the Warm safety net.
+  return 'warm'
+}
+
+const TIER_CADENCE: Record<RefreshTier, string> = {
+  hot: '*/5 * * * *',     // every 5 min
+  warm: '*/30 * * * *',   // every 30 min
+  cool: '0 */6 * * *',    // every 6 hr at the top of the hour
+  cold: '15 3 * * *',     // 03:15 daily
+}
+
+// ─── Single-record live fetch (project detail + agent freshness) ──
+// Pulls one project from QB and rewrites that row in cache. Used by
+// /api/projects/:id?live=1 (always-fresh project detail) and by
+// `ensureFresh()` (agent pre-act gate).
+export async function fetchOneLive(recordId: number): Promise<Record<string, unknown> | null> {
+  const { realm, token } = getQbConfig()
+  const res = await fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST',
+    headers: {
+      'QB-Realm-Hostname': realm,
+      'Authorization': `QB-USER-TOKEN ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: 'br9kwm8na',
+      select: selectFids,
+      where: `{3.EX.${recordId}}`,
+      options: { top: 1 },
+    }),
+  })
+  if (!res.ok) throw new Error(`QB fetchOneLive failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
+  const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+  const rec = data.data?.[0]
+  if (!rec) return null
+
+  const cols = fieldMap.map(f => f.col).join(', ')
+  const placeholders = fieldMap.map(() => '?').join(', ')
+  const values = mapRecordToValues(rec)
+  // Compute tier from the freshly-pulled values.
+  const tier = classifyTier({
+    status: val(rec, 255) || null,
+    install_scheduled: val(rec, 178) || null,
+    install_completed: val(rec, 534) || null,
+    inspection_passed: val(rec, 491) || null,
+    pto_approved: val(rec, 538) || null,
+    qb_modified_at: val(rec, 2) || null,
+    permit_rejected: val(rec, 706) || null,
+    nem_rejected: val(rec, 1878) || null,
+  })
+  db.prepare(`
+    INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
+    VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
+  `).run(...values, tier)
+
+  // Return the freshly-cached row.
+  return db.prepare(`SELECT * FROM project_cache WHERE record_id = ?`).get(recordId) as Record<string, unknown>
+}
+
+// Force-refresh a single record if its cache row is older than maxAgeMs.
+// Designed for the agent contract: "agents act on data ≤60s old."
+export async function ensureFresh(recordId: number, maxAgeMs = 60_000): Promise<void> {
+  const row = db.prepare(`SELECT cached_at FROM project_cache WHERE record_id = ?`).get(recordId) as { cached_at: string } | undefined
+  if (!row) { await fetchOneLive(recordId); return }
+  const cachedMs = new Date(row.cached_at.replace(' ', 'T') + 'Z').getTime()
+  if (!Number.isFinite(cachedMs)) { await fetchOneLive(recordId); return }
+  if (Date.now() - cachedMs > maxAgeMs) await fetchOneLive(recordId)
+}
+
+// ─── Tiered scheduler ───────────────────────────────────
+// Pulls only rows whose cached row is in the requested tier AND whose
+// QB Date Modified has advanced since our last fetch. The first run
+// after a deploy will pull more (no last_modified watermark yet);
+// steady-state is small.
+async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration: number }> {
+  const start = Date.now()
+  db.prepare(`INSERT INTO project_cache_tier_runs (tier, last_started_at, last_status) VALUES (?, datetime('now'), 'running')
+              ON CONFLICT(tier) DO UPDATE SET last_started_at = excluded.last_started_at, last_status = excluded.last_status`)
+    .run(tier)
+
+  // Watermark: the latest qb_modified_at we've seen for this tier so
+  // far. We pull rows modified after this watermark (or any matching-
+  // tier row that's missing the watermark column entirely).
+  const wmRow = db.prepare(
+    `SELECT MAX(qb_modified_at) AS wm FROM project_cache WHERE refresh_tier = ?`
+  ).get(tier) as { wm: string | null }
+  const watermark = wmRow.wm
+
+  // Status set per tier — kept here in code for grep/inspection.
+  // The full WHERE for QB merges status filter + the modified-since
+  // watermark. We don't filter on date columns in the QB query
+  // because those are stored as text; tier classification happens
+  // in JS after pulling.
+  const STATUS_PATTERNS: Record<RefreshTier, string> = {
+    hot: '',          // hot can have any status — driven by milestones
+    warm: '',         // same
+    cool: '',
+    cold: '',
+  }
+  void STATUS_PATTERNS  // reserved for future targeted queries
+
+  const { realm, token } = getQbConfig()
+  let allRecords: Array<Record<string, { value: unknown }>> = []
+  let skip = 0
+  const batch = 1000
+  // Build WHERE: "modified after watermark" if we have one, else "all
+  // non-deleted." First run on a fresh DB does the bulk; subsequent
+  // runs are deltas only.
+  const where = watermark
+    ? `{622.EX.'false'}AND{2.AF.'${watermark}'}`
+    : `{622.EX.'false'}`
+
+  try {
+    while (true) {
+      const res = await fetch('https://api.quickbase.com/v1/records/query', {
+        method: 'POST',
+        headers: {
+          'QB-Realm-Hostname': realm,
+          'Authorization': `QB-USER-TOKEN ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ from: 'br9kwm8na', select: selectFids, where, options: { skip, top: batch } }),
+      })
+      if (!res.ok) throw new Error(`QB tier=${tier} query failed: ${res.status}`)
+      const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+      const records = data.data || []
+      allRecords = allRecords.concat(records)
+      if (records.length < batch) break
+      skip += batch
+    }
+
+    const cols = fieldMap.map(f => f.col).join(', ')
+    const placeholders = fieldMap.map(() => '?').join(', ')
+    const upsert = db.prepare(`
+      INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
+      VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
+    `)
+
+    let changed = 0
+    db.transaction(() => {
+      for (const rec of allRecords) {
+        const computedTier = classifyTier({
+          status: val(rec, 255) || null,
+          install_scheduled: val(rec, 178) || null,
+          install_completed: val(rec, 534) || null,
+          inspection_passed: val(rec, 491) || null,
+          pto_approved: val(rec, 538) || null,
+          qb_modified_at: val(rec, 2) || null,
+          permit_rejected: val(rec, 706) || null,
+          nem_rejected: val(rec, 1878) || null,
+        })
+        // Only write rows that classify into the tier we're refreshing
+        // (avoid duplicate writes when one QB pass returns rows that
+        // belong to multiple tiers — the cold tier nightly run is the
+        // promotion path that picks up tier transitions for everyone).
+        if (computedTier !== tier && tier !== 'cold') continue
+        upsert.run(...mapRecordToValues(rec), computedTier)
+        changed++
+      }
+    })()
+
+    db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_error = NULL WHERE tier = ?`)
+      .run(changed, tier)
+    return { rows: changed, duration: Date.now() - start }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'failed', last_error = ? WHERE tier = ?`)
+      .run(msg, tier)
+    throw e
+  }
+}
+
 // ─── Refresh cache ───────────────────────────────────────
 
 async function refreshCache(): Promise<{ total: number; duration: number }> {
@@ -181,28 +470,25 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
   const cols = fieldMap.map(f => f.col).join(', ')
   const placeholders = fieldMap.map(() => '?').join(', ')
   const upsert = db.prepare(`
-    INSERT OR REPLACE INTO project_cache (${cols}, cached_at)
-    VALUES (${placeholders}, datetime('now'))
+    INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
+    VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
   `)
 
   db.transaction(() => {
     for (const record of allRecords) {
       const rid = parseInt(val(record, 3))
       if (!rid) continue
-
-      const values = fieldMap.map(f => {
-        if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
-        if (f.col === 'inspx_first_time_pass') return val(record, f.fid) === 'true' ? 1 : 0
-        if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
-        if (f.col === 'inspx_pass_fail') { const v = record[String(f.fid)]?.value; return Array.isArray(v) ? v.join(', ') : val(record, f.fid) }
-        // User fields return { name, email, id } — extract name
-        if (f.col === 'nem_user') {
-          const raw = record[String(f.fid)]?.value
-          if (raw && typeof raw === 'object' && 'name' in (raw as Record<string, unknown>)) return (raw as { name: string }).name
-        }
-        return val(record, f.fid)
+      const tier = classifyTier({
+        status: val(record, 255) || null,
+        install_scheduled: val(record, 178) || null,
+        install_completed: val(record, 534) || null,
+        inspection_passed: val(record, 491) || null,
+        pto_approved: val(record, 538) || null,
+        qb_modified_at: val(record, 2) || null,
+        permit_rejected: val(record, 706) || null,
+        nem_rejected: val(record, 1878) || null,
       })
-      upsert.run(...values)
+      upsert.run(...mapRecordToValues(record), tier)
     }
   })()
 
@@ -492,6 +778,62 @@ router.post('/refresh', async (_req: Request, res: Response): Promise<void> => {
   }
 })
 
+// Manual tier refresh — primarily for the admin "Refresh now" buttons
+// and for the agent platform when it wants to force a tier sweep.
+router.post('/refresh-tier/:tier', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user?.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  const tier = String(req.params['tier'] || '') as RefreshTier
+  if (!['hot', 'warm', 'cool', 'cold'].includes(tier)) { res.status(400).json({ error: 'invalid tier' }); return }
+  try {
+    const result = await refreshTier(tier)
+    res.json({ ok: true, tier, ...result })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// Cache freshness summary — backs the visible <DataFreshness> badge.
+// Returns per-tier last-finish + the most recent cached_at per tier
+// so the client can surface either ("updated 4 min ago" or "tier last
+// completed at HH:MM"). Single round-trip for the page header.
+router.get('/freshness', (_req: Request, res: Response): void => {
+  const tiers = db.prepare(`SELECT tier, last_started_at, last_finished_at, last_status, last_rows_changed, last_error FROM project_cache_tier_runs`).all() as Array<{
+    tier: string; last_started_at: string | null; last_finished_at: string | null; last_status: string | null; last_rows_changed: number | null; last_error: string | null
+  }>
+  const tierMaxCached = db.prepare(`SELECT refresh_tier, MAX(cached_at) AS latest, COUNT(*) AS n FROM project_cache GROUP BY refresh_tier`).all() as Array<{ refresh_tier: string | null; latest: string; n: number }>
+  const overall = db.prepare(`SELECT MAX(cached_at) AS latest, COUNT(*) AS total FROM project_cache`).get() as { latest: string | null; total: number }
+  res.json({
+    overall_latest: overall.latest,
+    overall_total: overall.total,
+    tier_runs: tiers,
+    tier_counts: tierMaxCached,
+    server_time: new Date().toISOString(),
+    cadence: { hot: '5m', warm: '30m', cool: '6h', cold: '24h' },
+  })
+})
+
+// Single-project read. With ?live=1, fetches QB inline and updates
+// the cache; without it, returns from cache. Default to live for
+// project-detail to keep that screen always-fresh.
+router.get('/:id', async (req: Request, res: Response): Promise<void> => {
+  const recordId = parseInt(String(req.params['id'] || ''), 10)
+  if (!Number.isFinite(recordId) || recordId <= 0) { res.status(400).json({ error: 'invalid id' }); return }
+  const live = req.query['live'] === '1' || req.query['live'] === undefined  // default ON
+  try {
+    if (live) {
+      const fresh = await fetchOneLive(recordId)
+      if (!fresh) { res.status(404).json({ error: 'not found' }); return }
+      res.json({ project: fresh, source: 'live' })
+      return
+    }
+    const cached = db.prepare(`SELECT * FROM project_cache WHERE record_id = ?`).get(recordId) as Record<string, unknown> | undefined
+    if (!cached) { res.status(404).json({ error: 'not in cache' }); return }
+    res.json({ project: cached, source: 'cache' })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // Toggle favorite
 router.post('/favorites/:projectId', (req: Request, res: Response): void => {
   const userId = req.user!.userId
@@ -676,5 +1018,30 @@ router.get('/phone-fields-probe', async (req: Request, res: Response): Promise<v
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
 })
+
+// ─── Tier scheduler bootstrap ────────────────────────────
+// Each tier owns its own cron entry. Errors are caught + logged so
+// one tier's failure can't kill the others; tier_runs table records
+// the outcome either way.
+import cron from 'node-cron'
+
+let schedulerStarted = false
+export function startProjectCacheScheduler(): void {
+  if (schedulerStarted) return
+  schedulerStarted = true
+  for (const [tier, expr] of Object.entries(TIER_CADENCE) as Array<[RefreshTier, string]>) {
+    cron.schedule(expr, async () => {
+      try {
+        // Skip silently if QB isn't configured — keeps local dev clean.
+        if (!getQbConfig().token) return
+        const result = await refreshTier(tier)
+        if (result.rows > 0) console.log(`[project-cache] tier=${tier} updated ${result.rows} rows in ${result.duration}ms`)
+      } catch (e) {
+        console.error(`[project-cache] tier=${tier} failed:`, e instanceof Error ? e.message : e)
+      }
+    })
+  }
+  console.log('[project-cache] tier scheduler started: hot=5m warm=30m cool=6h cold=24h')
+}
 
 export { router as projectsRouter }

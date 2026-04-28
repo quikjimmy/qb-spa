@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/select'
 import { getStatusConfig } from '@/lib/status'
 import { computeMilestones, dotStyle, labelStyle, connectorStyle, type MilestoneStep } from '@/lib/milestones'
+import DataFreshness from '@/components/DataFreshness.vue'
 
 const auth = useAuthStore()
 
@@ -245,9 +246,12 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
   <div class="grid gap-2 sm:gap-3">
     <!-- Header (sticky so count stays visible on scroll) -->
     <div class="sticky top-0 z-20 bg-background flex items-center justify-between gap-3 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
-      <div class="flex items-baseline gap-2 min-w-0">
-        <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
-        <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ total.toLocaleString() }}</span>
+      <div class="flex flex-col gap-0.5 min-w-0">
+        <div class="flex items-baseline gap-2 min-w-0">
+          <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
+          <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ total.toLocaleString() }}</span>
+        </div>
+        <DataFreshness label="Cache" />
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="classifierRunning" @click="runHoldClassifier" :title="classifierRunning ? 'Classifying holds...' : 'Re-run Hold classifier'">{{ classifierRunning ? 'Classifying...' : 'Classify holds' }}</Button>

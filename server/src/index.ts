@@ -30,6 +30,7 @@ import { fieldRouter } from './routes/field'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
+import { startProjectCacheScheduler } from './routes/projects'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -101,4 +102,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT} (${isProd ? 'production' : 'development'})`)
   startAgentScheduler()
   startDialpadEventMirror()
+  startProjectCacheScheduler()
 })
