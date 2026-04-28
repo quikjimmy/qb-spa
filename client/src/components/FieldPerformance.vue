@@ -9,14 +9,20 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 
 use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, LegendComponent])
 
-// Field Performance — install volume + cycle-time analytics, pulling
-// from the Performance endpoint that aggregates project_cache. The
-// view is filter-driven: date range + date basis (scheduled vs
-// completed) + dimension + day unit (biz vs cal).
+// Field Performance — install volume + cycle-time analytics.
+// Aggregates from project_cache via /api/field/performance.
 //
-// Layout: filter strip → headline tile → time-series bar chart →
-// pivot table → decile table. Mobile-first; tables become stacked
-// cards under sm breakpoint.
+// Layout (mobile-first):
+//   1. Filter strip (date preset, basis toggle, day-unit toggle)
+//   2. KPI tiles row (canonical app KPI shape — see docs/ui-component-specs.md)
+//   3. Time-series bar chart with data labels
+//   4. Pivot table titled "INSTALL COMPLETE · {DIMENSION}" with chip
+//      strip immediately above for dimension switching, totals row
+//      at the bottom.
+//   5. Decile table — same dimension chip strip, numeric grid with
+//      D10..D100 + Mean across columns, dimension values down rows,
+//      totals row at the bottom. Mobile collapses to D20 / Mean /
+//      D90 / Max.
 
 interface Headline {
   total_count: number
@@ -35,10 +41,12 @@ interface PivotRow {
   sale_to_install_p90: number
 }
 interface DecileRow {
-  decile: number
-  max_days: number
-  total: number
-  by_dimension: Record<string, number>
+  dimension_value: string
+  count: number
+  kw: number
+  d10: number; d20: number; d30: number; d40: number; d50: number
+  d60: number; d70: number; d80: number; d90: number; d100: number
+  mean: number
 }
 interface PerfResp {
   window: { from: string; to: string; days: number }
@@ -49,7 +57,8 @@ interface PerfResp {
   headline: Headline
   series: SeriesPoint[]
   pivot: PivotRow[]
-  deciles: { rows: DecileRow[]; top_dimension_values: string[] }
+  pivot_total: PivotRow
+  deciles: { rows: DecileRow[]; total: DecileRow }
 }
 
 type Dimension =
@@ -142,7 +151,11 @@ function fmtBucket(bucket: string, granularity: string): string {
   }
   const d = new Date(bucket)
   if (isNaN(d.getTime())) return bucket
-  if (granularity === 'week') return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  if (granularity === 'week') {
+    // Mon–Sun week — label with the Monday's date so the user can
+    // map a bar back to a specific week.
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  }
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
@@ -150,11 +163,11 @@ const chartOption = computed(() => {
   const series = data.value?.series || []
   const granularity = data.value?.granularity || 'day'
   return {
-    grid: { top: 24, right: 16, bottom: 36, left: 44, containLabel: true },
+    grid: { top: 32, right: 16, bottom: 36, left: 44, containLabel: true },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
-      formatter: (items: Array<{ name: string; value: number; seriesName: string; data: { count?: number; kw?: number } }>) => {
+      formatter: (items: Array<{ name: string; value: number; seriesName: string }>) => {
         if (!items.length) return ''
         const head = items[0]?.name || ''
         const lines = items.map(it => `${it.seriesName}: <b>${it.value}</b>`)
@@ -173,6 +186,7 @@ const chartOption = computed(() => {
         type: 'value',
         position: 'left',
         name: 'Installs',
+        nameTextStyle: { fontSize: 10 },
         axisLabel: { fontSize: 10 },
         splitLine: { lineStyle: { color: '#e2e8f0' } },
       },
@@ -180,6 +194,7 @@ const chartOption = computed(() => {
         type: 'value',
         position: 'right',
         name: 'kW',
+        nameTextStyle: { fontSize: 10 },
         axisLabel: { fontSize: 10 },
         splitLine: { show: false },
       },
@@ -190,6 +205,15 @@ const chartOption = computed(() => {
         type: 'bar',
         yAxisIndex: 0,
         itemStyle: { color: '#0ea5e9', borderRadius: [4, 4, 0, 0] },
+        // Data labels above each bar — small and subtle so they don't
+        // crowd at high-density windows but visible enough to scan.
+        label: {
+          show: true,
+          position: 'top',
+          fontSize: 9,
+          color: '#0369a1',
+          formatter: (p: { value: number }) => p.value > 0 ? String(p.value) : '',
+        },
         data: series.map(s => s.count),
       },
       {
@@ -197,6 +221,13 @@ const chartOption = computed(() => {
         type: 'bar',
         yAxisIndex: 1,
         itemStyle: { color: '#10b981', borderRadius: [4, 4, 0, 0] },
+        label: {
+          show: true,
+          position: 'top',
+          fontSize: 9,
+          color: '#047857',
+          formatter: (p: { value: number }) => p.value > 0 ? p.value.toFixed(1) : '',
+        },
         data: series.map(s => s.kw),
       },
     ],
@@ -221,23 +252,47 @@ const sortedPivot = computed(() => {
   return rows
 })
 
+// ─── Decile sort ──────────────────────────────────────────
+type DecSortKey = 'count' | 'kw' | 'd20' | 'mean' | 'd90' | 'd100'
+const decSortKey = ref<DecSortKey>('count')
+const decSortDir = ref<'desc' | 'asc'>('desc')
+function setDecSort(k: DecSortKey) {
+  if (decSortKey.value === k) decSortDir.value = decSortDir.value === 'desc' ? 'asc' : 'desc'
+  else { decSortKey.value = k; decSortDir.value = 'desc' }
+}
+const sortedDecile = computed(() => {
+  const rows = [...(data.value?.deciles.rows || [])]
+  rows.sort((a, b) => {
+    const av = (a[decSortKey.value] as number) || 0
+    const bv = (b[decSortKey.value] as number) || 0
+    return decSortDir.value === 'desc' ? bv - av : av - bv
+  })
+  return rows
+})
+
 // ─── Helpers ──────────────────────────────────────────────
 function fmtNum(n: number): string { return (n || 0).toLocaleString() }
-function fmtDays(n: number): string { return n > 0 ? `${n.toFixed(1)}d` : '—' }
+function fmtDays(n: number): string { return n > 0 ? `${n.toFixed(1)}` : '—' }
 function fmtKw(n: number): string { return `${(n || 0).toFixed(1)}` }
 function caretFor(k: SortKey): string {
   if (sortKey.value !== k) return ''
   return sortDir.value === 'desc' ? '↓' : '↑'
 }
+function caretForDec(k: DecSortKey): string {
+  if (decSortKey.value !== k) return ''
+  return decSortDir.value === 'desc' ? '↓' : '↑'
+}
 
 const dimensionLabel = computed(() => DIMENSIONS.find(d => d.key === dimension.value)?.label || dimension.value)
+const dimensionLabelUpper = computed(() => dimensionLabel.value.toUpperCase())
 </script>
 
 <template>
   <div class="grid gap-3 min-w-0">
-    <!-- Filter strip — date presets, dimension picker, basis + unit toggles -->
+    <!-- Filter strip — date presets + basis/unit toggles. The dimension
+         chip strip lives directly above each table to keep selection
+         visually attached to what's being grouped. -->
     <div class="grid gap-2 min-w-0">
-      <!-- Date presets + custom inputs -->
       <div class="flex flex-wrap items-center gap-1.5 min-w-0">
         <button v-for="p in [
           { k: 'last_30', l: '30d' },
@@ -254,7 +309,6 @@ const dimensionLabel = computed(() => DIMENSIONS.find(d => d.key === dimension.v
         <span class="text-[10px] text-muted-foreground tabular-nums">{{ fromDate }} → {{ toDate }}</span>
       </div>
 
-      <!-- Date basis + day unit toggles -->
       <div class="flex items-center gap-2 flex-wrap min-w-0">
         <div class="inline-flex rounded-md border overflow-hidden">
           <button class="px-2 py-1 text-[11px] font-medium" :class="dateBasis === 'scheduled' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="dateBasis = 'scheduled'">Scheduled</button>
@@ -265,33 +319,29 @@ const dimensionLabel = computed(() => DIMENSIONS.find(d => d.key === dimension.v
           <button class="px-2 py-1 text-[11px] font-medium" :class="dayUnit === 'cal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="dayUnit = 'cal'">Cal days</button>
         </div>
       </div>
-
-      <!-- Dimension picker — horizontally scrolling chip strip is the
-           approved exception to no-h-scroll for filter bars. -->
-      <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0">
-        <button v-for="d in DIMENSIONS" :key="d.key"
-          class="flex-none px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors whitespace-nowrap"
-          :class="dimension === d.key ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
-          @click="dimension = d.key"
-        >{{ d.label }}</button>
-      </div>
     </div>
 
     <div v-if="loading && !data" class="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">Loading performance…</div>
     <div v-else-if="error" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{{ error }}</div>
 
     <template v-else-if="data">
-      <!-- Headline tile -->
+      <!-- KPI tiles — canonical app KPI shape. See docs/ui-component-specs.md -->
       <div class="grid grid-cols-2 gap-2 min-w-0">
-        <div class="rounded-xl border bg-card p-3 min-w-0">
-          <p class="text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">Installs ({{ data.date_basis }})</p>
-          <p class="text-2xl font-extrabold tabular-nums mt-0.5">{{ fmtNum(data.headline.total_count) }}</p>
-          <p class="text-[10px] text-muted-foreground mt-0.5 tabular-nums">{{ fmtKw(data.headline.total_kw) }} kW</p>
+        <div class="rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden">
+          <div class="absolute top-0 left-0 right-0 h-[3px] bg-sky-500" />
+          <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Installs ({{ data.date_basis }})</p>
+          <p class="mt-1 flex items-baseline gap-1.5 min-w-0">
+            <span class="text-2xl font-extrabold tabular-nums text-sky-600 leading-none">{{ fmtNum(data.headline.total_count) }}</span>
+            <span class="text-[11px] font-semibold tabular-nums text-muted-foreground truncate">/ {{ fmtKw(data.headline.total_kw) }} kW</span>
+          </p>
         </div>
-        <div class="rounded-xl border bg-card p-3 min-w-0">
-          <p class="text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">Completed (with start + end)</p>
-          <p class="text-2xl font-extrabold tabular-nums mt-0.5 text-emerald-600">{{ fmtNum(data.headline.completed_count) }}</p>
-          <p class="text-[10px] text-muted-foreground mt-0.5 tabular-nums">{{ fmtKw(data.headline.completed_kw) }} kW</p>
+        <div class="rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden">
+          <div class="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
+          <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Completed (with dates)</p>
+          <p class="mt-1 flex items-baseline gap-1.5 min-w-0">
+            <span class="text-2xl font-extrabold tabular-nums text-emerald-600 leading-none">{{ fmtNum(data.headline.completed_count) }}</span>
+            <span class="text-[11px] font-semibold tabular-nums text-muted-foreground truncate">/ {{ fmtKw(data.headline.completed_kw) }} kW</span>
+          </p>
         </div>
       </div>
 
@@ -299,121 +349,231 @@ const dimensionLabel = computed(() => DIMENSIONS.find(d => d.key === dimension.v
       <div class="rounded-xl border bg-card p-3 min-w-0 overflow-hidden">
         <div class="flex items-center justify-between mb-1 flex-wrap gap-1">
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Volume by {{ data.granularity }}</p>
-          <p class="text-[10px] text-muted-foreground">x-axis: {{ data.granularity }}</p>
+          <p class="text-[10px] text-muted-foreground">{{ data.granularity === 'week' ? 'Mon–Sun · ' : '' }}x-axis: {{ data.granularity }}</p>
         </div>
-        <VChart :option="chartOption" autoresize style="height: 240px;" class="w-full" />
+        <VChart :option="chartOption" autoresize style="height: 260px;" class="w-full" />
       </div>
 
-      <!-- Pivot table — desktop table, mobile card stack -->
-      <div class="rounded-xl border bg-card overflow-hidden min-w-0">
-        <div class="px-3 py-2 border-b flex items-baseline justify-between gap-2 flex-wrap">
-          <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Pivot · {{ dimensionLabel }}</p>
-          <p class="text-[10px] text-muted-foreground">{{ sortedPivot.length }} buckets · {{ dayUnit === 'biz' ? 'business days' : 'calendar days' }}</p>
+      <!-- Pivot table — title leads with dimension; dimension chip strip
+           sits directly above the card so the user can switch grouping
+           in-place without scrolling back to the top filter strip. -->
+      <div class="grid gap-1.5 min-w-0">
+        <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0">
+          <button v-for="d in DIMENSIONS" :key="d.key"
+            class="flex-none px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors whitespace-nowrap"
+            :class="dimension === d.key ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+            @click="dimension = d.key"
+          >{{ d.label }}</button>
         </div>
 
-        <!-- Desktop -->
-        <div class="hidden sm:block">
-          <table class="w-full text-[11px] tabular-nums">
-            <thead class="bg-muted/30 text-muted-foreground">
-              <tr>
-                <th class="text-left font-medium px-3 py-2">{{ dimensionLabel }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('count')">Count {{ caretFor('count') }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('kw')">kW {{ caretFor('kw') }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('install_dur_mean')">Inst dur μ {{ caretFor('install_dur_mean') }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('install_dur_p90')">Inst dur P90 {{ caretFor('install_dur_p90') }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('sale_to_install_mean')">Sale→Inst μ {{ caretFor('sale_to_install_mean') }}</th>
-                <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('sale_to_install_p90')">Sale→Inst P90 {{ caretFor('sale_to_install_p90') }}</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y">
-              <tr v-for="r in sortedPivot" :key="r.dimension_value" class="hover:bg-muted/30">
-                <td class="px-3 py-1.5 font-medium truncate max-w-[180px]" :title="r.dimension_value">{{ r.dimension_value }}</td>
-                <td class="text-right px-2">{{ fmtNum(r.count) }}</td>
-                <td class="text-right px-2">{{ fmtKw(r.kw) }}</td>
-                <td class="text-right px-2">{{ fmtDays(r.install_dur_mean) }}</td>
-                <td class="text-right px-2">{{ fmtDays(r.install_dur_p90) }}</td>
-                <td class="text-right px-2">{{ fmtDays(r.sale_to_install_mean) }}</td>
-                <td class="text-right px-2">{{ fmtDays(r.sale_to_install_p90) }}</td>
-              </tr>
-              <tr v-if="sortedPivot.length === 0">
-                <td colspan="7" class="text-center py-6 text-muted-foreground">No installs in this window.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="rounded-xl border bg-card overflow-hidden min-w-0">
+          <div class="px-3 py-2 border-b flex items-baseline justify-between gap-2 flex-wrap">
+            <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">INSTALL COMPLETE · {{ dimensionLabelUpper }}</p>
+            <p class="text-[10px] text-muted-foreground">{{ sortedPivot.length }} {{ sortedPivot.length === 1 ? 'bucket' : 'buckets' }} · {{ dayUnit === 'biz' ? 'business' : 'calendar' }} days</p>
+          </div>
 
-        <!-- Mobile cards -->
-        <div class="sm:hidden divide-y">
-          <div v-for="r in sortedPivot" :key="r.dimension_value" class="px-3 py-2 min-w-0">
-            <p class="font-semibold text-[12px] truncate" :title="r.dimension_value">{{ r.dimension_value }}</p>
-            <div class="grid grid-cols-3 gap-1.5 mt-1 text-[10px] tabular-nums">
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Count</p>
-                <p class="font-semibold">{{ fmtNum(r.count) }}</p>
+          <!-- Desktop -->
+          <div class="hidden sm:block">
+            <table class="w-full text-[11px] tabular-nums">
+              <thead class="bg-muted/30 text-muted-foreground">
+                <tr>
+                  <th class="text-left font-medium px-3 py-2">{{ dimensionLabel }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('count')">Count {{ caretFor('count') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('kw')">kW {{ caretFor('kw') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('install_dur_mean')">Inst dur μ {{ caretFor('install_dur_mean') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('install_dur_p90')">Inst dur P90 {{ caretFor('install_dur_p90') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('sale_to_install_mean')">Sale→Inst μ {{ caretFor('sale_to_install_mean') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setSort('sale_to_install_p90')">Sale→Inst P90 {{ caretFor('sale_to_install_p90') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y">
+                <tr v-for="r in sortedPivot" :key="r.dimension_value" class="hover:bg-muted/30">
+                  <td class="px-3 py-1.5 font-medium truncate max-w-[180px]" :title="r.dimension_value">{{ r.dimension_value }}</td>
+                  <td class="text-right px-2">{{ fmtNum(r.count) }}</td>
+                  <td class="text-right px-2">{{ fmtKw(r.kw) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.install_dur_mean) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.install_dur_p90) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.sale_to_install_mean) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.sale_to_install_p90) }}</td>
+                </tr>
+                <tr v-if="sortedPivot.length === 0">
+                  <td colspan="7" class="text-center py-6 text-muted-foreground">No installs in this window.</td>
+                </tr>
+              </tbody>
+              <tfoot v-if="sortedPivot.length > 0" class="border-t-2 bg-muted/20 font-semibold">
+                <tr>
+                  <td class="px-3 py-1.5">Total</td>
+                  <td class="text-right px-2">{{ fmtNum(data.pivot_total.count) }}</td>
+                  <td class="text-right px-2">{{ fmtKw(data.pivot_total.kw) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.pivot_total.install_dur_mean) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.pivot_total.install_dur_p90) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.pivot_total.sale_to_install_mean) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.pivot_total.sale_to_install_p90) }}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <!-- Mobile cards -->
+          <div class="sm:hidden divide-y">
+            <div v-for="r in sortedPivot" :key="r.dimension_value" class="px-3 py-2 min-w-0">
+              <p class="font-semibold text-[12px] truncate" :title="r.dimension_value">{{ r.dimension_value }}</p>
+              <div class="grid grid-cols-3 gap-1.5 mt-1 text-[10px] tabular-nums">
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Count</p>
+                  <p class="font-semibold">{{ fmtNum(r.count) }}</p>
+                </div>
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">kW</p>
+                  <p class="font-semibold">{{ fmtKw(r.kw) }}</p>
+                </div>
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst μ</p>
+                  <p class="font-semibold">{{ fmtDays(r.install_dur_mean) }}</p>
+                </div>
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst P90</p>
+                  <p class="font-semibold">{{ fmtDays(r.install_dur_p90) }}</p>
+                </div>
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst μ</p>
+                  <p class="font-semibold">{{ fmtDays(r.sale_to_install_mean) }}</p>
+                </div>
+                <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
+                  <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst P90</p>
+                  <p class="font-semibold">{{ fmtDays(r.sale_to_install_p90) }}</p>
+                </div>
               </div>
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">kW</p>
-                <p class="font-semibold">{{ fmtKw(r.kw) }}</p>
-              </div>
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst μ</p>
-                <p class="font-semibold">{{ fmtDays(r.install_dur_mean) }}</p>
-              </div>
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst P90</p>
-                <p class="font-semibold">{{ fmtDays(r.install_dur_p90) }}</p>
-              </div>
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst μ</p>
-                <p class="font-semibold">{{ fmtDays(r.sale_to_install_mean) }}</p>
-              </div>
-              <div class="rounded bg-muted/30 px-2 py-1 min-w-0">
-                <p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst P90</p>
-                <p class="font-semibold">{{ fmtDays(r.sale_to_install_p90) }}</p>
+            </div>
+            <div v-if="sortedPivot.length === 0" class="px-3 py-6 text-center text-muted-foreground text-[11px]">No installs in this window.</div>
+            <div v-if="sortedPivot.length > 0" class="px-3 py-2 bg-muted/30 min-w-0">
+              <p class="font-semibold text-[12px]">Total</p>
+              <div class="grid grid-cols-3 gap-1.5 mt-1 text-[10px] tabular-nums">
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">Count</p><p class="font-semibold">{{ fmtNum(data.pivot_total.count) }}</p></div>
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">kW</p><p class="font-semibold">{{ fmtKw(data.pivot_total.kw) }}</p></div>
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst μ</p><p class="font-semibold">{{ fmtDays(data.pivot_total.install_dur_mean) }}</p></div>
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">Inst P90</p><p class="font-semibold">{{ fmtDays(data.pivot_total.install_dur_p90) }}</p></div>
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst μ</p><p class="font-semibold">{{ fmtDays(data.pivot_total.sale_to_install_mean) }}</p></div>
+                <div class="rounded bg-muted/40 px-2 py-1 min-w-0"><p class="text-[9px] uppercase tracking-wider text-muted-foreground">Sale→Inst P90</p><p class="font-semibold">{{ fmtDays(data.pivot_total.sale_to_install_p90) }}</p></div>
               </div>
             </div>
           </div>
-          <div v-if="sortedPivot.length === 0" class="px-3 py-6 text-center text-muted-foreground text-[11px]">No installs in this window.</div>
         </div>
       </div>
 
-      <!-- Decile distribution -->
-      <div class="rounded-xl border bg-card overflow-hidden min-w-0">
-        <div class="px-3 py-2 border-b flex items-baseline justify-between gap-2 flex-wrap">
-          <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Install duration deciles</p>
-          <p class="text-[10px] text-muted-foreground">Top {{ data.deciles.top_dimension_values.length }} {{ dimensionLabel }} values shown · others bucketed</p>
+      <!-- Decile table — pure numeric grid, dimension on Y, decile on X.
+           Mobile collapses to D20 / Mean / D90 / Max only. Total row
+           at the bottom uses the cross-window stats from the server. -->
+      <div class="grid gap-1.5 min-w-0">
+        <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0">
+          <button v-for="d in DIMENSIONS" :key="d.key"
+            class="flex-none px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors whitespace-nowrap"
+            :class="dimension === d.key ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+            @click="dimension = d.key"
+          >{{ d.label }}</button>
         </div>
-        <div class="overflow-hidden">
-          <div class="divide-y">
-            <div v-for="r in data.deciles.rows" :key="r.decile" class="px-3 py-2 min-w-0">
-              <div class="flex items-baseline justify-between gap-2 mb-1 min-w-0">
-                <p class="text-[11px] font-semibold tabular-nums">P{{ r.decile }}</p>
-                <p class="text-[10px] text-muted-foreground tabular-nums shrink-0">≤ {{ fmtDays(r.max_days) }} · n={{ r.total }}</p>
-              </div>
-              <!-- Stacked bar: each top dim value -->
-              <div v-if="r.total > 0" class="h-2 rounded-full bg-muted overflow-hidden flex">
-                <div v-for="(dimVal, i) in [...data.deciles.top_dimension_values, '— Other']" :key="dimVal"
-                  v-show="r.by_dimension[dimVal] && r.by_dimension[dimVal] > 0"
-                  class="h-full"
-                  :class="['bg-sky-500', 'bg-emerald-500', 'bg-violet-500', 'bg-amber-500', 'bg-rose-500', 'bg-teal-500', 'bg-orange-500', 'bg-indigo-500', 'bg-pink-500', 'bg-lime-500', 'bg-stone-400'][i % 11]"
-                  :style="{ width: ((r.by_dimension[dimVal] || 0) / r.total * 100) + '%' }"
-                  :title="`${dimVal}: ${r.by_dimension[dimVal]}`"
-                />
-              </div>
-              <div v-else class="h-2 rounded-full bg-muted/40" />
-            </div>
+
+        <div class="rounded-xl border bg-card overflow-hidden min-w-0">
+          <div class="px-3 py-2 border-b flex items-baseline justify-between gap-2 flex-wrap">
+            <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">INSTALL DURATION DECILES · {{ dimensionLabelUpper }}</p>
+            <p class="text-[10px] text-muted-foreground">{{ dayUnit === 'biz' ? 'business' : 'calendar' }} days · D100 = max</p>
           </div>
-        </div>
-        <!-- Legend for the stacked bars -->
-        <div v-if="data.deciles.top_dimension_values.length > 0" class="px-3 py-2 border-t flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
-          <span v-for="(dimVal, i) in data.deciles.top_dimension_values" :key="dimVal" class="inline-flex items-center gap-1 truncate max-w-[160px]" :title="dimVal">
-            <span class="size-2 rounded-sm shrink-0" :class="['bg-sky-500', 'bg-emerald-500', 'bg-violet-500', 'bg-amber-500', 'bg-rose-500', 'bg-teal-500', 'bg-orange-500', 'bg-indigo-500', 'bg-pink-500', 'bg-lime-500'][i % 10]" />
-            <span class="truncate">{{ dimVal }}</span>
-          </span>
-          <span class="inline-flex items-center gap-1">
-            <span class="size-2 rounded-sm bg-stone-400" />
-            <span>Other</span>
-          </span>
+
+          <!-- Desktop: full decile grid -->
+          <div class="hidden sm:block overflow-x-auto">
+            <table class="w-full text-[11px] tabular-nums">
+              <thead class="bg-muted/30 text-muted-foreground">
+                <tr>
+                  <th class="text-left font-medium px-3 py-2 sticky left-0 bg-muted/30 z-[1]">{{ dimensionLabel }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('count')">n {{ caretForDec('count') }}</th>
+                  <th class="text-right font-medium px-2 py-2">D10</th>
+                  <th class="text-right font-medium px-2 py-2">D20</th>
+                  <th class="text-right font-medium px-2 py-2">D30</th>
+                  <th class="text-right font-medium px-2 py-2">D40</th>
+                  <th class="text-right font-medium px-2 py-2">D50</th>
+                  <th class="text-right font-medium px-2 py-2">D60</th>
+                  <th class="text-right font-medium px-2 py-2">D70</th>
+                  <th class="text-right font-medium px-2 py-2">D80</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('d90')">D90 {{ caretForDec('d90') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('d100')">Max {{ caretForDec('d100') }}</th>
+                  <th class="text-right font-medium px-2 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('mean')">Mean {{ caretForDec('mean') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y">
+                <tr v-for="r in sortedDecile" :key="r.dimension_value" class="hover:bg-muted/30">
+                  <td class="px-3 py-1.5 font-medium truncate max-w-[180px] sticky left-0 bg-card hover:bg-muted/30 z-[1]" :title="r.dimension_value">{{ r.dimension_value }}</td>
+                  <td class="text-right px-2">{{ fmtNum(r.count) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d10) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d20) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d30) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d40) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d50) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d60) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d70) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d80) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d90) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(r.d100) }}</td>
+                  <td class="text-right px-2 font-semibold">{{ fmtDays(r.mean) }}</td>
+                </tr>
+                <tr v-if="sortedDecile.length === 0">
+                  <td colspan="13" class="text-center py-6 text-muted-foreground">No completed installs in this window.</td>
+                </tr>
+              </tbody>
+              <tfoot v-if="sortedDecile.length > 0" class="border-t-2 bg-muted/20 font-semibold">
+                <tr>
+                  <td class="px-3 py-1.5 sticky left-0 bg-muted/20 z-[1]">Total</td>
+                  <td class="text-right px-2">{{ fmtNum(data.deciles.total.count) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d10) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d20) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d30) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d40) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d50) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d60) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d70) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d80) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d90) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.d100) }}</td>
+                  <td class="text-right px-2">{{ fmtDays(data.deciles.total.mean) }}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <!-- Mobile: D20 / Mean / D90 / Max -->
+          <div class="sm:hidden">
+            <table class="w-full text-[11px] tabular-nums">
+              <thead class="bg-muted/30 text-muted-foreground">
+                <tr>
+                  <th class="text-left font-medium px-2 py-2">{{ dimensionLabel }}</th>
+                  <th class="text-right font-medium px-1.5 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('d20')">D20 {{ caretForDec('d20') }}</th>
+                  <th class="text-right font-medium px-1.5 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('mean')">Mean {{ caretForDec('mean') }}</th>
+                  <th class="text-right font-medium px-1.5 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('d90')">D90 {{ caretForDec('d90') }}</th>
+                  <th class="text-right font-medium px-1.5 py-2 cursor-pointer hover:text-foreground" @click="setDecSort('d100')">Max {{ caretForDec('d100') }}</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y">
+                <tr v-for="r in sortedDecile" :key="r.dimension_value" class="hover:bg-muted/30">
+                  <td class="px-2 py-1.5 font-medium truncate max-w-[110px]" :title="r.dimension_value">{{ r.dimension_value }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(r.d20) }}</td>
+                  <td class="text-right px-1.5 font-semibold">{{ fmtDays(r.mean) }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(r.d90) }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(r.d100) }}</td>
+                </tr>
+                <tr v-if="sortedDecile.length === 0">
+                  <td colspan="5" class="text-center py-6 text-muted-foreground">No completed installs.</td>
+                </tr>
+              </tbody>
+              <tfoot v-if="sortedDecile.length > 0" class="border-t-2 bg-muted/20 font-semibold">
+                <tr>
+                  <td class="px-2 py-1.5">Total</td>
+                  <td class="text-right px-1.5">{{ fmtDays(data.deciles.total.d20) }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(data.deciles.total.mean) }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(data.deciles.total.d90) }}</td>
+                  <td class="text-right px-1.5">{{ fmtDays(data.deciles.total.d100) }}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
       </div>
     </template>

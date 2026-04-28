@@ -394,48 +394,71 @@ router.get('/performance', (req: Request, res: Response): void => {
     }).sort((a, b) => b.count - a.count)
 
     // ── Deciles of install duration, broken down by selected dimension ──
-    // Each row is a decile (10..100); columns are top dimension values
-    // by count. Returned as a sparse matrix for the client.
-    const allDurations = completedRows
+    // The new shape: one row per dimension value with D10..D100 (D100 = max),
+    // mean, and count. Plus a Total row across the whole window. The
+    // client renders this as a flat numeric table; mobile shows D20 /
+    // mean / D90 / max only.
+    interface DecileRow {
+      dimension_value: string
+      count: number
+      kw: number
+      d10: number; d20: number; d30: number; d40: number; d50: number
+      d60: number; d70: number; d80: number; d90: number; d100: number
+      mean: number
+    }
+    function decilesFor(rows: PerfRow[]): Pick<DecileRow, 'count' | 'kw' | 'd10' | 'd20' | 'd30' | 'd40' | 'd50' | 'd60' | 'd70' | 'd80' | 'd90' | 'd100' | 'mean'> {
+      const durs = rows
+        .map(r => durFn(r.install_scheduled, r.install_completed))
+        .filter(n => n >= 0)
+        .sort((a, b) => a - b)
+      const round = (n: number) => Math.round(n * 10) / 10
+      return {
+        count: rows.length,
+        kw: round(rows.reduce((s, r) => s + (Number(r.system_size_kw) || 0), 0)),
+        d10: round(percentile(durs, 10)),
+        d20: round(percentile(durs, 20)),
+        d30: round(percentile(durs, 30)),
+        d40: round(percentile(durs, 40)),
+        d50: round(percentile(durs, 50)),
+        d60: round(percentile(durs, 60)),
+        d70: round(percentile(durs, 70)),
+        d80: round(percentile(durs, 80)),
+        d90: round(percentile(durs, 90)),
+        d100: durs.length ? round(durs[durs.length - 1]!) : 0,
+        mean: round(mean(durs)),
+      }
+    }
+    // Group completed rows by dimension value for per-row decile math.
+    const completedByDim = new Map<string, PerfRow[]>()
+    for (const r of completedRows) {
+      const key = String((r as unknown as Record<string, unknown>)[dimCol] || '— Unknown') || '— Unknown'
+      let arr = completedByDim.get(key)
+      if (!arr) { arr = []; completedByDim.set(key, arr) }
+      arr.push(r)
+    }
+    const decileRows: DecileRow[] = [...completedByDim.entries()]
+      .map(([key, rows]) => ({ dimension_value: key, ...decilesFor(rows) }))
+      .sort((a, b) => b.count - a.count)
+    const decileTotal: DecileRow = { dimension_value: '— Total', ...decilesFor(completedRows) }
+
+    // Pivot total row — sums + global mean / p90 across all completed rows.
+    const allInstallDur = completedRows
       .map(r => durFn(r.install_scheduled, r.install_completed))
       .filter(n => n >= 0)
       .sort((a, b) => a - b)
-    const decileBoundaries: number[] = []
-    for (let i = 1; i <= 10; i++) {
-      decileBoundaries.push(percentile(allDurations, i * 10))
-    }
-    // Per-dimension decile breakdown
-    const topDimValues = pivot.slice(0, 10).map(p => p.dimension_value)
-    interface DecileRow {
-      decile: number
-      max_days: number
-      total: number
-      by_dimension: Record<string, number>
-    }
-    const decileRows: DecileRow[] = []
-    for (let i = 0; i < 10; i++) {
-      const max = decileBoundaries[i] ?? 0
-      const min = i === 0 ? 0 : (decileBoundaries[i - 1] ?? 0)
-      decileRows.push({ decile: (i + 1) * 10, max_days: max, total: 0, by_dimension: {} })
-      void min
-    }
-    for (const r of completedRows) {
-      const dur = durFn(r.install_scheduled, r.install_completed)
-      if (dur < 0) continue
-      // Find which decile this row falls in (lower-bound, inclusive top)
-      let bucket = 9
-      for (let i = 0; i < 10; i++) {
-        if (dur <= (decileBoundaries[i] ?? 0)) { bucket = i; break }
-      }
-      const drow = decileRows[bucket]!
-      drow.total += 1
-      const dimValRaw = (r as unknown as Record<string, unknown>)[dimCol]
-      const dimVal = String(dimValRaw || '— Unknown') || '— Unknown'
-      if (topDimValues.includes(dimVal)) {
-        drow.by_dimension[dimVal] = (drow.by_dimension[dimVal] || 0) + 1
-      } else {
-        drow.by_dimension['— Other'] = (drow.by_dimension['— Other'] || 0) + 1
-      }
+    const allSaleToInstall = rows
+      .filter(r => r.sales_date && r.install_scheduled)
+      .map(r => durFn(r.sales_date, r.install_scheduled))
+      .filter(n => n >= 0)
+      .sort((a, b) => a - b)
+    const pivotTotal = {
+      dimension_value: '— Total',
+      count: rows.length,
+      kw: Math.round(rows.reduce((s, r) => s + (Number(r.system_size_kw) || 0), 0) * 10) / 10,
+      install_dur_mean: Math.round(mean(allInstallDur) * 10) / 10,
+      install_dur_p90: Math.round(percentile(allInstallDur, 90) * 10) / 10,
+      sale_to_install_mean: Math.round(mean(allSaleToInstall) * 10) / 10,
+      sale_to_install_p90: Math.round(percentile(allSaleToInstall, 90) * 10) / 10,
     }
 
     res.json({
@@ -452,9 +475,10 @@ router.get('/performance', (req: Request, res: Response): void => {
       },
       series,
       pivot,
+      pivot_total: pivotTotal,
       deciles: {
         rows: decileRows,
-        top_dimension_values: topDimValues,
+        total: decileTotal,
       },
     })
   } catch (e) {
