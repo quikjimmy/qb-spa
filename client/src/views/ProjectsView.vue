@@ -253,10 +253,6 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
         </div>
         <DataFreshness label="Cache" />
       </div>
-      <div class="flex items-center gap-1.5 shrink-0">
-        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="classifierRunning" @click="runHoldClassifier" :title="classifierRunning ? 'Classifying holds...' : 'Re-run Hold classifier'">{{ classifierRunning ? 'Classifying...' : 'Classify holds' }}</Button>
-        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Refreshing...' : 'Refresh' }}</Button>
-      </div>
     </div>
 
     <!-- KPI strip -->

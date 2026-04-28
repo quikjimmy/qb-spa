@@ -251,6 +251,47 @@ The label should hint at the granularity (`'Mon–Sun · x-axis: week'`).
 
 ---
 
+## Data freshness — required on every cache-backed view
+
+Every view that reads from a local cache (project_cache, dialpad_*,
+arrivy, etc.) must expose how fresh its data is. The shared
+`<DataFreshness />` component is the canonical implementation.
+
+```html
+<!-- Pinned next to the page title — sits below the H1 in the
+     header column so it reads as metadata for the whole view. -->
+<div class="flex flex-col gap-0.5 min-w-0">
+  <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
+  <DataFreshness label="Cache" />
+</div>
+```
+
+What the badge shows:
+- A status dot (green = fresh, amber = older than 2× the tier
+  cadence, rose = last refresh failed)
+- "Cache · updated 4m ago" relative-time label
+- A small `↻` button for admins that triggers an immediate tier
+  refresh (non-admins see read-only state)
+
+Conventions:
+- **Place under the H1**, never floating in the right-side actions
+  bar. The badge is contextual metadata, not a CTA.
+- **No "Refresh" buttons in the main view header.** The dot + the
+  admin ↻ are the only controls. Background tier scheduler does
+  the actual work; manual triggers are for admin debug only.
+- **Don't expose process triggers** (refresh-cache, classify, sync)
+  as primary buttons. Those belong in `/admin` or wired into the
+  scheduler.
+- Same component drops into Projects, PC Dashboard, Field, Inspx,
+  PTO, Comms Hub. New views that read from a project_cache derived
+  endpoint should drop it in by default.
+
+The `tier="hot|warm|cool|cold"` prop pins the badge to a specific
+tier when the view's data only depends on one. Otherwise omit it
+and the badge tracks `overall_latest`.
+
+---
+
 ## Date conventions
 
 - **Weeks are Monday–Sunday.** Snap a date to the start of its week

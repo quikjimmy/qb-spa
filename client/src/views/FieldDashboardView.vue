@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import FieldPerformance from '@/components/FieldPerformance.vue'
+import DataFreshness from '@/components/DataFreshness.vue'
 
 // Field Ops dashboard — Vue rebuild of context-files/Field/example view.
 // Pulls Arrivy task data from /api/field/tasks (which proxies QuickBase),
@@ -533,6 +534,7 @@ watch(preset, load)
       <div class="flex-1 min-w-0">
         <h1 class="text-2xl font-semibold tracking-tight truncate">{{ drilling ? drillTitle : 'Field' }}</h1>
         <p v-if="drilling" class="text-[11px] text-muted-foreground -mt-0.5">{{ drillTasks.length }} {{ drillTasks.length === 1 ? 'task' : 'tasks' }} · tap arrow to return</p>
+        <DataFreshness v-else label="Cache" class="-mt-0.5" />
       </div>
       <Button v-if="drilling" variant="outline" size="sm" class="h-9 text-xs shrink-0" @click="exitDrill">All Field</Button>
     </div>

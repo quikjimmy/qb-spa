@@ -191,6 +191,38 @@ const commsProject = ref<{ record_id?: number; customer_name?: string; coordinat
 const commsSummary = ref<{ sms_count_7d: number; call_count_7d: number; last_comms_at: string } | null>(null)
 const commsScroller = ref<HTMLElement | null>(null)
 
+// Customer phone derived from comms items — for inbound use from_number,
+// for outbound use to_number. Most-recent item wins. Powers the
+// click-to-call icon in the drawer header.
+const commsPhone = computed<string>(() => {
+  for (let i = commsItems.value.length - 1; i >= 0; i--) {
+    const it = commsItems.value[i]
+    if (!it) continue
+    const num = (it.direction === 'inbound' ? it.from_number : it.to_number) || ''
+    if (num && num.trim()) return num.trim()
+  }
+  return ''
+})
+function commsInitials(): string {
+  const name = (commsProject.value?.customer_name || '').trim()
+  if (name) {
+    const parts = name.split(/\s+/).slice(0, 2)
+    return parts.map(p => p[0] || '').join('').toUpperCase()
+  }
+  const digits = commsPhone.value.replace(/\D/g, '')
+  return digits.slice(-2) || '#'
+}
+function callCustomer() {
+  if (commsPhone.value) window.location.href = `tel:${commsPhone.value}`
+}
+function fmtPhoneDisplay(p: string): string {
+  if (!p) return ''
+  const digits = p.replace(/\D/g, '')
+  const last10 = digits.length >= 10 ? digits.slice(-10) : digits
+  if (last10.length !== 10) return p
+  return `(${last10.slice(0, 3)}) ${last10.slice(3, 6)}-${last10.slice(6)}`
+}
+
 const useBizDays = ref(false)
 const dayUnit = computed(() => useBizDays.value ? 'biz days' : 'days')
 
@@ -651,8 +683,6 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'personal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'personal'; fCoordinator = ''; loadData()">Me</button>
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'team' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'team'; loadData()">Team</button>
         </div>
-        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2 shrink-0" :disabled="commsRefreshing" @click="refreshComms">{{ commsRefreshing ? 'Comms...' : 'Comms' }}</Button>
-        <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2 shrink-0" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Syncing...' : 'Sync' }}</Button>
       </div>
     </div>
 
@@ -1033,82 +1063,116 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
 
     <p v-if="cacheInfo && cacheInfo.total > 0" class="text-center text-[10px] text-muted-foreground py-1">{{ cacheInfo.total }} outreach records · synced {{ cacheInfo.last_refresh }}</p>
 
-    <!-- Comms slide-over -->
-    <div v-if="commsOpen" class="fixed inset-0 z-50">
-      <button class="absolute inset-0 bg-black/25 hidden sm:block" aria-label="Close comms" @click="closeComms" />
-      <aside class="absolute right-0 top-0 h-full w-full sm:max-w-[520px] bg-[#f2f2f7] shadow-2xl flex flex-col">
-        <header class="shrink-0 border-b border-black/10 bg-[#f9f9fb]/95 backdrop-blur px-3 py-2.5 sm:px-4 sm:py-3">
-          <div class="flex items-center justify-between gap-2">
-            <button class="rounded-full size-9 shrink-0 inline-flex items-center justify-center text-[#007aff] hover:bg-black/5" @click="closeComms" aria-label="Back">
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-            </button>
-            <div class="min-w-0">
-              <h2 class="text-[15px] sm:text-base font-semibold truncate text-center sm:text-left">{{ commsProject?.customer_name || `Project ${commsProject?.record_id || ''}` }}</h2>
-              <p class="text-[10px] sm:text-[11px] text-[#6b7280] mt-0.5 truncate text-center sm:text-left">
-                <template v-if="commsProject?.record_id">#{{ commsProject.record_id }}</template>
-                <template v-if="commsProject?.coordinator"> · {{ commsProject.coordinator }}</template>
-                <template v-if="commsProject?.state"> · {{ commsProject.state }}</template>
-              </p>
-            </div>
-            <button v-if="auth.isAdmin" class="rounded-full size-9 shrink-0 inline-flex items-center justify-center text-[#007aff] hover:bg-black/5 disabled:opacity-50" :disabled="commsRefreshing" @click="refreshComms" aria-label="Sync comms">
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" :class="commsRefreshing ? 'animate-spin' : ''"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
-            </button>
-            <span v-else class="size-9 shrink-0" />
+    <!-- Comms slide-over — uses the same Liquid Glass language as
+         SmsThreadDialog so the customer-thread visual is consistent
+         across the app. Click-to-call wired into the header phone
+         icon; calls render inline as compact pills mixed with SMS
+         bubbles. -->
+    <div v-if="commsOpen" class="fixed inset-0 z-[120]">
+      <button class="absolute inset-0 bg-black/40 backdrop-blur-md hidden sm:block" aria-label="Close comms" @click="closeComms" />
+      <aside class="absolute right-0 top-0 h-full w-full sm:max-w-[520px] bg-card/95 supports-[backdrop-filter]:bg-card/85 backdrop-blur-2xl shadow-2xl shadow-black/30 ring-1 ring-foreground/5 flex flex-col overflow-hidden">
+        <!-- Sticky glass header with avatar + name + phone + call/refresh/close -->
+        <header
+          class="
+            relative flex items-center gap-3 px-3 py-3 sm:px-4
+            bg-background/70 supports-[backdrop-filter]:bg-background/55 backdrop-blur-xl
+            before:absolute before:inset-x-3 before:bottom-0 before:h-px
+            before:bg-gradient-to-r before:from-transparent before:via-foreground/10 before:to-transparent
+          "
+        >
+          <button
+            class="size-9 -ml-1 rounded-full hover:bg-foreground/5 active:bg-foreground/10 transition-colors flex items-center justify-center shrink-0"
+            aria-label="Close comms"
+            @click="closeComms"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+
+          <div
+            class="
+              size-10 rounded-full flex items-center justify-center shrink-0
+              bg-gradient-to-br from-sky-400/30 via-sky-500/20 to-violet-500/25
+              ring-1 ring-foreground/5
+              text-[13px] font-semibold tracking-tight text-foreground/85
+              select-none
+            "
+          >{{ commsInitials() }}</div>
+
+          <div class="flex-1 min-w-0">
+            <p class="text-[15px] font-semibold tracking-tight leading-tight truncate">
+              {{ commsProject?.customer_name || `Project ${commsProject?.record_id || ''}` }}
+            </p>
+            <p class="text-[11px] text-muted-foreground tabular-nums truncate leading-tight mt-0.5">
+              <template v-if="commsPhone">{{ fmtPhoneDisplay(commsPhone) }}</template>
+              <template v-if="commsProject?.coordinator"> · {{ commsProject.coordinator }}</template>
+              <template v-if="commsProject?.state"> · {{ commsProject.state }}</template>
+            </p>
           </div>
-          <div class="mt-2 flex items-center justify-center gap-1.5 text-[10px] text-[#6b7280] overflow-x-auto no-scrollbar">
-            <span class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">SMS {{ commsSummary?.sms_count_7d || 0 }} / 7d</span>
-            <span class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">Calls {{ commsSummary?.call_count_7d || 0 }} / 7d</span>
-            <span v-if="commsSummary?.last_comms_at" class="rounded-full bg-white px-2 py-1 font-semibold whitespace-nowrap">Last {{ timeAgo(commsSummary.last_comms_at) }} ago</span>
-          </div>
+
+          <button
+            v-if="commsPhone"
+            class="size-9 rounded-full hover:bg-foreground/5 active:bg-foreground/10 transition-colors flex items-center justify-center shrink-0"
+            aria-label="Call customer"
+            @click="callCustomer"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          </button>
+          <button
+            v-if="auth.isAdmin"
+            class="size-9 rounded-full hover:bg-foreground/5 active:bg-foreground/10 transition-colors flex items-center justify-center disabled:opacity-50 shrink-0"
+            :disabled="commsRefreshing"
+            aria-label="Refresh comms"
+            @click="refreshComms"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="commsRefreshing ? 'animate-spin' : ''"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+          </button>
         </header>
 
-        <div ref="commsScroller" class="flex-1 overflow-y-auto px-2.5 py-3 sm:px-4 sm:py-4">
-          <div v-if="commsLoading" class="py-12 text-center text-sm text-muted-foreground">Loading comms...</div>
-          <div v-else-if="commsItems.length === 0" class="py-12 text-center text-sm text-muted-foreground">No mapped SMS or calls found for this project.</div>
-          <div v-else class="space-y-1.5">
-            <div class="text-center text-[10px] text-[#6b7280] pb-2">Kin Portal comms log from Quickbase</div>
-            <div v-for="(item, i) in commsItems" :key="`${item.type}-${item.id}-${item.occurred_at}`">
-              <div v-if="i === 0 || msgDay(item.occurred_at) !== msgDay(commsItems[i - 1]?.occurred_at)" class="py-3 text-center">
-                <span class="inline-flex rounded-full bg-black/5 px-2 py-1 text-[10px] font-semibold text-[#6b7280]">{{ msgDay(item.occurred_at) }}</span>
-              </div>
-              <div v-if="item.type === 'call'" class="py-1.5 text-center">
-                <div class="inline-flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 rounded-full bg-black/[0.035] px-2.5 py-1 text-[10px] leading-snug text-[#6b7280]">
-                  <span class="font-semibold">{{ callStatus(item) }}</span>
-                  <span>{{ fmtDateTime(item.occurred_at) }}</span>
-                  <span v-if="item.duration_ms">· {{ fmtDuration(item.duration_ms) }}</span>
-                  <span v-if="item.missed_reason">· {{ item.missed_reason }}</span>
-                  <a v-if="callListenUrl(item)" :href="callListenUrl(item)" target="_blank" class="font-semibold text-[#007aff]">Listen</a>
-                </div>
-                <p v-if="item.transcription" class="mx-auto mt-1 max-w-[86%] rounded-lg bg-white/65 px-2.5 py-1.5 text-left text-[11px] leading-snug text-[#6b7280]">
-                  {{ item.transcription }}
-                </p>
-              </div>
-              <div v-else class="flex" :class="item.direction === 'outbound' ? 'justify-end' : 'justify-start'">
-                <div
-                  class="max-w-[78%] sm:max-w-[82%] px-3 py-2 text-[15px] leading-snug shadow-sm"
-                  :class="[
-                    item.direction === 'outbound'
-                      ? 'rounded-[18px] rounded-br-md bg-[#007aff] text-white'
-                      : 'rounded-[18px] rounded-bl-md bg-[#e5e5ea] text-[#111827]',
-                  ]"
+        <!-- Quick stats row (counts last 7d, last contact). -->
+        <div class="px-3 sm:px-4 py-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground overflow-x-auto no-scrollbar bg-foreground/[0.025]">
+          <span class="rounded-full bg-foreground/[0.06] px-2 py-0.5 font-medium whitespace-nowrap">SMS {{ commsSummary?.sms_count_7d || 0 }} / 7d</span>
+          <span class="rounded-full bg-foreground/[0.06] px-2 py-0.5 font-medium whitespace-nowrap">Calls {{ commsSummary?.call_count_7d || 0 }} / 7d</span>
+          <span v-if="commsSummary?.last_comms_at" class="rounded-full bg-foreground/[0.06] px-2 py-0.5 font-medium whitespace-nowrap">Last {{ timeAgo(commsSummary.last_comms_at) }} ago</span>
+        </div>
+
+        <!-- Conversation -->
+        <div ref="commsScroller" role="log" aria-live="polite" class="flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-3 sm:px-4 sm:py-4 space-y-1">
+          <p v-if="commsLoading" class="py-12 text-center text-[11px] text-muted-foreground">Loading comms…</p>
+          <p v-else-if="commsItems.length === 0" class="py-12 text-center text-[11px] text-muted-foreground">No mapped SMS or calls found for this project.</p>
+
+          <template v-else v-for="(item, i) in commsItems" :key="`${item.type}-${item.id}-${item.occurred_at}`">
+            <!-- Day separator -->
+            <div v-if="i === 0 || msgDay(item.occurred_at) !== msgDay(commsItems[i - 1]?.occurred_at)" class="text-center pt-3 pb-1">
+              <span class="text-[10px] font-semibold tracking-[0.18em] uppercase text-muted-foreground/70">{{ msgDay(item.occurred_at) }}</span>
+            </div>
+
+            <!-- Call event — compact centered pill -->
+            <div v-if="item.type === 'call'" class="flex flex-col items-center gap-1 my-1">
+              <span class="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-full px-2.5 py-1 text-[10px] leading-snug text-muted-foreground bg-foreground/[0.05]">
+                <span class="font-semibold uppercase tracking-wider">{{ callStatus(item) }}</span>
+                <span class="tabular-nums">{{ fmtMsgTime(item.occurred_at) }}</span>
+                <span v-if="item.duration_ms" class="tabular-nums">· {{ fmtDuration(item.duration_ms) }}</span>
+                <span v-if="item.missed_reason">· {{ item.missed_reason }}</span>
+                <a v-if="callListenUrl(item)" :href="callListenUrl(item)" target="_blank" class="font-semibold text-sky-600 hover:text-sky-500">Listen</a>
+              </span>
+              <p v-if="item.transcription" class="max-w-[88%] rounded-lg px-2.5 py-1.5 text-[11px] leading-snug text-foreground/80 bg-foreground/[0.04] text-left whitespace-pre-wrap">
+                {{ item.transcription }}
+              </p>
+            </div>
+
+            <!-- SMS bubble -->
+            <div v-else class="flex" :class="item.direction === 'outbound' ? 'justify-end' : 'justify-start'">
+              <div
+                class="max-w-[78%] px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] whitespace-pre-wrap break-words"
+                :class="item.direction === 'outbound'
+                  ? 'text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] rounded-[18px] rounded-br-md'
+                  : 'text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] rounded-[18px] rounded-bl-md'"
               >
-                  <div class="flex items-center gap-1.5 mb-1 text-[10px]" :class="item.direction === 'outbound' && item.type === 'sms' ? 'text-white/75' : 'text-[#6b7280]'">
-                    <span class="font-semibold uppercase tracking-wider">{{ item.type }}</span>
-                    <span>{{ fmtMsgTime(item.occurred_at) }}</span>
-                  </div>
-
-                  <template v-if="item.type === 'sms'">
-                    <p class="whitespace-pre-wrap break-words">{{ item.body || '(empty message)' }}</p>
-                    <p v-if="item.delivery_result" class="mt-1 text-[10px]" :class="item.direction === 'outbound' ? 'text-white/70' : 'text-[#6b7280]'">{{ item.delivery_result }}</p>
-                  </template>
-
-                  <p v-if="item.contact_name || item.user_name" class="mt-1 text-[10px]" :class="item.direction === 'outbound' && item.type === 'sms' ? 'text-white/65' : 'text-[#6b7280]'">
-                    {{ item.direction === 'outbound' ? (item.user_name || 'Kin Home') : (item.contact_name || 'Customer') }}
-                  </p>
-                </div>
+                <template v-if="item.body">{{ item.body }}</template>
+                <span v-else class="opacity-60 italic">(empty message)</span>
               </div>
             </div>
-          </div>
+          </template>
         </div>
       </aside>
     </div>

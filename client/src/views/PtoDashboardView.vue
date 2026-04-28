@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { getStatusConfig } from '@/lib/status'
+import DataFreshness from '@/components/DataFreshness.vue'
 import { fmtDate } from '@/lib/dates'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -205,11 +206,13 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache() })
   <div class="grid gap-2 sm:gap-3 max-w-full">
     <!-- Header -->
     <div class="flex items-center justify-between gap-2">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 min-w-0">
         <RouterLink to="/projects" class="text-muted-foreground hover:text-foreground"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></RouterLink>
-        <h1 class="text-xl sm:text-2xl font-semibold tracking-tight">PTO</h1>
+        <div class="flex flex-col gap-0.5 min-w-0">
+          <h1 class="text-xl sm:text-2xl font-semibold tracking-tight">PTO</h1>
+          <DataFreshness label="Cache" />
+        </div>
       </div>
-      <button class="text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0" :disabled="refreshing" @click="refreshCaches">{{ refreshing ? 'Refreshing...' : 'Refresh' }}</button>
     </div>
 
     <!-- Filters -->
