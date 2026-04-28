@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { formatPhone } from '@/lib/callBuckets'
 import { useSmsThread, type ThreadMessage } from '@/composables/useSmsThread'
 import { useAuthStore } from '@/stores/auth'
+import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 
 interface Props {
   externalNumber: string
@@ -330,15 +331,44 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                           class="text-center text-[10px] text-muted-foreground/70 pt-1.5 pb-1 tabular-nums"
                         >{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.received_at) }}</p>
 
-                        <!-- Real message: chat bubble -->
+                        <!-- Real message: chat bubble. Body is parsed into
+                             text/image/link parts so MMS image URLs
+                             (content.dialpad.com/s/img/...) render inline
+                             instead of dumping raw URLs into the bubble. -->
                         <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body">
                           <div class="flex" :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
                             <div
-                              class="max-w-[78%] px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] whitespace-pre-wrap break-words"
-                              :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing'
-                                ? `text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-br-md' : 'rounded-[18px]'}`
-                                : `text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-bl-md' : 'rounded-[18px]'}`"
-                            >{{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body }}</div>
+                              class="px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] break-words"
+                              :class="[
+                                bodyHasImage((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body) ? 'max-w-[88%]' : 'max-w-[78%]',
+                                (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing'
+                                  ? `text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-br-md' : 'rounded-[18px]'}`
+                                  : `text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-bl-md' : 'rounded-[18px]'}`,
+                              ]"
+                            >
+                              <template v-for="(part, pi) in parseMessageBody((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body)" :key="pi">
+                                <span v-if="part.kind === 'text'" class="whitespace-pre-wrap">{{ part.value }}</span>
+                                <a
+                                  v-else-if="part.kind === 'image'"
+                                  :href="part.url" target="_blank" rel="noopener"
+                                  class="block my-0.5 first:mt-0 last:mb-0"
+                                >
+                                  <img
+                                    :src="part.url"
+                                    loading="lazy"
+                                    class="block max-w-full max-h-[280px] rounded-lg object-cover ring-1 ring-black/5 cursor-zoom-in"
+                                    alt="MMS attachment"
+                                  />
+                                </a>
+                                <a
+                                  v-else
+                                  :href="part.url" target="_blank" rel="noopener"
+                                  class="underline underline-offset-2 break-all hover:opacity-80"
+                                  :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing' ? 'text-white' : 'text-sky-600 dark:text-sky-400'"
+                                  @click.stop
+                                >{{ part.url }}</a>
+                              </template>
+                            </div>
                           </div>
                         </template>
 

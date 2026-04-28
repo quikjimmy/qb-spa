@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/select'
 import { getStatusConfig } from '@/lib/status'
 import DataFreshness from '@/components/DataFreshness.vue'
+import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays } from '@/lib/dates'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -1160,15 +1161,42 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
               </p>
             </div>
 
-            <!-- SMS bubble -->
+            <!-- SMS bubble. Body is parsed so MMS image URLs render
+                 inline (Dialpad's CDN pattern detected) instead of
+                 dropping a raw URL into the message. -->
             <div v-else class="flex" :class="item.direction === 'outbound' ? 'justify-end' : 'justify-start'">
               <div
-                class="max-w-[78%] px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] whitespace-pre-wrap break-words"
-                :class="item.direction === 'outbound'
-                  ? 'text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] rounded-[18px] rounded-br-md'
-                  : 'text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] rounded-[18px] rounded-bl-md'"
+                class="px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] break-words"
+                :class="[
+                  bodyHasImage(item.body) ? 'max-w-[88%]' : 'max-w-[78%]',
+                  item.direction === 'outbound'
+                    ? 'text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] rounded-[18px] rounded-br-md'
+                    : 'text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] rounded-[18px] rounded-bl-md',
+                ]"
               >
-                <template v-if="item.body">{{ item.body }}</template>
+                <template v-if="item.body">
+                  <template v-for="(part, pi) in parseMessageBody(item.body)" :key="pi">
+                    <span v-if="part.kind === 'text'" class="whitespace-pre-wrap">{{ part.value }}</span>
+                    <a
+                      v-else-if="part.kind === 'image'"
+                      :href="part.url" target="_blank" rel="noopener"
+                      class="block my-0.5 first:mt-0 last:mb-0"
+                    >
+                      <img
+                        :src="part.url"
+                        loading="lazy"
+                        class="block max-w-full max-h-[280px] rounded-lg object-cover ring-1 ring-black/5 cursor-zoom-in"
+                        alt="MMS attachment"
+                      />
+                    </a>
+                    <a
+                      v-else
+                      :href="part.url" target="_blank" rel="noopener"
+                      class="underline underline-offset-2 break-all hover:opacity-80"
+                      :class="item.direction === 'outbound' ? 'text-white' : 'text-sky-600 dark:text-sky-400'"
+                    >{{ part.url }}</a>
+                  </template>
+                </template>
                 <span v-else class="opacity-60 italic">(empty message)</span>
               </div>
             </div>
