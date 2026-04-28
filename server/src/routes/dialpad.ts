@@ -1528,34 +1528,103 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
   // Bodies must come through the webhook subscription with status:false.
   const lookupErrors: Record<number, string> = {}
 
+  // Per-message extraction of the Dialpad target (the agent on the
+  // company side of the conversation) and the Dialpad number used.
+  // Needed so the thread UI can show "Texted by Emma Martin · (801)
+  // 609-5532" and so the future send flow can post FROM that same
+  // number, keeping carrier-side message threading intact.
+  function pickAgentInfo(payload: Record<string, unknown>): {
+    agent_email: string | null
+    agent_name: string | null
+    agent_number: string | null
+    dialpad_user_id: string | null
+  } {
+    const target = payload['target'] as Record<string, unknown> | undefined
+    const fromNumber = typeof payload['from_number'] === 'string' ? payload['from_number'] : null
+    const toNumber = Array.isArray(payload['to_number']) && payload['to_number'].length > 0
+      ? String(payload['to_number'][0])
+      : (typeof payload['to_number'] === 'string' ? payload['to_number'] : null)
+    const dir = String(payload['direction'] || '').toLowerCase()
+    // The Dialpad number used by the agent: from_number on outbound,
+    // to_number on inbound. Falls back to the target's listed phone.
+    const agentNumber = (dir === 'outbound' ? fromNumber : toNumber) || (target ? String(target['phone'] ?? '') : '') || null
+    return {
+      agent_email: target ? (String(target['email'] ?? '') || null) : null,
+      agent_name: target ? (String(target['name'] ?? '') || null) : null,
+      agent_number: agentNumber || null,
+      dialpad_user_id: target && target['id'] != null ? String(target['id']) : null,
+    }
+  }
+
   const messages = rows.map((r, idx) => {
     const body = initialBodies[idx]
     let status: string | null = null
     let rawPreview: string | null = null
     let lookupError: string | null = null
-    if (!body) {
-      try {
-        const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
-        status = classifyStatus(p)
-      } catch { /* leave null */ }
-      // Admin-only diagnostic — when no body could be extracted (and the
-      // API backfill also failed), ship the raw JSON + the API error
-      // so the operator can see the failure mode without ssh-ing.
-      if (isAdmin) {
-        const raw = String(r.raw_json || '')
-        rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
-        lookupError = lookupErrors[idx] || null
-      }
+    let agent: ReturnType<typeof pickAgentInfo> = {
+      agent_email: null, agent_name: null, agent_number: null, dialpad_user_id: null,
+    }
+    try {
+      const p = JSON.parse(String(r.raw_json || '{}')) as Record<string, unknown>
+      agent = pickAgentInfo(p)
+      if (!body) status = classifyStatus(p)
+    } catch { /* leave defaults */ }
+    if (!body && isAdmin) {
+      const raw = String(r.raw_json || '')
+      rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+      lookupError = lookupErrors[idx] || null
     }
     return {
       id: r.id, direction: r.direction, body, status,
       user_email: r.user_email, user_name: r.user_name,
+      agent_email: agent.agent_email,
+      agent_name: agent.agent_name,
+      agent_number: agent.agent_number,
+      dialpad_user_id: agent.dialpad_user_id,
       external_number: r.external_number,
       received_at: r.received_at, is_read: r.is_read,
       raw_preview: rawPreview,
       lookup_error: lookupError,
     }
   })
+
+  // Build a per-agent summary so the UI can show "this conversation
+  // happened between Customer X and Emma Martin via (801) 609-5532"
+  // without scanning every message client-side. The most-recent agent
+  // wins as the default reply identity (last_used_at).
+  interface AgentSummary {
+    email: string | null
+    name: string | null
+    number: string | null
+    dialpad_user_id: string | null
+    message_count: number
+    last_used_at: string | null
+  }
+  const agentMap = new Map<string, AgentSummary>()
+  for (const m of messages) {
+    if (!m.agent_email && !m.agent_number) continue
+    const key = (m.agent_email || m.agent_number || '').toLowerCase()
+    let entry = agentMap.get(key)
+    if (!entry) {
+      entry = {
+        email: m.agent_email,
+        name: m.agent_name,
+        number: m.agent_number,
+        dialpad_user_id: m.dialpad_user_id,
+        message_count: 0,
+        last_used_at: null,
+      }
+      agentMap.set(key, entry)
+    }
+    entry.message_count += 1
+    if (!entry.last_used_at || String(m.received_at) > entry.last_used_at) {
+      entry.last_used_at = String(m.received_at)
+    }
+  }
+  const agents = [...agentMap.values()].sort((a, b) =>
+    String(b.last_used_at || '').localeCompare(String(a.last_used_at || ''))
+  )
+  const primaryAgent = agents[0] || null
 
   res.json({
     external_number: externalNumber,
@@ -1567,6 +1636,11 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
     // Counts so the UI can say "12 events, 3 with text" if needed for
     // debugging, instead of rendering "no messages" when there's data.
     text_count: messages.filter(m => m.body).length,
+    // Agent identity surface — `agents` lists every distinct Kin user
+    // who's been on this thread; `primary_agent` is the most-recent
+    // one and the default reply-from identity for the future send flow.
+    agents,
+    primary_agent: primaryAgent,
   })
 })
 

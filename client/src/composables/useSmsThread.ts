@@ -16,8 +16,21 @@ export interface ThreadMessage {
   external_number: string | null
   received_at: string
   is_read: number
+  agent_email?: string | null
+  agent_name?: string | null
+  agent_number?: string | null
+  dialpad_user_id?: string | null
   raw_preview?: string | null
   lookup_error?: string | null
+}
+
+export interface ThreadAgent {
+  email: string | null
+  name: string | null
+  number: string | null
+  dialpad_user_id: string | null
+  message_count: number
+  last_used_at: string | null
 }
 
 interface ThreadResponse {
@@ -26,6 +39,8 @@ interface ThreadResponse {
   oldest_id: number | null
   newest_id: number | null
   text_count: number
+  agents?: ThreadAgent[]
+  primary_agent?: ThreadAgent | null
 }
 
 const PAGE_SIZE = 30
@@ -36,6 +51,8 @@ export function useSmsThread(externalNumber: Ref<string>) {
   const hasMore = ref(false)
   const oldestId = ref<number | null>(null)
   const textCount = ref(0)
+  const agents = ref<ThreadAgent[]>([])
+  const primaryAgent = ref<ThreadAgent | null>(null)
   const loading = ref(false)
   const loadingOlder = ref(false)
   const error = ref('')
@@ -72,6 +89,8 @@ export function useSmsThread(externalNumber: Ref<string>) {
       hasMore.value = data.has_more
       oldestId.value = data.oldest_id
       textCount.value = data.text_count
+      agents.value = data.agents || []
+      primaryAgent.value = data.primary_agent ?? null
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -112,6 +131,8 @@ export function useSmsThread(externalNumber: Ref<string>) {
     hasMore,
     oldestId,
     textCount,
+    agents,
+    primaryAgent,
     loading,
     loadingOlder,
     error,
