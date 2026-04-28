@@ -76,31 +76,35 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   if (!names.has('ahj_name')) db.exec(`ALTER TABLE project_cache ADD COLUMN ahj_name TEXT`)
   if (!names.has('utility_company')) db.exec(`ALTER TABLE project_cache ADD COLUMN utility_company TEXT`)
   if (!names.has('mpu_callout')) db.exec(`ALTER TABLE project_cache ADD COLUMN mpu_callout TEXT`)
-  // Tiered cache strategy (added 2026-04-28). Each row knows which
-  // refresh class it belongs to and when QB last said the record was
-  // modified, so the scheduler can pull only what's hot and skip the
-  // rest. last_fetch_started/last_fetch_status power the visible
-  // freshness badge and recover from in-flight crashes.
+}
+
+// Tiered cache strategy migrations — wrapped in try/catch so a SQLite
+// quirk on a deploy can't take down the whole server import. If the
+// migration fails the cache is read-only-ish (no tier classification,
+// no scheduled refresh), but the rest of the app keeps working and
+// /api/health still responds for Railway.
+try {
+  const cols = db.prepare(`PRAGMA table_info(project_cache)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
   if (!names.has('refresh_tier')) db.exec(`ALTER TABLE project_cache ADD COLUMN refresh_tier TEXT`)
   if (!names.has('qb_modified_at')) db.exec(`ALTER TABLE project_cache ADD COLUMN qb_modified_at TEXT`)
   if (!names.has('last_fetch_started')) db.exec(`ALTER TABLE project_cache ADD COLUMN last_fetch_started TEXT`)
   if (!names.has('last_fetch_status')) db.exec(`ALTER TABLE project_cache ADD COLUMN last_fetch_status TEXT`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_tier ON project_cache(refresh_tier)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_qb_modified ON project_cache(qb_modified_at)`)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_cache_tier_runs (
+      tier TEXT PRIMARY KEY,
+      last_started_at TEXT,
+      last_finished_at TEXT,
+      last_status TEXT,
+      last_rows_changed INTEGER,
+      last_error TEXT
+    )
+  `)
+} catch (e) {
+  console.error('[project-cache] tier migration failed:', e instanceof Error ? e.message : e)
 }
-db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_tier ON project_cache(refresh_tier)`)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_qb_modified ON project_cache(qb_modified_at)`)
-
-// Per-tier refresh log so the visible freshness badge has a single
-// source of truth for "when did the X tier last finish."
-db.exec(`
-  CREATE TABLE IF NOT EXISTS project_cache_tier_runs (
-    tier TEXT PRIMARY KEY,
-    last_started_at TEXT,
-    last_finished_at TEXT,
-    last_status TEXT,
-    last_rows_changed INTEGER,
-    last_error TEXT
-  )
-`)
 
 // Field mapping: QB field ID → cache column
 const fieldMap: Array<{ fid: number; col: string }> = [

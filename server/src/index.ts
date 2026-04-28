@@ -100,7 +100,10 @@ if (isProd) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT} (${isProd ? 'production' : 'development'})`)
-  startAgentScheduler()
-  startDialpadEventMirror()
-  startProjectCacheScheduler()
+  // Each scheduler is wrapped so a single one's failure can't cascade
+  // into the others or take down the listen. Errors get logged but
+  // the server keeps responding to /api/health for Railway.
+  try { startAgentScheduler() } catch (e) { console.error('[startup] agent scheduler failed:', e) }
+  try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
+  try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
 })
