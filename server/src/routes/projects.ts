@@ -69,6 +69,13 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   const names = new Set(cols.map(c => c.name))
   if (!names.has('mobile_phone')) db.exec(`ALTER TABLE project_cache ADD COLUMN mobile_phone TEXT`)
   if (!names.has('alt_phone')) db.exec(`ALTER TABLE project_cache ADD COLUMN alt_phone TEXT`)
+  // Field Performance tab dimensions — added 2026-04-28.
+  if (!names.has('sales_company')) db.exec(`ALTER TABLE project_cache ADD COLUMN sales_company TEXT`)
+  if (!names.has('setter')) db.exec(`ALTER TABLE project_cache ADD COLUMN setter TEXT`)
+  if (!names.has('area_director')) db.exec(`ALTER TABLE project_cache ADD COLUMN area_director TEXT`)
+  if (!names.has('ahj_name')) db.exec(`ALTER TABLE project_cache ADD COLUMN ahj_name TEXT`)
+  if (!names.has('utility_company')) db.exec(`ALTER TABLE project_cache ADD COLUMN utility_company TEXT`)
+  if (!names.has('mpu_callout')) db.exec(`ALTER TABLE project_cache ADD COLUMN mpu_callout TEXT`)
 }
 
 // Field mapping: QB field ID → cache column
@@ -111,6 +118,13 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 1469, col: 'inspx_fail_date' },
   { fid: 1410, col: 'inspx_count' },
   { fid: 1073, col: 'inspx_passed_count' },
+  // Field Performance tab dimensions
+  { fid: 1637, col: 'sales_company' },        // Sales Company Name - Manual
+  { fid: 330, col: 'setter' },                // Setter
+  { fid: 828, col: 'area_director' },         // Closer Team Area Director
+  { fid: 318, col: 'ahj_name' },              // AHJ Name
+  { fid: 2535, col: 'utility_company' },      // Related Utility - Name
+  { fid: 2011, col: 'mpu_callout' },          // MPU Callout (electrical upgrade flag)
 ]
 
 const selectFids = fieldMap.map(f => f.fid)

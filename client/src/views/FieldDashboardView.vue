@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
+import FieldPerformance from '@/components/FieldPerformance.vue'
 
 // Field Ops dashboard — Vue rebuild of context-files/Field/example view.
 // Pulls Arrivy task data from /api/field/tasks (which proxies QuickBase),
@@ -49,7 +50,7 @@ const lateLoaded = ref(false)
 // ─── Filters / state ──
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | '30days'
 const preset = ref<Preset>('today')
-type Tab = 'leaderboard' | 'activity'
+type Tab = 'leaderboard' | 'activity' | 'performance'
 const tab = ref<Tab>('leaderboard')
 const searchTerm = ref('')
 
@@ -569,7 +570,7 @@ watch(preset, load)
 
       <!-- Tabs -->
       <div class="flex border-b border-border">
-        <button v-for="t in [{ k: 'leaderboard', l: 'Leaderboard' }, { k: 'activity', l: 'Activity Feed' }] as Array<{ k: Tab; l: string }>" :key="t.k"
+        <button v-for="t in [{ k: 'leaderboard', l: 'Leaderboard' }, { k: 'activity', l: 'Activity Feed' }, { k: 'performance', l: 'Performance' }] as Array<{ k: Tab; l: string }>" :key="t.k"
           class="flex-1 py-2.5 px-4 text-sm font-medium border-b-2 transition-colors"
           :class="tab === t.k ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground'"
           @click="tab = t.k"
@@ -636,7 +637,7 @@ watch(preset, load)
       </template>
 
       <!-- Activity feed tab -->
-      <template v-else>
+      <template v-else-if="tab === 'activity'">
         <template v-for="p in PERIODS" :key="p.key">
           <p v-if="activityByPeriod[p.key].length" class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground pt-2">{{ p.label }}</p>
           <div v-if="activityByPeriod[p.key].length" class="grid gap-2">
@@ -653,6 +654,11 @@ watch(preset, load)
           </div>
         </template>
         <p v-if="!filteredTasks.length" class="text-center text-sm text-muted-foreground py-6">No activities for this date range</p>
+      </template>
+
+      <!-- Performance tab — install volume + cycle-time analytics from project_cache -->
+      <template v-else-if="tab === 'performance'">
+        <FieldPerformance />
       </template>
     </template>
 
