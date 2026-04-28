@@ -1098,15 +1098,18 @@ onMounted(async () => {
     </div>
 
       <Tabs v-else default-value="users">
-        <TabsList class="mb-6">
-          <TabsTrigger value="users">Users</TabsTrigger>
-          <TabsTrigger value="roles">Roles</TabsTrigger>
-          <TabsTrigger value="departments">Departments</TabsTrigger>
-          <TabsTrigger value="permissions">Permissions</TabsTrigger>
-          <TabsTrigger value="feedback">Feedback</TabsTrigger>
-          <TabsTrigger value="agent-review">Agent Review</TabsTrigger>
-          <TabsTrigger value="qb-sync">QB Sync</TabsTrigger>
-          <TabsTrigger value="test-user">Test as User</TabsTrigger>
+        <!-- 8 tabs in one row blow past 390px. Allow horizontal scroll
+             on the strip (approved exception per the no-h-scroll rule)
+             and let it breathe to the full viewport width. -->
+        <TabsList class="mb-6 max-w-full overflow-x-auto no-scrollbar flex-nowrap justify-start">
+          <TabsTrigger value="users" class="shrink-0">Users</TabsTrigger>
+          <TabsTrigger value="roles" class="shrink-0">Roles</TabsTrigger>
+          <TabsTrigger value="departments" class="shrink-0">Departments</TabsTrigger>
+          <TabsTrigger value="permissions" class="shrink-0">Permissions</TabsTrigger>
+          <TabsTrigger value="feedback" class="shrink-0">Feedback</TabsTrigger>
+          <TabsTrigger value="agent-review" class="shrink-0">Agent Review</TabsTrigger>
+          <TabsTrigger value="qb-sync" class="shrink-0">QB Sync</TabsTrigger>
+          <TabsTrigger value="test-user" class="shrink-0">Test as User</TabsTrigger>
         </TabsList>
 
         <!-- ════════════ USERS TAB ════════════ -->
@@ -1169,30 +1172,32 @@ onMounted(async () => {
               <p v-if="inviteError" class="text-sm text-destructive">{{ inviteError }}</p>
 
               <div>
-                <Button @click="inviteUser" :disabled="inviteSubmitting">
-                  {{ inviteSubmitting ? 'Creating...' : 'Create & Generate Invite Link' }}
+                <Button class="w-full sm:w-auto" @click="inviteUser" :disabled="inviteSubmitting">
+                  <span class="hidden sm:inline">{{ inviteSubmitting ? 'Creating...' : 'Create & Generate Invite Link' }}</span>
+                  <span class="sm:hidden">{{ inviteSubmitting ? 'Creating…' : 'Create + Invite Link' }}</span>
                 </Button>
               </div>
 
-              <!-- Invite link result -->
+              <!-- Invite link result. Stacks on mobile so the link
+                   doesn't get squeezed by the Copy button. -->
               <div
                 v-if="lastInviteLink"
-                class="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-800 p-4 space-y-3"
+                class="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-800 p-4 space-y-3 min-w-0"
               >
                 <p class="text-sm font-medium text-green-800 dark:text-green-300">
                   User created. Send them this link to set their password:
                 </p>
-                <div class="flex gap-2">
+                <div class="flex flex-col sm:flex-row gap-2 min-w-0">
                   <Input
                     :model-value="lastInviteLink"
                     readonly
-                    class="font-mono text-xs flex-1"
+                    class="font-mono text-xs flex-1 min-w-0"
                     @focus="($event.target as HTMLInputElement).select()"
                   />
                   <Button
                     variant="outline"
                     size="sm"
-                    class="shrink-0"
+                    class="shrink-0 w-full sm:w-auto"
                     @click="copyInviteLink"
                   >
                     {{ inviteCopied ? 'Copied!' : 'Copy' }}
@@ -1211,79 +1216,118 @@ onMounted(async () => {
                 {{ users.length }} user{{ users.length === 1 ? '' : 's' }} registered. These accounts are independent of QuickBase.
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead>Roles</TableHead>
-                    <TableHead>Departments</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead class="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow v-for="u in users" :key="u.id">
-                    <TableCell>
-                      <div>
-                        <p class="font-medium text-sm">{{ u.name }}</p>
-                        <p class="text-xs text-muted-foreground">{{ u.email }}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div class="flex gap-2 flex-wrap items-center">
-                        <Badge
-                          v-for="r in u.roles"
-                          :key="r"
-                          :variant="r === 'admin' ? 'default' : 'secondary'"
-                          class="text-xs"
-                        >
-                          {{ normalizeDisplayRole(r) }}
-                        </Badge>
-                        <span v-if="u.roles.length === 0" class="text-xs text-muted-foreground italic">
-                          no roles
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div class="flex gap-2 flex-wrap items-center">
-                        <Badge v-for="d in (u.departments || [])" :key="d.id" variant="outline" class="text-xs">
-                          {{ d.name }}
-                        </Badge>
-                        <span v-if="!u.departments || u.departments.length === 0" class="text-xs text-muted-foreground italic">none</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div class="flex items-center gap-2">
-                        <span
-                          class="h-2 w-2 rounded-full"
-                          :class="u.is_active ? 'bg-green-500' : 'bg-muted-foreground/30'"
-                        />
-                        <span class="text-xs text-muted-foreground">
-                          {{ u.is_active ? 'Active' : 'Inactive' }}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell class="text-right">
-                      <div class="flex items-center justify-end gap-2 flex-wrap">
-                        <Button variant="ghost" size="sm" @click="openEditAccess(u)">
-                          Edit access
-                        </Button>
-                        <Button variant="ghost" size="sm" @click="sendPasswordReset(u)">
-                          Send reset
-                        </Button>
-                        <Button
-                          :variant="u.is_active ? 'ghost' : 'outline'"
-                          size="sm"
-                          @click="toggleUserActive(u)"
-                        >
-                          {{ u.is_active ? 'Deactivate' : 'Activate' }}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
+            <CardContent class="px-0 sm:px-6">
+              <!-- Desktop table — hidden under sm. -->
+              <div class="hidden sm:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>User</TableHead>
+                      <TableHead>Roles</TableHead>
+                      <TableHead>Departments</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead class="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow v-for="u in users" :key="u.id">
+                      <TableCell>
+                        <div>
+                          <p class="font-medium text-sm">{{ u.name }}</p>
+                          <p class="text-xs text-muted-foreground">{{ u.email }}</p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div class="flex gap-2 flex-wrap items-center">
+                          <Badge
+                            v-for="r in u.roles"
+                            :key="r"
+                            :variant="r === 'admin' ? 'default' : 'secondary'"
+                            class="text-xs"
+                          >
+                            {{ normalizeDisplayRole(r) }}
+                          </Badge>
+                          <span v-if="u.roles.length === 0" class="text-xs text-muted-foreground italic">
+                            no roles
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div class="flex gap-2 flex-wrap items-center">
+                          <Badge v-for="d in (u.departments || [])" :key="d.id" variant="outline" class="text-xs">
+                            {{ d.name }}
+                          </Badge>
+                          <span v-if="!u.departments || u.departments.length === 0" class="text-xs text-muted-foreground italic">none</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div class="flex items-center gap-2">
+                          <span
+                            class="h-2 w-2 rounded-full"
+                            :class="u.is_active ? 'bg-green-500' : 'bg-muted-foreground/30'"
+                          />
+                          <span class="text-xs text-muted-foreground">
+                            {{ u.is_active ? 'Active' : 'Inactive' }}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell class="text-right">
+                        <div class="flex items-center justify-end gap-2 flex-wrap">
+                          <Button variant="ghost" size="sm" @click="openEditAccess(u)">
+                            Edit access
+                          </Button>
+                          <Button variant="ghost" size="sm" @click="sendPasswordReset(u)">
+                            Send reset
+                          </Button>
+                          <Button
+                            :variant="u.is_active ? 'ghost' : 'outline'"
+                            size="sm"
+                            @click="toggleUserActive(u)"
+                          >
+                            {{ u.is_active ? 'Deactivate' : 'Activate' }}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+
+              <!-- Mobile cards — one stacked card per user, badges
+                   wrap, action buttons sit below in a single row. -->
+              <div class="sm:hidden divide-y border-y">
+                <div v-for="u in users" :key="u.id" class="px-3 py-3 space-y-2 min-w-0">
+                  <div class="flex items-start justify-between gap-2 min-w-0">
+                    <div class="min-w-0 flex-1">
+                      <p class="font-medium text-sm truncate">{{ u.name }}</p>
+                      <p class="text-xs text-muted-foreground truncate">{{ u.email }}</p>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      <span class="h-2 w-2 rounded-full" :class="u.is_active ? 'bg-green-500' : 'bg-muted-foreground/30'" />
+                      <span class="text-[11px] text-muted-foreground">{{ u.is_active ? 'Active' : 'Inactive' }}</span>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <Badge v-for="r in u.roles" :key="r" :variant="r === 'admin' ? 'default' : 'secondary'" class="text-[10px]">
+                      {{ normalizeDisplayRole(r) }}
+                    </Badge>
+                    <span v-if="u.roles.length === 0" class="text-[11px] text-muted-foreground italic">no roles</span>
+                    <Badge v-for="d in (u.departments || [])" :key="`dept-${d.id}`" variant="outline" class="text-[10px]">
+                      {{ d.name }}
+                    </Badge>
+                  </div>
+
+                  <div class="flex items-center gap-1.5 flex-wrap pt-0.5">
+                    <Button variant="outline" size="sm" class="h-8 text-[11px] flex-1 min-w-0" @click="openEditAccess(u)">Edit access</Button>
+                    <Button variant="outline" size="sm" class="h-8 text-[11px] flex-1 min-w-0" @click="sendPasswordReset(u)">Send reset</Button>
+                    <Button :variant="u.is_active ? 'ghost' : 'outline'" size="sm" class="h-8 text-[11px] flex-1 min-w-0" @click="toggleUserActive(u)">
+                      {{ u.is_active ? 'Deactivate' : 'Activate' }}
+                    </Button>
+                  </div>
+                </div>
+                <div v-if="users.length === 0" class="px-3 py-6 text-center text-[11px] text-muted-foreground">No users yet.</div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
