@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
+import CommsHeatmap from '@/components/CommsHeatmap.vue'
 import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
 import CommsInbox from '@/components/CommsInbox.vue'
 import { useCommsRail } from '@/composables/useCommsRail'
@@ -550,6 +551,19 @@ function setMainTab(t: CommsTab) {
         :from="dateFrom || undefined"
         :to="dateTo || undefined"
       />
+
+      <!-- Inbound-volume heatmap — when are we busy? Day-of-week × hour
+           of day with its own filter strip. Independent of the date
+           range above so users can compare different windows. -->
+      <div class="rounded-xl border bg-card overflow-hidden">
+        <div class="px-3 sm:px-4 py-2.5 border-b">
+          <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">When are we busy?</p>
+          <p class="text-[10px] text-muted-foreground mt-0.5">Combined inbound calls + texts. Filter by user, department, or contact-center entry point.</p>
+        </div>
+        <div class="p-3 sm:p-4">
+          <CommsHeatmap />
+        </div>
+      </div>
     </template>
     </template>
   </div>

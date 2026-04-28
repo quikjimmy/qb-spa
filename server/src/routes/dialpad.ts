@@ -2206,6 +2206,190 @@ router.get('/team-live', (req: Request, res: Response): void => {
   })
 })
 
+// ── Inbound-volume heatmap (day-of-week × hour-of-day) ──
+// Combines inbound calls (dialpad_call_records, direction=inbound)
+// with inbound SMS (dialpad_events, event_kind=sms, direction=
+// incoming) into a single 7×24 grid. Powers the Comms Hub Reporting
+// "When are we busy?" view. Filterable by user_email, department,
+// or contact-center entry point. Times bucket in the server's local
+// timezone (Railway is UTC; for now we report in UTC and the client
+// renders the headers as such — if a future ticket needs America/
+// Denver bucketing we can pipe a tz override through the query).
+router.get('/heatmap', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+
+  const fromStr = String(req.query['from'] || '').trim()
+  const toStr = String(req.query['to'] || '').trim()
+  const userEmail = String(req.query['user_email'] || '').trim()
+  const departmentId = parseInt(String(req.query['department_id'] || ''), 10) || null
+  const contactCenter = String(req.query['contact_center'] || '').trim()
+
+  // Default window: trailing 30 days.
+  const today = new Date()
+  const todayIso = today.toISOString().slice(0, 10)
+  const defaultFrom = new Date(today); defaultFrom.setDate(defaultFrom.getDate() - 30)
+  const from = fromStr || defaultFrom.toISOString().slice(0, 10)
+  const to = toStr || todayIso
+
+  // Department membership → set of user_emails. Empty set means we
+  // skip the filter (no department restriction).
+  let deptEmails: string[] = []
+  if (departmentId) {
+    const rows = db.prepare(`
+      SELECT DISTINCT uel.email
+      FROM user_departments ud
+      JOIN user_email_lookup uel ON uel.user_id = ud.user_id
+      WHERE ud.department_id = ?
+    `).all(departmentId) as Array<{ email: string }>
+    deptEmails = rows.map(r => r.email).filter(Boolean)
+    if (deptEmails.length === 0) {
+      // No matching emails — return an empty grid rather than
+      // a query that nukes the WHERE clause's IN ().
+      res.json({
+        window: { from, to },
+        filters_applied: { user_email: userEmail || null, department_id: departmentId, contact_center: contactCenter || null },
+        buckets: [], max_bucket: 0,
+        totals: { calls: 0, sms: 0, combined: 0 },
+        filter_options: getHeatmapFilterOptions(),
+      })
+      return
+    }
+  }
+
+  // ── Calls ──
+  const callWhere: string[] = [
+    `r.direction = 'inbound'`,
+    `substr(r.started_at, 1, 10) >= ?`,
+    `substr(r.started_at, 1, 10) <= ?`,
+  ]
+  const callParams: unknown[] = [from, to]
+  if (userEmail) {
+    callWhere.push(`LOWER(TRIM(r.user_email)) = LOWER(TRIM(?))`)
+    callParams.push(userEmail)
+  }
+  if (deptEmails.length > 0) {
+    callWhere.push(`LOWER(TRIM(r.user_email)) IN (${deptEmails.map(() => '?').join(',')})`)
+    callParams.push(...deptEmails.map(e => e.toLowerCase().trim()))
+  }
+  if (contactCenter) {
+    callWhere.push(`r.entry_point_target_kind = ?`)
+    callParams.push(contactCenter)
+  }
+  // strftime('%w') = day of week (0 = Sunday, 6 = Saturday)
+  // strftime('%H') = hour 00–23. SQLite default is UTC; we leave it
+  // UTC for now (the client renders the labels as-is). The Z suffix
+  // is required so SQLite parses these as ISO-8601, not local.
+  const callRows = db.prepare(`
+    SELECT CAST(strftime('%w', r.started_at) AS INTEGER) AS dow,
+           CAST(strftime('%H', r.started_at) AS INTEGER) AS hour,
+           COUNT(*) AS count
+    FROM dialpad_call_records r
+    WHERE ${callWhere.join(' AND ')}
+    GROUP BY dow, hour
+  `).all(...callParams) as Array<{ dow: number; hour: number; count: number }>
+
+  // ── SMS (received only) ──
+  const smsWhere: string[] = [
+    `e.event_kind = 'sms'`,
+    `LOWER(COALESCE(e.direction, '')) = 'incoming'`,
+    `substr(e.received_at, 1, 10) >= ?`,
+    `substr(e.received_at, 1, 10) <= ?`,
+  ]
+  const smsParams: unknown[] = [from, to]
+  if (userEmail) {
+    smsWhere.push(`LOWER(TRIM(COALESCE(e.user_email, ''))) = LOWER(TRIM(?))`)
+    smsParams.push(userEmail)
+  }
+  if (deptEmails.length > 0) {
+    smsWhere.push(`LOWER(TRIM(COALESCE(e.user_email, ''))) IN (${deptEmails.map(() => '?').join(',')})`)
+    smsParams.push(...deptEmails.map(e => e.toLowerCase().trim()))
+  }
+  // SMS-side contact-center filter is not surfaced — the SMS event
+  // payload has target.type but we don't store it in a column. If
+  // the user picked a contact-center filter, count SMS as 0 rather
+  // than mis-attributing.
+  const smsRows = contactCenter
+    ? []
+    : db.prepare(`
+        SELECT CAST(strftime('%w', e.received_at) AS INTEGER) AS dow,
+               CAST(strftime('%H', e.received_at) AS INTEGER) AS hour,
+               COUNT(*) AS count
+        FROM dialpad_events e
+        WHERE ${smsWhere.join(' AND ')}
+        GROUP BY dow, hour
+      `).all(...smsParams) as Array<{ dow: number; hour: number; count: number }>
+
+  // Merge into a single 7×24 matrix, also tracking the per-source
+  // splits so the tooltip can show "X calls + Y texts".
+  const grid = new Map<string, { calls: number; sms: number }>()
+  function bump(dow: number, hour: number, kind: 'calls' | 'sms', n: number) {
+    const k = `${dow}:${hour}`
+    let cur = grid.get(k)
+    if (!cur) { cur = { calls: 0, sms: 0 }; grid.set(k, cur) }
+    cur[kind] += n
+  }
+  for (const r of callRows) bump(r.dow, r.hour, 'calls', r.count)
+  for (const r of smsRows) bump(r.dow, r.hour, 'sms', r.count)
+
+  let maxBucket = 0
+  let totalCalls = 0, totalSms = 0
+  const buckets: Array<{ dow: number; hour: number; calls: number; sms: number; total: number }> = []
+  for (const [key, v] of grid.entries()) {
+    const [d, h] = key.split(':').map(Number)
+    const total = v.calls + v.sms
+    if (total > maxBucket) maxBucket = total
+    totalCalls += v.calls
+    totalSms += v.sms
+    buckets.push({ dow: d!, hour: h!, calls: v.calls, sms: v.sms, total })
+  }
+
+  res.json({
+    window: { from, to },
+    filters_applied: {
+      user_email: userEmail || null,
+      department_id: departmentId,
+      contact_center: contactCenter || null,
+    },
+    buckets,
+    max_bucket: maxBucket,
+    totals: { calls: totalCalls, sms: totalSms, combined: totalCalls + totalSms },
+    filter_options: getHeatmapFilterOptions(),
+  })
+})
+
+interface HeatmapFilterOptions {
+  users: Array<{ email: string; name: string | null }>
+  departments: Array<{ id: number; name: string }>
+  contact_centers: Array<{ value: string; count: number }>
+}
+function getHeatmapFilterOptions(): HeatmapFilterOptions {
+  // Users with any inbound activity in the last 90 days. Falls back
+  // to user_email_lookup so unmatched Dialpad users still appear.
+  const users = db.prepare(`
+    SELECT DISTINCT TRIM(LOWER(r.user_email)) AS email,
+           COALESCE(u.name, r.user_name) AS name
+    FROM dialpad_call_records r
+    LEFT JOIN user_email_lookup uel ON uel.email = TRIM(LOWER(r.user_email)) AND uel.system IN ('', 'dialpad')
+    LEFT JOIN users u ON u.id = uel.user_id
+    WHERE r.user_email IS NOT NULL AND TRIM(r.user_email) != ''
+      AND substr(r.started_at, 1, 10) >= date('now', '-90 days')
+    ORDER BY name COLLATE NOCASE
+  `).all() as Array<{ email: string; name: string | null }>
+
+  const departments = db.prepare(`SELECT id, name FROM departments ORDER BY name COLLATE NOCASE`).all() as Array<{ id: number; name: string }>
+
+  const contactCenters = db.prepare(`
+    SELECT entry_point_target_kind AS value, COUNT(*) AS count
+    FROM dialpad_call_records
+    WHERE entry_point_target_kind IS NOT NULL AND entry_point_target_kind != ''
+      AND substr(started_at, 1, 10) >= date('now', '-90 days')
+    GROUP BY entry_point_target_kind
+    ORDER BY count DESC
+  `).all() as Array<{ value: string; count: number }>
+
+  return { users, departments, contact_centers: contactCenters }
+}
+
 // List coordinator names from Dialpad data for filter dropdowns
 router.get('/coordinators', (_req: Request, res: Response): void => {
   const rows = db.prepare(`
