@@ -1024,10 +1024,16 @@ router.get('/phone-fields-probe', async (req: Request, res: Response): Promise<v
 })
 
 // ─── Tier scheduler bootstrap ────────────────────────────
-// Each tier owns its own cron entry. Errors are caught + logged so
-// one tier's failure can't kill the others; tier_runs table records
-// the outcome either way.
+// Each tier owns its own cron entry. Hot/warm/cool tiers are gated
+// on app activity — if no authenticated user has hit the API in
+// ACTIVITY_WINDOW_MS, the tier run skips so we don't burn QB API
+// budget overnight / on weekends / holidays. Cold tier always runs
+// (cheap once-daily sweep + the promotion path for tier transitions
+// that happened while everyone was offline).
 import cron from 'node-cron'
+import { isAppActive } from '../lib/activity'
+
+const ACTIVITY_WINDOW_MS = 30 * 60_000
 
 let schedulerStarted = false
 export function startProjectCacheScheduler(): void {
@@ -1038,6 +1044,10 @@ export function startProjectCacheScheduler(): void {
       try {
         // Skip silently if QB isn't configured — keeps local dev clean.
         if (!getQbConfig().token) return
+        // Off-hours guard: skip hot/warm/cool when nobody's around.
+        // Cold runs regardless so terminal-state classification stays
+        // accurate even after a fully-quiet day.
+        if (tier !== 'cold' && !isAppActive(ACTIVITY_WINDOW_MS)) return
         const result = await refreshTier(tier)
         if (result.rows > 0) console.log(`[project-cache] tier=${tier} updated ${result.rows} rows in ${result.duration}ms`)
       } catch (e) {
@@ -1045,7 +1055,7 @@ export function startProjectCacheScheduler(): void {
       }
     })
   }
-  console.log('[project-cache] tier scheduler started: hot=5m warm=30m cool=6h cold=24h')
+  console.log('[project-cache] scheduler started: hot=5m warm=30m cool=6h cold=24h (hot/warm/cool gated on user activity)')
 }
 
 export { router as projectsRouter }
