@@ -78,6 +78,11 @@ const router = createRouter({
           component: () => import('../views/CommsHubView.vue'),
         },
         {
+          path: 'agents/coming-soon',
+          name: 'agents-coming-soon',
+          component: () => import('../views/AgentsComingSoon.vue'),
+        },
+        {
           path: 'agents',
           name: 'agents',
           component: () => import('../views/AgentsView.vue'),
@@ -119,13 +124,47 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+// Agents section is under construction. Default everyone to the
+// teaser at /agents/coming-soon. Admins can opt in to the WIP via:
+//   1. URL: append ?preview=1 to /agents (or any sub-route)
+//   2. Persisted: localStorage 'agents.preview' = '1' (set by the
+//      teaser's "Preview WIP" button so subsequent navigations stay
+//      in WIP without re-passing the query).
+function shouldShowAgentsTeaser(
+  toPath: string,
+  toQuery: Record<string, unknown>,
+  isAdmin: boolean,
+): boolean {
+  if (!toPath.startsWith('/agents')) return false
+  if (toPath === '/agents/coming-soon') return false
+  if (!isAdmin) return true
+  const previewQuery = toQuery['preview'] === '1'
+  let previewStored = false
+  try { previewStored = localStorage.getItem('agents.preview') === '1' } catch { /* ignore */ }
+  return !(previewQuery || previewStored)
+}
+
+router.beforeEach(async (to) => {
   const token = localStorage.getItem('token')
   if (to.meta.requiresAuth && !token) {
     return { name: 'login' }
   }
   if ((to.name === 'login' || to.name === 'register') && token) {
     return { name: 'home' }
+  }
+  if (!token) return
+  // Lazy-resolve the auth store (Pinia is mounted before the first
+  // navigation completes, but this keeps the import out of the
+  // module's static graph).
+  const { useAuthStore } = await import('@/stores/auth')
+  const auth = useAuthStore()
+  // The store may not have hydrated user data yet on a hard reload —
+  // pull it once if missing so the gate reads accurate role info.
+  if (!auth.user && auth.token) {
+    try { await auth.fetchUser() } catch { /* ignore — fall through as non-admin */ }
+  }
+  if (shouldShowAgentsTeaser(to.path, to.query as Record<string, unknown>, auth.isAdmin)) {
+    return { path: '/agents/coming-soon' }
   }
 })
 
