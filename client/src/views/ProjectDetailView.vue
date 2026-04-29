@@ -176,6 +176,18 @@ const error = ref<string | null>(null)
 const comms = ref<CommItem[]>([])
 const tickets = ref<Ticket[]>([])
 const rawFeed = ref<FeedRow[]>([])
+interface NoteRow {
+  record_id: number
+  date_created: string | null
+  date_modified: string | null
+  record_owner: string | null
+  last_modified_by: string | null
+  note: string | null
+  category: string | null
+  notify_pm: number
+  notify_rep: number
+}
+const notes = ref<NoteRow[]>([])
 const starred = ref(false)
 
 const isDesktop = ref(false)
@@ -318,6 +330,15 @@ async function loadTickets() {
   } catch { /* ignore */ }
 }
 
+async function loadNotes() {
+  try {
+    const res = await fetch(`/api/notes?project_id=${recordId.value}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    notes.value = (data.items as NoteRow[]) ?? []
+  } catch { /* ignore */ }
+}
+
 async function loadFeed() {
   try {
     const res = await fetch(`/api/feed?project_id=${recordId.value}&limit=200`, { headers: hdrs() })
@@ -441,7 +462,7 @@ async function loadArrivy() {
 }
 
 async function loadAll() {
-  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed(), loadArrivy()])
+  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed(), loadNotes(), loadArrivy()])
 }
 
 async function toggleStar() {
@@ -471,6 +492,25 @@ const feedItems = computed<FeedRow[]>(() => {
       title,
       body: body ?? (c.type === 'sms' ? c.body ?? null : null),
       actor_name: c.user_name ?? c.contact_name ?? null,
+    })
+  }
+  // QB notes — merged with event_type 'note_added' (matches the existing
+  // feed_items convention) so the "Notes" filter chip surfaces them too.
+  // Title is the first line of the note (or the category as fallback);
+  // body is the full text. Category goes into the chip slot we already
+  // render above the title.
+  for (const n of notes.value) {
+    if (!n.date_created) continue
+    const noteText = (n.note ?? '').trim()
+    const firstLine = noteText.split('\n')[0]?.slice(0, 140) || (n.category ?? 'Note')
+    merged.push({
+      id: `n:${n.record_id}`,
+      occurred_at: n.date_created,
+      event_type: 'note_added',
+      title: firstLine,
+      body: noteText && noteText !== firstLine ? noteText : null,
+      actor_name: n.last_modified_by ?? n.record_owner ?? null,
+      category: n.category ?? null,
     })
   }
   return merged

@@ -15,6 +15,7 @@ import { projectsRouter } from './routes/projects'
 import { ticketsRouter } from './routes/tickets'
 import { addersRouter } from './routes/adders'
 import { attachmentsRouter } from './routes/attachments'
+import { notesRouter } from './routes/notes'
 import { ptoAnalyticsRouter } from './routes/pto-analytics'
 import { ptoCacheRouter } from './routes/pto-cache'
 import { inspxAnalyticsRouter } from './routes/inspx-analytics'
@@ -70,6 +71,7 @@ app.use('/api/projects', authenticate, projectsRouter)
 app.use('/api/tickets', authenticate, ticketsRouter)
 app.use('/api/adders', authenticate, addersRouter)
 app.use('/api/attachments', authenticate, attachmentsRouter)
+app.use('/api/notes', authenticate, notesRouter)
 app.use('/api/analytics/pto', authenticate, ptoAnalyticsRouter)
 app.use('/api/pto', authenticate, ptoCacheRouter)
 app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
