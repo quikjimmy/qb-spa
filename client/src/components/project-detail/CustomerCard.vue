@@ -120,11 +120,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
             :href="qbHref"
             target="_blank"
             rel="noopener"
-            class="size-6 rounded-md flex items-center justify-center hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+            class="size-6 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
             title="Open in Quickbase"
             aria-label="Open in Quickbase"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M14 4H20V10M20 4L10 14M19 14V19C19 19.6 18.6 20 18 20H5C4.4 20 4 19.6 4 19V6C4 5.4 4.4 5 5 5H10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <img src="/integrations/qb.png" alt="" class="size-4 object-contain" loading="lazy" />
           </a>
           <span v-if="driveHref || enerfloHref || arrivyHref" class="text-slate-200" aria-hidden="true">|</span>
           <a
@@ -132,11 +132,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
             :href="driveHref"
             target="_blank"
             rel="noopener"
-            class="size-6 rounded-md flex items-center justify-center hover:text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+            class="size-6 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
             title="Open Google Drive folder"
             aria-label="Open Google Drive"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M8 4L4 12L8 20H16L20 12L16 4H8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 4L12 12L16 4M4 12H20M16 20L12 12L8 20" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <img src="/integrations/drive.png" alt="" class="size-4 object-contain" loading="lazy" />
           </a>
           <span v-if="driveHref && (enerfloHref || arrivyHref)" class="text-slate-200" aria-hidden="true">|</span>
           <a
@@ -144,11 +144,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
             :href="enerfloHref"
             target="_blank"
             rel="noopener"
-            class="size-6 rounded-md flex items-center justify-center hover:text-orange-600 hover:bg-orange-50 transition-colors cursor-pointer"
+            class="size-6 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
             title="Open in Enerflo"
             aria-label="Open in Enerflo"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 12L12 4L21 12L12 20L3 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 12L12 9L15 12L12 15L9 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <img src="/integrations/enerflo.png" alt="" class="size-4 object-contain" loading="lazy" />
           </a>
           <span v-if="enerfloHref && arrivyHref" class="text-slate-200" aria-hidden="true">|</span>
           <a
@@ -156,11 +156,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
             :href="arrivyHref"
             target="_blank"
             rel="noopener"
-            class="size-6 rounded-md flex items-center justify-center hover:text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+            class="size-6 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
             title="Open in Arrivy"
             aria-label="Open in Arrivy"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M3 9H21M8 3V7M16 3V7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <img src="/integrations/arrivy.png" alt="" class="size-4 object-contain" loading="lazy" />
           </a>
         </div>
       </div>
@@ -181,11 +181,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
         :href="qbHref"
         target="_blank"
         rel="noopener"
-        class="size-7 rounded-md flex items-center justify-center hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+        class="size-7 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
         title="Open in Quickbase"
         aria-label="Open in Quickbase"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M14 4H20V10M20 4L10 14M19 14V19C19 19.6 18.6 20 18 20H5C4.4 20 4 19.6 4 19V6C4 5.4 4.4 5 5 5H10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <img src="/integrations/qb.png" alt="" class="size-[18px] object-contain" loading="lazy" />
       </a>
       <span v-if="qbHref && (driveHref || enerfloHref || arrivyHref)" class="text-slate-200" aria-hidden="true">|</span>
       <a
@@ -193,11 +193,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
         :href="driveHref"
         target="_blank"
         rel="noopener"
-        class="size-7 rounded-md flex items-center justify-center hover:text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+        class="size-7 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
         title="Open Google Drive folder"
         aria-label="Open Google Drive"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M8 4L4 12L8 20H16L20 12L16 4H8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 4L12 12L16 4M4 12H20M16 20L12 12L8 20" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <img src="/integrations/drive.png" alt="" class="size-[18px] object-contain" loading="lazy" />
       </a>
       <span v-if="driveHref && (enerfloHref || arrivyHref)" class="text-slate-200" aria-hidden="true">|</span>
       <a
@@ -205,11 +205,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
         :href="enerfloHref"
         target="_blank"
         rel="noopener"
-        class="size-7 rounded-md flex items-center justify-center hover:text-orange-600 hover:bg-orange-50 transition-colors cursor-pointer"
+        class="size-7 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
         title="Open in Enerflo"
         aria-label="Open in Enerflo"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 12L12 4L21 12L12 20L3 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 12L12 9L15 12L12 15L9 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <img src="/integrations/enerflo.png" alt="" class="size-[18px] object-contain" loading="lazy" />
       </a>
       <span v-if="enerfloHref && arrivyHref" class="text-slate-200" aria-hidden="true">|</span>
       <a
@@ -217,11 +217,11 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
         :href="arrivyHref"
         target="_blank"
         rel="noopener"
-        class="size-7 rounded-md flex items-center justify-center hover:text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+        class="size-7 rounded-md flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
         title="Open in Arrivy"
         aria-label="Open in Arrivy"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M3 9H21M8 3V7M16 3V7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <img src="/integrations/arrivy.png" alt="" class="size-[18px] object-contain" loading="lazy" />
       </a>
     </div>
 

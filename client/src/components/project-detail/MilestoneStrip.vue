@@ -119,15 +119,16 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
         :title="s.durationLabel.includes('open') ? 'Days open in this milestone' : 'Total biz days from submit to approve'"
       >{{ s.durationLabel }}</div>
 
-      <!-- Selected indicator: a single teal accent bar with a soft glow,
-           anchored to the bottom of the cell. Replaces the prior bg-white
-           box treatment so the strip stays calm and the dot/date keep
-           visual primacy. -->
+      <!-- Selected indicator: thin pill bar with a soft 360° glow — same
+           shape/feel as the original teal version, but in a neutral slate
+           tone so the indicator never reads as "good"/"bad". Inset from
+           the cell edges (left-5/right-5) so the glow stays inside its
+           own column and doesn't bleed onto the neighbors. -->
       <span
         v-if="activeId === s.id"
         aria-hidden="true"
-        class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-teal-500"
-        style="box-shadow: 0 0 8px 1px rgba(20, 184, 166, 0.55), 0 0 2px rgba(15, 118, 110, 0.5);"
+        class="absolute bottom-1 left-[18%] right-[18%] h-px rounded-full bg-gray-400/30 pointer-events-none"
+        style="box-shadow: 0 0 16px 3px rgba(156, 163, 175, 0.55), 0 0 6px 1px rgba(156, 163, 175, 0.4);"
       />
     </button>
   </div>
