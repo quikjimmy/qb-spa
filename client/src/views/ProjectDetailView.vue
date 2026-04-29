@@ -769,6 +769,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :cancel-phase="selectedStepArrivy?.cancelPhase ?? null"
             :cancelled-at="selectedStepArrivy?.cancelledAt ?? null"
             :cancelled-by="selectedStepArrivy?.cancelledBy ?? null"
+            :project-rid="project.record_id"
             @close="closeDetail"
           />
         </div>

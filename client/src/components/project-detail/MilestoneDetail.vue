@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { StripStep } from '@/lib/milestoneStrip'
 import { fmtFull } from '@/lib/milestoneStrip'
 import { STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
+import IntakeChecklist from './IntakeChecklist.vue'
 
 interface FeedRow {
   id: string | number
@@ -29,6 +30,9 @@ const props = defineProps<{
   cancelPhase?: 'onsite' | 'enroute' | 'scheduled' | null
   cancelledAt?: string | null
   cancelledBy?: string | null
+  /** Project record ID — used to fetch related child-table data (intake
+   *  events, etc.) only for the steps that need it. */
+  projectRid?: number | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -184,6 +188,12 @@ function fmtTime(s: string): string {
           <span>{{ item }}</span>
         </li>
       </ul>
+    </div>
+
+    <!-- Intake checklist grid — only renders when the Intake step is
+         selected. Pulls multi-attempt KCA results from /api/intake. -->
+    <div v-if="step.id === 'intake' && projectRid" class="px-4 pb-4">
+      <IntakeChecklist :project-rid="projectRid" />
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">
