@@ -14,6 +14,10 @@ interface Props {
   /** Compact mode trims auditor/date detail above the grid — used when the
    *  component is embedded in a tight rail. Defaults to full. */
   compact?: boolean
+  /** Project-level intake decision (Approved / Rejected / Pending). Drives
+   *  the pill in the header. Comes from project_cache.intake_status (fid 347)
+   *  — the per-event row doesn't carry status. */
+  status?: string | null
 }
 const props = defineProps<Props>()
 
@@ -23,7 +27,6 @@ interface IntakeEvent {
   date_created: string | null
   date_modified: string | null
   last_modified_by: string | null
-  status: string | null
   install_agreement: string | null
   finance: string | null
   finance_missing_items: string | null
@@ -102,11 +105,13 @@ function fmtFullDate(s: string | null): string {
   return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
-// Latest event status (drives the green "Approved" pill in the header)
+// Project-level intake status drives the pill (Approved / Rejected / Pending).
+// Latest event reference is still useful for the date/auditor line beneath
+// the header.
 const latestEvent = computed<IntakeEvent | null>(() => items.value[items.value.length - 1] ?? null)
-const latestStatus = computed<string>(() => latestEvent.value?.status ?? '')
-const isApproved = computed(() => /approve|pass|complete/i.test(latestStatus.value))
-const isRejected = computed(() => /reject|fail/i.test(latestStatus.value))
+const projectStatus = computed<string>(() => (props.status ?? '').trim())
+const isApproved = computed(() => /approve|pass|complete/i.test(projectStatus.value))
+const isRejected = computed(() => /reject|fail/i.test(projectStatus.value))
 
 // Pass count on the latest attempt — drives the "7/7" header label.
 const latestPassCount = computed(() => {
@@ -136,14 +141,14 @@ const latestPassCount = computed(() => {
         {{ latestPassCount }}/{{ CHECKLIST.length }} · {{ items.length }} intake event{{ items.length === 1 ? '' : 's' }}
       </span>
       <span
-        v-if="!loading && latestStatus"
+        v-if="!loading && projectStatus"
         class="inline-flex items-center px-2 py-[2px] rounded-full text-[10px] font-medium"
         :class="[
           isApproved ? 'bg-emerald-50 text-emerald-700' : '',
           isRejected ? 'bg-rose-50 text-rose-700' : '',
           !isApproved && !isRejected ? 'bg-slate-100 text-slate-600' : '',
         ]"
-      >{{ latestStatus }}</span>
+      >{{ projectStatus }}</span>
     </button>
 
     <!-- States -->

@@ -12,32 +12,30 @@ function getQbConfig() {
 
 // QB Intake Events table: bt4a8ypkq
 //
-// Confirmed FIDs from product:
+//   1   Date Created
+//   2   Date Modified
+//   3   Record ID#
+//   5   Last Modified By (auditor)
+//   36  Related Project (numeric → project.record_id)   ← confirmed
 //   40  Install Agreement
 //   46  Finance
-//   81  Finance Missing Items
 //   48  Utility Bill
 //   55  Consumption Audit
 //   58  Site Survey
 //   61  Welcome Call
 //   67  Adders
+//   81  Finance Missing Items
 //
-// FIDs assumed (common QB defaults — may need correction):
-//   1   Date Created
-//   2   Date Modified
-//   3   Record ID#
-//   5   Last Modified By (auditor / reviewer)
-//
-// FIDs needed (TODO — user to confirm and replace these placeholder IDs):
-//   ? Related Project (numeric → project.record_id)        currently: 7
-//   ? Status / Decision (Approved / Rejected / Pending)    currently: 91
+// Intake decision (Approved / Rejected / Pending) lives on the PROJECT
+// (project_cache.intake_status, fid 347) — not on each intake event —
+// so the pill is rendered client-side from project data, not from this row.
 const INTAKE_TABLE = 'bt4a8ypkq'
 const F = {
   recordId: 3,
   dateCreated: 1,
   dateModified: 2,
   lastModifiedBy: 5,
-  // ── Confirmed checklist items ──
+  relatedProject: 36,
   installAgreement: 40,
   finance: 46,
   financeMissingItems: 81,
@@ -46,15 +44,12 @@ const F = {
   siteSurvey: 58,
   welcomeCall: 61,
   adders: 67,
-  // ── TODO: confirm these FIDs ──
-  relatedProject: 7,
-  status: 91,
 }
 const SELECT_FIDS = [
   F.recordId, F.dateCreated, F.dateModified, F.lastModifiedBy,
+  F.relatedProject,
   F.installAgreement, F.finance, F.financeMissingItems,
   F.utilityBill, F.consumptionAudit, F.siteSurvey, F.welcomeCall, F.adders,
-  F.relatedProject, F.status,
 ]
 
 function val(record: Record<string, { value: unknown }>, fid: number): string {
@@ -78,7 +73,6 @@ db.exec(`
     date_created TEXT,
     date_modified TEXT,
     last_modified_by TEXT,
-    status TEXT,
     install_agreement TEXT,
     finance TEXT,
     finance_missing_items TEXT,
@@ -122,11 +116,11 @@ async function refreshForProject(projectId: number): Promise<{ total: number }> 
     db.prepare(`DELETE FROM intake_event_cache WHERE project_rid = ?`).run(projectId)
     const insert = db.prepare(`
       INSERT OR REPLACE INTO intake_event_cache (
-        record_id, project_rid, date_created, date_modified, last_modified_by, status,
+        record_id, project_rid, date_created, date_modified, last_modified_by,
         install_agreement, finance, finance_missing_items,
         utility_bill, consumption_audit, site_survey, welcome_call, adders,
         cached_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `)
     for (const r of rows) {
       const rid = parseInt(val(r, F.recordId))
@@ -137,7 +131,6 @@ async function refreshForProject(projectId: number): Promise<{ total: number }> 
         val(r, F.dateCreated) || null,
         val(r, F.dateModified) || null,
         userName(r, F.lastModifiedBy) || null,
-        val(r, F.status) || null,
         val(r, F.installAgreement) || null,
         val(r, F.finance) || null,
         val(r, F.financeMissingItems) || null,
@@ -172,7 +165,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
       }
     }
     const items = db.prepare(`
-      SELECT record_id, project_rid, date_created, date_modified, last_modified_by, status,
+      SELECT record_id, project_rid, date_created, date_modified, last_modified_by,
              install_agreement, finance, finance_missing_items,
              utility_bill, consumption_audit, site_survey, welcome_call, adders
       FROM intake_event_cache

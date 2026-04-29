@@ -33,6 +33,9 @@ const props = defineProps<{
   /** Project record ID — used to fetch related child-table data (intake
    *  events, etc.) only for the steps that need it. */
   projectRid?: number | null
+  /** Project-level intake decision (Approved / Rejected / Pending) —
+   *  forwarded to IntakeChecklist for its header pill. */
+  intakeStatus?: string | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -191,9 +194,10 @@ function fmtTime(s: string): string {
     </div>
 
     <!-- Intake checklist grid — only renders when the Intake step is
-         selected. Pulls multi-attempt KCA results from /api/intake. -->
+         selected. Pulls multi-attempt KCA results from /api/intake;
+         decision pill comes from the project (intake_status, fid 347). -->
     <div v-if="step.id === 'intake' && projectRid" class="px-4 pb-4">
-      <IntakeChecklist :project-rid="projectRid" />
+      <IntakeChecklist :project-rid="projectRid" :status="intakeStatus" />
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">

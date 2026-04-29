@@ -132,6 +132,8 @@ interface Project extends Record<string, unknown> {
   permit_missing_items?: string | null
   nem_missing_items?: string | null
   pto_missing_items?: string | null
+  // Project-level intake decision (drives the IntakeChecklist pill)
+  intake_status?: string | null
 }
 
 interface CommItem {
@@ -770,6 +772,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :cancelled-at="selectedStepArrivy?.cancelledAt ?? null"
             :cancelled-by="selectedStepArrivy?.cancelledBy ?? null"
             :project-rid="project.record_id"
+            :intake-status="project.intake_status ?? null"
             @close="closeDetail"
           />
         </div>

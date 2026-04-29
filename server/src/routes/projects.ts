@@ -104,6 +104,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'google_drive_link',
     // Missing-items lists (semicolon-joined multi-select)
     'permit_missing_items', 'nem_missing_items', 'pto_missing_items',
+    // Intake decision pulled from the project (not the intake event row)
+    'intake_status',
   ]
   for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
   const FUNDING_REAL = [
@@ -217,6 +219,11 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2242, col: 'permit_missing_items' },
   { fid: 2005, col: 'nem_missing_items' },
   { fid: 2007, col: 'pto_missing_items' },
+
+  // Intake status (Approved / Rejected / Pending) — drives the pill in the
+  // intake checklist grid. Per-event status doesn't exist on the Intake
+  // Events table; the project carries the rolling decision.
+  { fid: 347,  col: 'intake_status' },
 
   // ─── Finance terms (Deal Breakdown → Financing)
   { fid: 349,  col: 'finance_term' },         // Finance Term - Lookup (e.g. "25" yr)
