@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
+import { runFeedbackTriage } from '../agents/feedbackTriage'
 
 const router = Router()
 
@@ -20,6 +21,7 @@ interface FeedbackRow {
   triaged_by_name: string | null
   triaged_at: string | null
   triage_note: string | null
+  cluster_id: number | null
   created_at: string
 }
 
@@ -94,6 +96,28 @@ router.patch('/:id', requireRole('admin'), (req: Request, res: Response): void =
   const result = db.prepare(`UPDATE app_feedback SET ${sets.join(', ')} WHERE id = ?`).run(...params)
   if (result.changes === 0) { res.status(404).json({ error: 'not found' }); return }
   res.json({ ok: true })
+})
+
+// POST /api/feedback/triage/run — admin only; cluster unclustered feedback + draft proposals
+router.post('/triage/run', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const summary = await runFeedbackTriage({ triggeredBy: req.user!.userId })
+    res.json({ ok: true, summary })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message || 'triage failed' })
+  }
+})
+
+// GET /api/feedback/triage/runs — admin only; recent triage run history
+router.get('/triage/runs', requireRole('admin'), (_req: Request, res: Response): void => {
+  const rows = db.prepare(
+    `SELECT r.*, u.name AS triggered_by_name
+     FROM feedback_triage_runs r
+     LEFT JOIN users u ON u.id = r.triggered_by
+     ORDER BY r.started_at DESC
+     LIMIT 20`
+  ).all()
+  res.json({ rows })
 })
 
 export { router as feedbackRouter }

@@ -35,22 +35,6 @@ mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
 `
 
 const FRAG_TOPO = SHADER_PRELUDE + `
-float sdBoxT(vec2 p, vec2 b){ vec2 d = abs(p)-b; return length(max(d,0.0)) + min(max(d.x,d.y), 0.0); }
-
-float kinGlyphT(vec2 p, float scale){
-  p /= scale;
-  float topBar = sdBoxT(p - vec2(0.0, 0.30), vec2(0.36, 0.05));
-  float botBar = sdBoxT(p - vec2(0.0,-0.30), vec2(0.36, 0.05));
-  float stem   = sdBoxT(p - vec2(0.0,-0.05), vec2(0.04, 0.30));
-  vec2 q = p - vec2(0.0, 0.05);
-  float ang = 0.55;
-  mat2 RL = mat2(cos(ang),-sin(ang),sin(ang),cos(ang));
-  mat2 RR = mat2(cos(-ang),-sin(-ang),sin(-ang),cos(-ang));
-  float armL = sdBoxT(RL*(q + vec2(0.18,0.0)), vec2(0.22, 0.05));
-  float armR = sdBoxT(RR*(q - vec2(0.18,0.0)), vec2(0.22, 0.05));
-  return min(min(topBar, botBar), min(stem, min(armL, armR))) * scale;
-}
-
 void main(){
   vec2 uv = gl_FragCoord.xy / u_resolution.xy;
   vec2 asp = vec2(u_resolution.x/u_resolution.y, 1.0);
@@ -84,16 +68,6 @@ void main(){
   vec3 col  = mix(base, line, contour*0.55);
   col = mix(col, amber, major*smoothstep(0.4, 0.0, md)*0.9);
   col = mix(col, line, major*0.3);
-
-  vec2 cp = p - m;
-  float gscale = 0.055;
-  float gd = kinGlyphT(cp, gscale);
-  float halo = smoothstep(gscale*0.55, gscale*0.20, length(cp)) * 0.12;
-  float glyphFill = smoothstep(0.002, 0.0, gd);
-  float glyphOutline = smoothstep(0.0028, 0.0014, abs(gd - 0.0008));
-  col = mix(col, vec3(0.957, 0.741, 0.439), glyphFill);
-  col = mix(col, vec3(0.060, 0.090, 0.140), glyphOutline*0.55);
-  col += halo * vec3(0.957, 0.741, 0.439);
 
   vec2 g = fract(p*6.0)-0.5;
   float dot_ = smoothstep(0.04, 0.02, length(g));

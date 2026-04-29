@@ -155,6 +155,7 @@ router.get('/', (req: Request, res: Response): void => {
   const issue = req.query['issue'] as string | undefined
   const coordinator = req.query['coordinator'] as string | undefined
   const dueFilter = req.query['due'] as string | undefined // overdue, today, future
+  const projectId = parseInt(String(req.query['project_id'] || ''), 10)
   const excludeClosed = req.query['open'] !== '0'
   const limit = Math.min(parseInt(req.query['limit'] as string) || 100, 500)
   const offset = parseInt(req.query['offset'] as string) || 0
@@ -177,6 +178,7 @@ router.get('/', (req: Request, res: Response): void => {
   if (category) { baseWhere += ' AND category = ?'; baseParams.push(category) }
   if (issue) { baseWhere += ' AND issue = ?'; baseParams.push(issue) }
   if (coordinator) { baseWhere += ' AND coordinator = ?'; baseParams.push(coordinator) }
+  if (Number.isFinite(projectId) && projectId > 0) { baseWhere += ' AND project_rid = ?'; baseParams.push(projectId) }
 
   const clientToday = req.query['today'] as string | undefined
   const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!

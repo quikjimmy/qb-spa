@@ -81,10 +81,70 @@ export function reviewTaskPatch(currentTask: Record<string, unknown>, patch: Rec
   }
 }
 
+function looksLikeDesignQuestion(message: string): boolean {
+  return /\?|^\s*(which|what|how|why|when|where|should|can|could|would|do we|does this|tell me|explain|recommend|options)\b/i.test(message)
+}
+
+function roleAwareOptions(currentTask: Record<string, unknown>): string {
+  const role = String(currentTask['role_name'] || 'this agent')
+  const department = String(currentTask['department'] || 'the department')
+  const taskName = String(currentTask['name'] || 'this task')
+  if (/daily coordinator digest/i.test(taskName) || /Project Coordinators/i.test(department)) {
+    return [
+      `For ${role}, I would make the project scope explicit instead of broad:`,
+      '',
+      'Option 1 - Daily execution view:',
+      '- Today and tomorrow installs assigned to the coordinator.',
+      '- Projects with permit submitted but not approved.',
+      '- Install complete with no inspection scheduled or passed.',
+      '- Inspection passed with no PTO movement.',
+      '',
+      'Option 2 - Agent work queue:',
+      '- Projects where another department/agent needs to act next.',
+      '- Include owner, reason, age, current milestone, and requested next action.',
+      '- Hide normal-status projects unless they explain workload or risk.',
+      '',
+      'Option 3 - Exception-only digest:',
+      '- Only include projects outside expected SLA or blocked by missing data.',
+      '- Good for inbox delivery because every item has a clear action.',
+      '',
+      'Known QuickBase context for this PC task:',
+      '- Projects table: br9kwm8na.',
+      '- Coordinator mapping: app user email to Project Coordinator - Email field 822.',
+      '- Active projects filter: field 255 = Active.',
+      '- Install date: field 178.',
+      '- Permit submitted/approved: fields 207 and 208.',
+      '- Inspection passed/date context: field 491.',
+      '- Install complete: field 534.',
+      '- PTO-related status: field 538.',
+      '',
+      'My recommendation: use Option 2 as the product shape, with Option 1 as the data source. The inbox should show action requests for agents first, then human approval/input only when needed.',
+    ].join('\n')
+  }
+  return [
+    `For ${role}, I would define the scope around decisions and handoffs, not just records.`,
+    '',
+    'Useful options:',
+    '- Include records this role owns directly.',
+    '- Include records where this role is the next accountable department.',
+    '- Include exception records that are blocked, stale, or missing required data.',
+    '- Exclude normal-status records unless they are needed for volume or trend context.',
+    '',
+    'If you want, ask me to turn one option into draft instructions and I will propose the exact config changes.',
+  ].join('\n')
+}
+
 export function proposeTaskPatch(currentTask: Record<string, unknown>, message: string): { reply: string; patch: Record<string, unknown> } {
   const instructions = String(currentTask['instructions'] || '')
   const trimmed = message.trim()
   const patch: Record<string, unknown> = {}
+
+  if (looksLikeDesignQuestion(trimmed) && !/\b(update|change|add|remove|replace|set|make|edit|save|enable|disable|pause|turn off|turn on)\b/i.test(trimmed)) {
+    return {
+      reply: roleAwareOptions(currentTask),
+      patch,
+    }
+  }
 
   if (/\b(disable|pause|turn off)\b/i.test(trimmed)) patch['enabled'] = 0
   if (/\b(enable|turn on)\b/i.test(trimmed)) patch['enabled'] = 1

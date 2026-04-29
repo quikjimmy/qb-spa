@@ -42,11 +42,11 @@ export interface RunResult {
   error?: string
 }
 
-export async function runHoldClassifier(trigger: 'cron' | 'manual' = 'manual'): Promise<RunResult> {
+export async function runHoldClassifier(trigger: 'cron' | 'manual' = 'manual', userId: number | null = null): Promise<RunResult> {
   const started = Date.now()
   const runInsert = db.prepare(
-    `INSERT INTO agent_runs (agent, trigger, status, model) VALUES (?, ?, 'running', ?)`
-  ).run(AGENT_NAME, trigger, HOLD_CLASSIFIER_MODEL_DEFAULT)
+    `INSERT INTO agent_runs (agent, trigger, status, model, user_id) VALUES (?, ?, 'running', ?, ?)`
+  ).run(AGENT_NAME, trigger, HOLD_CLASSIFIER_MODEL_DEFAULT, userId)
   const runId = Number(runInsert.lastInsertRowid)
 
   const updateRun = db.prepare(

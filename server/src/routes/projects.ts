@@ -76,6 +76,49 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   if (!names.has('ahj_name')) db.exec(`ALTER TABLE project_cache ADD COLUMN ahj_name TEXT`)
   if (!names.has('utility_company')) db.exec(`ALTER TABLE project_cache ADD COLUMN utility_company TEXT`)
   if (!names.has('mpu_callout')) db.exec(`ALTER TABLE project_cache ADD COLUMN mpu_callout TEXT`)
+
+  // Funding fields — added 2026-04-28. NTP / M1 / M2 / M3 / DCA + Lender Loan ID.
+  // Drives the FundingChips UI and (eventually) clawback flagging.
+  // Wrapped in addIfMissing to swallow "duplicate column" if a prior boot
+  // already added them (defensive — keeps tsx-watch reloads from crashing).
+  const addIfMissing = (col: string, type: string) => {
+    if (names.has(col)) return
+    try { db.exec(`ALTER TABLE project_cache ADD COLUMN ${col} ${type}`) }
+    catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/duplicate column/i.test(msg)) throw err
+    }
+  }
+  const FUNDING_TEXT = [
+    'lender_loan_id',
+    'urgent_banner_text',
+    'ntp_submitted', 'ntp_approved',
+    'm1_status', 'm1_requested_date', 'm1_rejected_date', 'm1_approved_date', 'm1_deposit_date',
+    'm2_status', 'm2_requested_date', 'm2_rejected_date', 'm2_approved_date', 'm2_deposit_date',
+    'm3_status', 'm3_requested_date', 'm3_rejected_date', 'm3_approved_date', 'm3_deposit_date',
+    'dca_status', 'dca_timer_start', 'dca_calc_type', 'dca_expected_deposit', 'dca_actual_deposit',
+    // System / equipment / financials text columns
+    'finance_term', 'finance_rate', 'credit_expiration_date',
+    'module_brand', 'module', 'inverter_brand', 'inverter', 'existing_system',
+    // Integrations
+    'google_drive_link',
+  ]
+  for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
+  const FUNDING_REAL = [
+    'm1_expected_amount', 'm1_net_received',
+    'm2_expected_amount', 'm2_net_received',
+    'm3_expected_amount', 'm3_net_received',
+    'dca_expected_amount', 'dca_total_received',
+    // System / costs numeric columns
+    'estimated_production', 'panel_count', 'inverter_count',
+    'system_price', 'gross_ppw', 'dealer_fees_pct', 'dealer_fee_ppw',
+    'net_cost', 'net_ppw',
+    // Integration IDs (numeric)
+    'project_number', 'max_arrivy_task_id',
+  ]
+  for (const c of FUNDING_REAL) addIfMissing(c, 'REAL')
+  const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready']
+  for (const c of FUNDING_BOOL) addIfMissing(c, 'INTEGER')
 }
 
 // Tiered cache strategy migrations — wrapped in try/catch so a SQLite
@@ -154,6 +197,78 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 318, col: 'ahj_name' },              // AHJ Name
   { fid: 2535, col: 'utility_company' },      // Related Utility - Name
   { fid: 2011, col: 'mpu_callout' },          // MPU Callout (electrical upgrade flag)
+
+  // ─── Funding (NTP / M1 / M2 / M3 / DCA) — drives the FundingChips UI
+  // and mirrors the QB Status Bar formula.
+  { fid: 666,  col: 'lender_loan_id' },       // Lender Loan ID (used in portal deep links)
+  { fid: 1942, col: 'is_funded' },            // Is Funded? (boolean)
+  { fid: 1816, col: 'urgent_banner_text' },   // Custom Urgent Message Banner - Input
+
+  // ─── Integrations / quick-links (Google Drive, Enerflo, Arrivy)
+  { fid: 11,   col: 'project_number' },       // Project ID # (customer-facing) — used in Enerflo URL
+  { fid: 167,  col: 'google_drive_link' },    // Google Drive folder URL
+  { fid: 2685, col: 'max_arrivy_task_id' },   // Maximum Arrivy Task ID (numeric)
+
+  // ─── Finance terms (Deal Breakdown → Financing)
+  { fid: 349,  col: 'finance_term' },         // Finance Term - Lookup (e.g. "25" yr)
+  { fid: 350,  col: 'finance_rate' },         // Finance Rate - Lookup
+  { fid: 321,  col: 'credit_expiration_date' },
+
+  // ─── System / equipment (Deal Breakdown → Equipment)
+  { fid: 15,   col: 'estimated_production' }, // Estimated Production (kWh/yr)
+  { fid: 368,  col: 'module_brand' },
+  { fid: 131,  col: 'module' },               // Module model
+  { fid: 16,   col: 'panel_count' },
+  { fid: 370,  col: 'inverter_brand' },
+  { fid: 17,   col: 'inverter' },             // Inverter model
+  { fid: 331,  col: 'inverter_count' },
+  { fid: 1840, col: 'existing_system' },      // Minimum Initial CAD Existing System
+
+  // ─── Costs (Deal Breakdown → Costs)
+  { fid: 133,  col: 'system_price' },         // System Price ($)
+  { fid: 19,   col: 'gross_ppw' },            // Gross PPW
+  { fid: 18,   col: 'dealer_fees_pct' },
+  { fid: 545,  col: 'dealer_fee_ppw' },
+  { fid: 383,  col: 'net_cost' },             // Cost - System Cost Net
+  { fid: 543,  col: 'net_ppw' },
+
+  { fid: 479,  col: 'ntp_submitted' },        // NTP Submitted Date
+  { fid: 312,  col: 'ntp_approved' },         // NTP Approval Date
+
+  { fid: 2049, col: 'm1_status' },            // Funding Dashboard: M1 Status
+  { fid: 1992, col: 'm1_ready' },             // Ready for M1 Funding (boolean)
+  { fid: 1922, col: 'm1_expected_amount' },   // M1 Expected Amount (Calc, number)
+  { fid: 2038, col: 'm1_requested_date' },
+  { fid: 2022, col: 'm1_rejected_date' },
+  { fid: 2021, col: 'm1_approved_date' },
+  { fid: 1913, col: 'm1_deposit_date' },
+  { fid: 1888, col: 'm1_net_received' },      // negative = clawback
+
+  { fid: 2050, col: 'm2_status' },
+  { fid: 1993, col: 'm2_ready' },
+  { fid: 1924, col: 'm2_expected_amount' },
+  { fid: 2039, col: 'm2_requested_date' },
+  { fid: 2026, col: 'm2_rejected_date' },
+  { fid: 2025, col: 'm2_approved_date' },
+  { fid: 1914, col: 'm2_deposit_date' },      // Actual M2 Deposit Date
+  { fid: 1889, col: 'm2_net_received' },
+
+  { fid: 2051, col: 'm3_status' },
+  { fid: 1994, col: 'm3_ready' },
+  { fid: 1925, col: 'm3_expected_amount' },
+  { fid: 2040, col: 'm3_requested_date' },
+  { fid: 2030, col: 'm3_rejected_date' },
+  { fid: 2029, col: 'm3_approved_date' },
+  { fid: 1915, col: 'm3_deposit_date' },
+  { fid: 1890, col: 'm3_net_received' },
+
+  { fid: 2774, col: 'dca_status' },
+  { fid: 2775, col: 'dca_timer_start' },
+  { fid: 2776, col: 'dca_expected_amount' },
+  { fid: 2779, col: 'dca_calc_type' },
+  { fid: 2777, col: 'dca_expected_deposit' },
+  { fid: 2773, col: 'dca_actual_deposit' },
+  { fid: 2772, col: 'dca_total_received' },
 ]
 
 const selectFids = fieldMap.map(f => f.fid)
@@ -169,10 +284,32 @@ function val(record: Record<string, { value: unknown }>, fid: number): string {
 // and the user-object → name extraction for nem_user. Used by
 // refreshCache (full pass), refreshTier (delta), and fetchOneLive
 // (single record).
+// Numeric-amount columns from the funding fields — coerce to number, allow null.
+const NUMERIC_AMOUNT_COLS = new Set([
+  'm1_expected_amount', 'm1_net_received',
+  'm2_expected_amount', 'm2_net_received',
+  'm3_expected_amount', 'm3_net_received',
+  'dca_expected_amount', 'dca_total_received',
+  'estimated_production', 'panel_count', 'inverter_count',
+  'system_price', 'gross_ppw', 'dealer_fees_pct', 'dealer_fee_ppw',
+  'net_cost', 'net_ppw',
+  'project_number', 'max_arrivy_task_id',
+])
+// Boolean columns (true/false from QB checkboxes) → 0/1.
+const BOOLEAN_COLS = new Set([
+  'inspx_first_time_pass',
+  'is_funded',
+  'm1_ready', 'm2_ready', 'm3_ready',
+])
+
 function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
   return fieldMap.map(f => {
     if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
-    if (f.col === 'inspx_first_time_pass') return val(record, f.fid) === 'true' ? 1 : 0
+    if (BOOLEAN_COLS.has(f.col)) return val(record, f.fid) === 'true' ? 1 : 0
+    if (NUMERIC_AMOUNT_COLS.has(f.col)) {
+      const n = parseFloat(val(record, f.fid))
+      return Number.isFinite(n) ? n : null
+    }
     if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
     if (f.col === 'inspx_pass_fail') {
       const v = record[String(f.fid)]?.value

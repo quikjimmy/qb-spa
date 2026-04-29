@@ -164,9 +164,15 @@ onMounted(load)
     <Card v-else>
       <CardHeader>
         <CardTitle>Tasks</CardTitle>
-        <CardDescription>Tasks owned by this agent. Open a task for its own dashboard and designer.</CardDescription>
+        <CardDescription>Tasks owned by this agent. Detection tasks surface recommendations first; draft tasks stay human-reviewed before anything happens outside Agent Ops.</CardDescription>
       </CardHeader>
       <CardContent>
+        <div class="mb-4 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          Agent experience:
+          Ari workers run bounded tasks and return structured findings.
+          User experience:
+          humans review those findings in Agent Ops, then decide whether to approve, edit, dismiss, or create follow-up work.
+        </div>
         <AgentTaskList
           :tasks="agent.tasks as any"
           :running-task-id="runningTaskId"

@@ -16,6 +16,7 @@ import NotificationBell from '@/components/NotificationBell.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
 import CommsLiveRail from '@/components/CommsLiveRail.vue'
+import ProjectJumpSearch from '@/components/project-detail/ProjectJumpSearch.vue'
 import { useDialpadLive, unlockAudio } from '@/lib/dialpadLive'
 import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
@@ -72,6 +73,13 @@ const routeLabels: Record<string, string> = {
   '/admin': 'Admin',
 }
 
+// Views can override the last crumb's label (e.g. ProjectDetailView injects
+// the customer name so the breadcrumb reads "Projects › Joseph Clanton"
+// instead of "Projects › 10621"). Reset whenever the route changes.
+const lastCrumbLabel = ref<string | null>(null)
+provide('lastCrumbLabel', lastCrumbLabel)
+watch(() => route.path, () => { lastCrumbLabel.value = null })
+
 function getBreadcrumbs() {
   const path = route.path
   if (path === '/') return [{ label: 'Home', href: '' }]
@@ -86,6 +94,9 @@ function getBreadcrumbs() {
       label: routeLabels[built] || seg.charAt(0).toUpperCase() + seg.slice(1),
       href: built,
     })
+  }
+  if (lastCrumbLabel.value && crumbs.length > 0) {
+    crumbs[crumbs.length - 1]!.label = lastCrumbLabel.value
   }
   return crumbs
 }
@@ -134,6 +145,9 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           </BreadcrumbList>
         </Breadcrumb>
         <div class="ml-auto flex items-center gap-1">
+          <!-- Global ⌘K project search — page-agnostic jump-to. Lives in the
+               topbar so coordinators can switch projects from anywhere. -->
+          <ProjectJumpSearch />
           <!-- Live Hub toggle — sits next to the bell on every breakpoint
                so the mobile entry point doesn't collide with the feedback
                FAB. Badge shows current live event count so users have an

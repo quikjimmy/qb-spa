@@ -23,6 +23,9 @@ export interface OllamaChatResult {
   tokens_out?: number
   duration_ms?: number
   error?: string
+  // Raw response headers from Ollama — used by callUserLlm to capture rate-limit info.
+  // Optional so existing callers don't need to handle it.
+  response_headers?: Record<string, string>
 }
 
 export async function ollamaChat(opts: OllamaChatOptions): Promise<OllamaChatResult> {
@@ -50,9 +53,12 @@ export async function ollamaChat(opts: OllamaChatOptions): Promise<OllamaChatRes
     })
     clearTimeout(timer)
 
+    const responseHeaders: Record<string, string> = {}
+    r.headers.forEach((v, k) => { responseHeaders[k] = v })
+
     if (!r.ok) {
       const text = (await r.text().catch(() => '')).slice(0, 800)
-      return { ok: false, error: `Ollama HTTP ${r.status}: ${text || r.statusText}` }
+      return { ok: false, error: `Ollama HTTP ${r.status}: ${text || r.statusText}`, response_headers: responseHeaders }
     }
 
     const data = await r.json().catch(() => ({})) as {
@@ -67,6 +73,7 @@ export async function ollamaChat(opts: OllamaChatOptions): Promise<OllamaChatRes
       tokens_in: data.prompt_eval_count ?? 0,
       tokens_out: data.eval_count ?? 0,
       duration_ms: Date.now() - started,
+      response_headers: responseHeaders,
     }
   } catch (err) {
     clearTimeout(timer)

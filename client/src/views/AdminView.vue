@@ -216,6 +216,62 @@ function openEditAccess(user: PortalUser) {
   accessError.value = ''
   accessDialog.value = true
   loadAltEmails(user.id)
+  loadBudget(user.id)
+}
+
+// ─── Per-user LLM budget ──────────────
+interface UserBudget {
+  monthly_cap_cents: number | null
+  byok_bypasses_cap: boolean
+  month_to_date_cents: number
+  counted_against_cap_cents: number
+}
+const budget = ref<UserBudget | null>(null)
+const budgetCapDollars = ref<string>('')
+const budgetByokBypass = ref(true)
+const budgetSaving = ref(false)
+const budgetSaved = ref(false)
+const budgetError = ref('')
+
+async function loadBudget(userId: number) {
+  budget.value = null
+  budgetError.value = ''
+  budgetSaved.value = false
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/budget`, { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json() as UserBudget
+      budget.value = data
+      budgetCapDollars.value = data.monthly_cap_cents == null ? '' : (data.monthly_cap_cents / 100).toString()
+      budgetByokBypass.value = data.byok_bypasses_cap
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveBudget() {
+  if (!accessUser.value) return
+  budgetError.value = ''
+  budgetSaving.value = true
+  budgetSaved.value = false
+  try {
+    const raw = budgetCapDollars.value.trim()
+    const capCents = raw === '' ? null : Math.max(0, Math.round(parseFloat(raw) * 100))
+    if (raw !== '' && (capCents == null || isNaN(capCents))) { budgetError.value = 'Cap must be a number or blank'; return }
+    const res = await fetch(`/api/admin/users/${accessUser.value.id}/budget`, {
+      method: 'PUT', headers: hdrs(),
+      body: JSON.stringify({ monthly_cap_cents: capCents, byok_bypasses_cap: budgetByokBypass.value }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { budgetError.value = data.error || `HTTP ${res.status}`; return }
+    budgetSaved.value = true
+    setTimeout(() => { budgetSaved.value = false }, 1800)
+    await loadBudget(accessUser.value.id)
+  } finally { budgetSaving.value = false }
+}
+
+function fmtCents(c: number | null | undefined): string {
+  if (c == null) return '—'
+  return `$${(c / 100).toFixed(2)}`
 }
 
 // ─── Alternate emails (cross-system matching) ──────────────
@@ -1023,6 +1079,142 @@ function fmtFeedbackTime(iso: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+// ─── Feedback triage agent (manual run) ──────────────────
+interface TriageRunRow {
+  id: number
+  started_at: string
+  finished_at: string | null
+  status: string
+  feedback_considered: number
+  clusters_touched: number
+  proposals_drafted: number
+  model: string | null
+  cost_cents: number
+  error: string | null
+  triggered_by_name: string | null
+}
+interface ProposalMember {
+  id: number
+  path: string
+  category: string | null
+  body: string
+  status: string
+  user_name: string | null
+  user_email: string | null
+  created_at: string
+}
+interface ProposalRow {
+  id: number
+  cluster_id: number
+  scope_md: string
+  files_touched: string[]
+  effort_estimate: string | null
+  risk_notes: string | null
+  status: string
+  approved_by_name: string | null
+  approved_at: string | null
+  rejection_reason: string | null
+  target_release: string | null
+  cluster_title: string
+  cluster_summary: string
+  cluster_theme: string | null
+  cluster_item_count: number
+  cluster_first_seen: string | null
+  cluster_last_seen: string | null
+  created_at: string
+  members: ProposalMember[]
+}
+
+const triageRuns = ref<TriageRunRow[]>([])
+const triageRunning = ref(false)
+const triageMessage = ref<string>('')
+const proposals = ref<ProposalRow[]>([])
+const proposalCounts = ref<Record<string, number>>({})
+const proposalFilter = ref<string>('awaiting_approval')
+const expandedProposals = ref<Set<number>>(new Set())
+
+const lastTriageRun = computed<TriageRunRow | null>(() => triageRuns.value[0] ?? null)
+
+async function loadTriageRuns() {
+  const res = await fetch('/api/feedback/triage/runs', { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json()
+  triageRuns.value = data.rows || []
+}
+
+async function loadProposals() {
+  const q = proposalFilter.value === 'all' ? '' : `?status=${proposalFilter.value}`
+  const res = await fetch(`/api/improvement-proposals${q}`, { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json()
+  proposals.value = data.rows || []
+  const counts: Record<string, number> = {}
+  for (const c of (data.counts || [])) counts[c.status] = c.n
+  proposalCounts.value = counts
+}
+
+async function runTriage() {
+  if (triageRunning.value) return
+  triageRunning.value = true
+  triageMessage.value = ''
+  try {
+    const res = await fetch('/api/feedback/triage/run', { method: 'POST', headers: hdrs() })
+    const data = await res.json()
+    if (!res.ok) {
+      triageMessage.value = data.error || 'Triage failed'
+    } else {
+      const s = data.summary
+      triageMessage.value = s.feedback_considered === 0
+        ? 'No unclustered feedback — nothing to do.'
+        : `Reviewed ${s.feedback_considered}, drafted ${s.proposals_drafted} proposals across ${s.clusters_created} clusters (${(s.cost_cents / 100).toFixed(2)} cents).`
+      await Promise.all([loadFeedback(), loadProposals(), loadTriageRuns()])
+    }
+  } catch (e) {
+    triageMessage.value = (e as Error).message || 'Triage failed'
+  } finally {
+    triageRunning.value = false
+  }
+}
+
+async function setProposalStatus(id: number, status: string) {
+  await fetch(`/api/improvement-proposals/${id}`, {
+    method: 'PATCH', headers: hdrs(), body: JSON.stringify({ status }),
+  })
+  await Promise.all([loadProposals(), loadFeedback()])
+}
+
+async function rejectProposal(id: number) {
+  const reason = window.prompt('Reason for rejection (optional, kept for audit):') || ''
+  await fetch(`/api/improvement-proposals/${id}`, {
+    method: 'PATCH', headers: hdrs(),
+    body: JSON.stringify({ status: 'rejected', rejection_reason: reason }),
+  })
+  await Promise.all([loadProposals(), loadFeedback()])
+}
+
+async function editProposalScope(p: ProposalRow) {
+  const next = window.prompt('Edit scope (markdown bullets):', p.scope_md)
+  if (next === null) return
+  await fetch(`/api/improvement-proposals/${p.id}`, {
+    method: 'PATCH', headers: hdrs(),
+    body: JSON.stringify({ scope_md: next }),
+  })
+  await loadProposals()
+}
+
+function toggleProposalExpanded(id: number) {
+  const next = new Set(expandedProposals.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedProposals.value = next
+}
+
+function fmtTriageRunTime(row: TriageRunRow | null): string {
+  if (!row) return 'never'
+  const iso = row.finished_at || row.started_at
+  return fmtFeedbackTime(iso)
+}
+
 // ─── User-agent review ───────────────────────────────────
 interface UserAgentRow {
   id: number
@@ -1078,7 +1270,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadProposals(), loadTriageRuns(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -1592,6 +1784,140 @@ onMounted(async () => {
 
         <!-- ════════════ FEEDBACK TAB ════════════ -->
         <TabsContent value="feedback" class="grid gap-6">
+          <Card>
+            <CardHeader>
+              <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div class="space-y-1">
+                  <CardTitle>Feedback Triage Agent</CardTitle>
+                  <CardDescription>
+                    Reads unclustered feedback, groups similar items, and drafts an improvement proposal per cluster.
+                    Manual run only — review proposals below before approving.
+                  </CardDescription>
+                </div>
+                <Button :disabled="triageRunning" @click="runTriage">
+                  {{ triageRunning ? 'Running…' : 'Run triage now' }}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent class="grid gap-2">
+              <div v-if="triageMessage" class="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                {{ triageMessage }}
+              </div>
+              <div class="text-[11px] text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                <span>Last run: <span class="font-medium text-foreground">{{ fmtTriageRunTime(lastTriageRun) }}</span></span>
+                <span v-if="lastTriageRun">Status: <span class="capitalize">{{ lastTriageRun.status }}</span></span>
+                <span v-if="lastTriageRun && lastTriageRun.status === 'completed'">
+                  {{ lastTriageRun.feedback_considered }} considered · {{ lastTriageRun.proposals_drafted }} proposals
+                </span>
+                <span v-if="lastTriageRun?.error" class="text-destructive">Error: {{ lastTriageRun.error }}</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Improvement Proposals</CardTitle>
+              <CardDescription>
+                Agent-drafted recommendations grouped by similar feedback. Approve to mark feedback in_build,
+                ship to close them out, or reject with a reason.
+              </CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="s in ['awaiting_approval','approved','scheduled','in_build','shipped','rejected','all']" :key="s"
+                  class="inline-flex items-center gap-1.5 rounded-md border px-2.5 h-7 text-[11px] font-medium transition-colors capitalize"
+                  :class="proposalFilter === s ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+                  @click="proposalFilter = s; loadProposals()"
+                >
+                  {{ s.replace('_',' ') }}
+                  <span v-if="s !== 'all' && proposalCounts[s]" class="text-[10px] opacity-70">{{ proposalCounts[s] }}</span>
+                </button>
+              </div>
+
+              <div v-if="proposals.length === 0" class="text-sm text-muted-foreground py-6 text-center">
+                No proposals in this bucket. Run the triage agent to generate them.
+              </div>
+
+              <div v-else class="space-y-3">
+                <div v-for="p in proposals" :key="p.id" class="rounded-lg border bg-card p-4 space-y-3">
+                  <div class="flex items-start gap-2 flex-wrap">
+                    <div class="flex-1 min-w-0 space-y-1">
+                      <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                        <span v-if="p.cluster_theme" class="capitalize px-1.5 py-0.5 rounded bg-muted">{{ p.cluster_theme }}</span>
+                        <span class="px-1.5 py-0.5 rounded bg-muted">{{ p.cluster_item_count }} feedback item{{ p.cluster_item_count === 1 ? '' : 's' }}</span>
+                        <span v-if="p.effort_estimate" class="px-1.5 py-0.5 rounded bg-muted">Effort: {{ p.effort_estimate }}</span>
+                        <span class="ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
+                          :class="p.status === 'awaiting_approval' ? 'bg-amber-100 text-amber-700'
+                            : p.status === 'approved' ? 'bg-emerald-100 text-emerald-700'
+                            : p.status === 'scheduled' ? 'bg-sky-100 text-sky-700'
+                            : p.status === 'in_build' ? 'bg-violet-100 text-violet-700'
+                            : p.status === 'shipped' ? 'bg-emerald-100 text-emerald-700'
+                            : p.status === 'rejected' ? 'bg-rose-100 text-rose-700'
+                            : 'bg-muted text-muted-foreground'">
+                          {{ p.status.replace('_',' ') }}
+                        </span>
+                      </div>
+                      <h3 class="text-sm font-semibold leading-tight">{{ p.cluster_title }}</h3>
+                      <p class="text-xs text-muted-foreground">{{ p.cluster_summary }}</p>
+                    </div>
+                  </div>
+
+                  <div class="space-y-1.5">
+                    <div class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Scope</div>
+                    <pre class="whitespace-pre-wrap text-xs font-sans leading-relaxed bg-muted/40 rounded-md p-3">{{ p.scope_md }}</pre>
+                  </div>
+
+                  <div v-if="p.files_touched.length" class="space-y-1.5">
+                    <div class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Likely files</div>
+                    <div class="flex flex-wrap gap-1">
+                      <span v-for="f in p.files_touched" :key="f" class="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">{{ f }}</span>
+                    </div>
+                  </div>
+
+                  <div v-if="p.risk_notes" class="space-y-1.5">
+                    <div class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Risks</div>
+                    <p class="text-xs text-muted-foreground">{{ p.risk_notes }}</p>
+                  </div>
+
+                  <div v-if="p.rejection_reason" class="rounded-md border-l-2 border-rose-300 bg-rose-50/40 px-3 py-2 text-xs">
+                    <span class="font-semibold">Rejected:</span> {{ p.rejection_reason }}
+                  </div>
+
+                  <button
+                    type="button"
+                    class="text-[11px] text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+                    @click="toggleProposalExpanded(p.id)"
+                  >
+                    {{ expandedProposals.has(p.id) ? 'Hide' : 'Show' }} {{ p.members.length }} source feedback item{{ p.members.length === 1 ? '' : 's' }}
+                  </button>
+
+                  <div v-if="expandedProposals.has(p.id)" class="space-y-2 pl-3 border-l-2 border-muted">
+                    <div v-for="m in p.members" :key="m.id" class="space-y-1">
+                      <div class="flex items-center gap-2 text-[10px] text-muted-foreground flex-wrap">
+                        <span class="font-mono bg-muted px-1.5 py-0.5 rounded">{{ m.path }}</span>
+                        <span v-if="m.category" class="capitalize px-1.5 py-0.5 rounded bg-muted">{{ m.category }}</span>
+                        <span>{{ m.user_name || m.user_email || `user ${m.id}` }}</span>
+                        <span>·</span>
+                        <span>{{ fmtFeedbackTime(m.created_at) }}</span>
+                      </div>
+                      <p class="text-xs whitespace-pre-wrap">{{ m.body }}</p>
+                    </div>
+                  </div>
+
+                  <div class="flex gap-1.5 flex-wrap pt-1">
+                    <Button v-if="p.status === 'awaiting_approval'" size="sm" @click="setProposalStatus(p.id, 'approved')">Approve</Button>
+                    <Button v-if="p.status === 'approved'" size="sm" variant="outline" @click="setProposalStatus(p.id, 'in_build')">Mark in build</Button>
+                    <Button v-if="p.status === 'in_build'" size="sm" variant="outline" @click="setProposalStatus(p.id, 'shipped')">Mark shipped</Button>
+                    <Button size="sm" variant="outline" @click="editProposalScope(p)">Edit scope</Button>
+                    <Button v-if="p.status !== 'rejected'" size="sm" variant="ghost" @click="rejectProposal(p.id)">Reject</Button>
+                    <Button v-if="p.status === 'rejected'" size="sm" variant="ghost" @click="setProposalStatus(p.id, 'awaiting_approval')">Reopen</Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>App Feedback Queue</CardTitle>
@@ -2480,6 +2806,45 @@ onMounted(async () => {
               <p v-if="departments.length === 0" class="text-sm text-muted-foreground py-4 text-center">
                 No departments yet. Create departments before assigning them.
               </p>
+            </div>
+          </div>
+
+          <!-- LLM budget -->
+          <div class="space-y-2">
+            <Label>AI budget</Label>
+            <p class="text-xs text-muted-foreground">
+              Monthly cap on platform-paid LLM spend for this user. Leave blank for no cap.
+              When BYOK bypass is on, calls using the user's own API key don't count.
+            </p>
+
+            <div v-if="budget" class="rounded-lg border p-3 bg-card grid gap-3">
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Month-to-date</div>
+                  <div class="text-base font-medium tabular-nums mt-0.5">{{ fmtCents(budget.month_to_date_cents) }}</div>
+                </div>
+                <div>
+                  <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Counts vs cap</div>
+                  <div class="text-base font-medium tabular-nums mt-0.5">{{ fmtCents(budget.counted_against_cap_cents) }}</div>
+                </div>
+              </div>
+
+              <div class="grid sm:grid-cols-[1fr_auto] gap-2 items-end">
+                <div class="space-y-1">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Monthly cap (USD)</Label>
+                  <Input v-model="budgetCapDollars" type="number" min="0" step="0.50" placeholder="No cap" class="h-8 text-xs" />
+                </div>
+                <Button size="sm" :disabled="budgetSaving" @click="saveBudget">
+                  {{ budgetSaving ? 'Saving…' : budgetSaved ? 'Saved ✓' : 'Save' }}
+                </Button>
+              </div>
+
+              <label class="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input type="checkbox" v-model="budgetByokBypass" class="h-3.5 w-3.5" />
+                <span>BYOK calls don't count against the cap</span>
+              </label>
+
+              <p v-if="budgetError" class="text-xs text-destructive">{{ budgetError }}</p>
             </div>
           </div>
 

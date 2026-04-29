@@ -46,11 +46,18 @@ const LOG_F = {
   relatedProject: 193,
   relatedTask: 94,
   eventType: 76,
+  // 77 = TASK_STATUS sub-type (e.g. STARTED, ENROUTE, COMPLETE, CANCELLED, EXCEPTION).
+  statusSubType: 77,
+  // 81 = the user who reported the event (cancelled-by, etc.).
+  reportedBy: 81,
+  // 73/74 = human-readable title + description on the log entry.
+  title: 73,
+  description: 74,
   timestamp: 79,
   scheduled: 17,
   reporterName: 14,
 }
-const LOG_SELECT = [3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.timestamp, LOG_F.scheduled, LOG_F.reporterName, LOG_F.relatedProject]
+const LOG_SELECT = [3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.statusSubType, LOG_F.reportedBy, LOG_F.title, LOG_F.description, LOG_F.timestamp, LOG_F.scheduled, LOG_F.reporterName, LOG_F.relatedProject]
 
 interface QbValue { value: unknown }
 type QbRecord = Record<string, QbValue>
@@ -159,6 +166,23 @@ router.get('/late', async (req: Request, res: Response): Promise<void> => {
       }
     }
     res.json({ lateByTask })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// GET /api/field/task-log?task_rid=X — full event log for one Arrivy task.
+// Powers the cancelled-event detail surface (timeline of crew_assigned →
+// enroute → arrived → cancelled, with reporter names + descriptions).
+router.get('/task-log', async (req: Request, res: Response): Promise<void> => {
+  const taskRid = String(req.query['task_rid'] || '').trim()
+  if (!taskRid) { res.json({ records: [], fields: LOG_F }); return }
+  try {
+    const records = await qbQuery(QB.arrivyTaskLogTable, `{'${LOG_F.relatedTask}'.EX.'${taskRid}'}`, LOG_SELECT, {
+      sortBy: [{ fieldId: LOG_F.timestamp, order: 'ASC' }],
+      options: { top: 200 },
+    })
+    res.json({ records, fields: LOG_F })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
