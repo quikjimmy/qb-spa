@@ -179,9 +179,15 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
               else if (taskRec[String(F.enrouteStatus)]?.value) phase = 'enroute'
             }
           }
+          // Coerce QB log timestamps (no TZ marker) to ISO-Z so the
+          // client parses as UTC and renders in local time.
+          const tsRaw = String(log[String(LOG_F.timestamp)]?.value || '')
+          const tsIso = tsRaw
+            ? (tsRaw.includes('T') ? tsRaw : tsRaw.replace(' ', 'T')).replace(/Z?$/, 'Z')
+            : ''
           cancelledTaskInfo[taskRid] = {
             phase,
-            cancelledAt: String(log[String(LOG_F.timestamp)]?.value || ''),
+            cancelledAt: tsIso,
             cancelledBy: String(log[String(LOG_F.reportedBy)]?.value || '') ||
                          String(log[String(LOG_F.reporterName)]?.value || ''),
           }
@@ -444,6 +450,19 @@ router.get('/project-tasks', async (req: Request, res: Response): Promise<void> 
       if (!arr) { arr = []; logsByTask.set(taskRid, arr) }
       arr.push(log)
     }
+    // QB stores log timestamps as "YYYY-MM-DD HH:MM:SS" without a timezone.
+    // The values are UTC (QB convention), so emit them as ISO-Z so the
+    // browser parses them unambiguously and displays in local TZ.
+    function toIsoUtc(s: string): string {
+      if (!s) return ''
+      const t = s.includes('T') ? s : s.replace(' ', 'T')
+      return t.endsWith('Z') ? t : (t + 'Z')
+    }
+    const taskRecsByRid = new Map<string, QbRecord>()
+    for (const r of records) {
+      const rid = String(r['3']?.value || '')
+      if (rid) taskRecsByRid.set(rid, r)
+    }
     const cancelledTaskInfo: Record<string, CancelInfo> = {}
     for (const [taskRid, logs] of logsByTask) {
       logs.sort((a, b) => {
@@ -459,9 +478,21 @@ router.get('/project-tasks', async (req: Request, res: Response): Promise<void> 
         const subType = String(log[String(LOG_F.statusSubType)]?.value || '').toUpperCase()
         if (eventType !== 'TASK_STATUS') continue
         if (/CANCEL|EXCEPTION|NOT.?DONE/i.test(subType)) {
-          cancelledAt = String(log[String(LOG_F.timestamp)]?.value || '')
+          cancelledAt = toIsoUtc(String(log[String(LOG_F.timestamp)]?.value || ''))
           cancelledBy = String(log[String(LOG_F.reportedBy)]?.value || '') ||
                         String(log[String(LOG_F.reporterName)]?.value || '')
+          // Fallback: if our log scan didn't find a STARTED/ENROUTE
+          // event before the cancel (e.g. those events landed outside
+          // our default top-of-log fetch), trust the task row's mirrored
+          // timestamps instead. startedStatus implies on-site, enroute
+          // alone implies en-route.
+          if (phase === 'scheduled') {
+            const rec = taskRecsByRid.get(taskRid)
+            if (rec) {
+              if (rec[String(F.startedStatus)]?.value) phase = 'onsite'
+              else if (rec[String(F.enrouteStatus)]?.value) phase = 'enroute'
+            }
+          }
           cancelledTaskInfo[taskRid] = { phase, cancelledAt, cancelledBy }
           break
         }

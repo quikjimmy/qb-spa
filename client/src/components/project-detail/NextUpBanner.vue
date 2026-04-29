@@ -27,6 +27,10 @@ interface FieldIds {
 const auth = useAuthStore()
 const records = ref<QbRecord[]>([])
 const F = ref<FieldIds | null>(null)
+// Server-derived cancellation set from QB Arrivy task log. Cancelled
+// tasks must NOT show in "Next Up" — that banner is meant to show the
+// next *active* upcoming work.
+const cancelledTaskRids = ref<Set<string>>(new Set())
 const loading = ref(true)
 
 async function load() {
@@ -39,6 +43,7 @@ async function load() {
     const data = await res.json()
     records.value = data.records ?? []
     F.value = data.fields ?? null
+    cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
   } finally {
     loading.value = false
   }
@@ -113,7 +118,14 @@ const next = computed<NextEvent | null>(() => {
       const status = getStatus(r)
       return { r, valid, iso, status }
     })
-    .filter(x => x.valid && x.iso >= todayIsoStr && x.status.key !== 'submitted')
+    .filter(x => {
+      if (!x.valid || x.iso < todayIsoStr) return false
+      if (x.status.key === 'submitted') return false
+      // Skip log-derived cancelled tasks — they're not "next up" work.
+      const taskRid = String(qbv(x.r, 3) ?? '')
+      if (taskRid && cancelledTaskRids.value.has(taskRid)) return false
+      return true
+    })
     .sort((a, b) => +(a.valid as Date) - +(b.valid as Date))
 
   const best = candidates[0]

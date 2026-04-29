@@ -601,6 +601,9 @@ const stripSteps = computed<StripStep[]>(() => {
     arrivy_survey_status: arrivySurveyTask.value?.status ?? null,
     arrivy_install_status: arrivyInstallTask.value?.status ?? null,
     arrivy_inspection_status: arrivyInspectionTask.value?.status ?? null,
+    arrivy_survey_cancelled_at:     arrivySurveyTask.value?.cancelledAt     ?? null,
+    arrivy_install_cancelled_at:    arrivyInstallTask.value?.cancelledAt    ?? null,
+    arrivy_inspection_cancelled_at: arrivyInspectionTask.value?.cancelledAt ?? null,
   })
 })
 const transits = computed(() => project.value ? computeTransits(project.value) : [])

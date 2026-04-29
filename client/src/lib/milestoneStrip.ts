@@ -93,6 +93,12 @@ export interface ProjectStripFields {
   arrivy_survey_status?: ArrivyStatusKey | null
   arrivy_install_status?: ArrivyStatusKey | null
   arrivy_inspection_status?: ArrivyStatusKey | null
+  // Cancellation timestamp (ISO-Z) per kind — used in the milestone
+  // sub-step list so a cancelled survey shows "Cancelled · Apr 29" in
+  // place of "Scheduled · ...".
+  arrivy_survey_cancelled_at?: string | null
+  arrivy_install_cancelled_at?: string | null
+  arrivy_inspection_cancelled_at?: string | null
 }
 
 function has(v: string | null | undefined): boolean {
@@ -206,16 +212,26 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     else if (has(p.survey_scheduled) && isPast(p.survey_scheduled)) state = 'overdue'
     else if (has(p.survey_scheduled)) state = 'scheduled'
     const d = durLabel(p.survey_submitted, p.survey_approved)
+    // When cancelled, replace the bottom of the sub-step list with a
+    // SS Cancelled row dated to the cancellation timestamp. Keeps the
+    // upstream Scheduled / Submitted rows so the user still sees the
+    // pre-cancel state.
+    const subSteps: SubStep[] = arrivyCancelled
+      ? [
+          { label: 'Scheduled',    date: pickDate(p.survey_scheduled), state: subStateFromDates(p.survey_scheduled) },
+          { label: 'SS Cancelled', date: pickDate(p.arrivy_survey_cancelled_at), state: 'rejected' },
+        ]
+      : [
+          { label: 'Scheduled', date: pickDate(p.survey_scheduled), state: subStateFromDates(p.survey_scheduled) },
+          { label: 'Submitted', date: pickDate(p.survey_submitted), state: subStateFromDates(p.survey_submitted) },
+          { label: 'Approved',  date: pickDate(p.survey_approved),  state: subStateFromDates(p.survey_approved) },
+        ]
     return {
       id: 'survey', label: 'Survey', abbrev: 'Sur',
       state,
       date: pickDate(p.survey_approved, p.survey_submitted, p.survey_scheduled),
       durationDays: d.days, durationLabel: d.label,
-      subSteps: [
-        { label: 'Scheduled', date: pickDate(p.survey_scheduled), state: subStateFromDates(p.survey_scheduled) },
-        { label: 'Submitted', date: pickDate(p.survey_submitted), state: subStateFromDates(p.survey_submitted) },
-        { label: 'Approved',  date: pickDate(p.survey_approved),  state: subStateFromDates(p.survey_approved) },
-      ],
+      subSteps,
       feedKeywords: ['survey', 'site visit', 'site survey'],
       infoFlag: {
         show: state === 'overdue' || state === 'cancelled',
@@ -298,15 +314,21 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     else if (has(p.install_scheduled) && isPast(p.install_scheduled)) state = 'overdue'
     else if (has(p.install_scheduled)) state = 'scheduled'
     const d = durLabel(p.install_scheduled, p.install_completed)
+    const subSteps: SubStep[] = arrivyCancelled
+      ? [
+          { label: 'Scheduled',         date: pickDate(p.install_scheduled), state: subStateFromDates(p.install_scheduled) },
+          { label: 'Install Cancelled', date: pickDate(p.arrivy_install_cancelled_at), state: 'rejected' },
+        ]
+      : [
+          { label: 'Scheduled', date: pickDate(p.install_scheduled), state: subStateFromDates(p.install_scheduled) },
+          { label: 'Completed', date: pickDate(p.install_completed), state: subStateFromDates(p.install_completed) },
+        ]
     return {
       id: 'install', label: 'Install', abbrev: 'Ins',
       state,
       date: pickDate(p.install_completed, p.install_scheduled),
       durationDays: d.days, durationLabel: d.label,
-      subSteps: [
-        { label: 'Scheduled', date: pickDate(p.install_scheduled), state: subStateFromDates(p.install_scheduled) },
-        { label: 'Completed', date: pickDate(p.install_completed), state: subStateFromDates(p.install_completed) },
-      ],
+      subSteps,
       feedKeywords: ['install', 'crew', 'installation'],
       infoFlag: {
         show: state === 'overdue' || state === 'cancelled',
@@ -325,15 +347,21 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     else if (has(p.inspection_scheduled) && isPast(p.inspection_scheduled)) state = 'overdue'
     else if (has(p.inspection_scheduled)) state = 'scheduled'
     const d = durLabel(p.inspection_scheduled, p.inspection_passed)
+    const subSteps: SubStep[] = arrivyCancelled
+      ? [
+          { label: 'Scheduled',            date: pickDate(p.inspection_scheduled), state: subStateFromDates(p.inspection_scheduled) },
+          { label: 'Inspection Cancelled', date: pickDate(p.arrivy_inspection_cancelled_at), state: 'rejected' },
+        ]
+      : [
+          { label: 'Scheduled', date: pickDate(p.inspection_scheduled), state: subStateFromDates(p.inspection_scheduled) },
+          { label: 'Passed',    date: pickDate(p.inspection_passed),    state: subStateFromDates(p.inspection_passed) },
+        ]
     return {
       id: 'inspection', label: 'Inspection', abbrev: 'Isp',
       state,
       date: pickDate(p.inspection_passed, p.inspection_scheduled),
       durationDays: d.days, durationLabel: d.label,
-      subSteps: [
-        { label: 'Scheduled', date: pickDate(p.inspection_scheduled), state: subStateFromDates(p.inspection_scheduled) },
-        { label: 'Passed',    date: pickDate(p.inspection_passed),    state: subStateFromDates(p.inspection_passed) },
-      ],
+      subSteps,
       feedKeywords: ['inspection', 'inspect', 'ahj inspection'],
       infoFlag: {
         show: state === 'overdue' || state === 'cancelled',
