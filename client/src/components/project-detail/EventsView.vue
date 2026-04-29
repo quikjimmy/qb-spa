@@ -308,8 +308,30 @@ interface LogState {
   entries: LogEntry[] | null
 }
 
+interface PhotoEntry {
+  url: string
+  thumb: string
+  action: string
+  uploadedOn: string
+  uploadedBy: string
+  filename: string
+}
+
+interface PhotoState {
+  loading: boolean
+  configured: boolean
+  error: string
+  photos: PhotoEntry[]
+}
+
 const expandedRid = ref<string | null>(null)
 const logCache = ref<Record<string, LogState>>({})
+const photoCache = ref<Record<string, PhotoState>>({})
+
+// Lightbox for tapping a thumbnail.
+const lightboxUrl = ref<string | null>(null)
+function openLightbox(url: string) { lightboxUrl.value = url }
+function closeLightbox() { lightboxUrl.value = null }
 
 interface QbLogRecord { [k: string]: { value: unknown } }
 interface LogFields {
@@ -365,6 +387,38 @@ function isExpandable(t: TaskItem): boolean {
   return t.status.key === 'cancelled' || t.status.key === 'exception'
 }
 
+// Pull the Arrivy numeric task ID out of the QB-stored task URL. The QB
+// field stores something like https://app.arrivy.com/tasks/6697086139891712
+// — we just grab the last numeric path segment.
+function arrivyIdFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null
+  const m = String(url).match(/(\d{6,})/g)
+  return m && m.length ? m[m.length - 1]! : null
+}
+
+async function fetchPhotos(t: TaskItem) {
+  const arrivyId = arrivyIdFromUrl(t.taskUrl)
+  if (!arrivyId) return
+  if (photoCache.value[t.rid]) return
+  photoCache.value = { ...photoCache.value, [t.rid]: { loading: true, configured: true, error: '', photos: [] } }
+  try {
+    const res = await fetch(`/api/field/arrivy-task/${encodeURIComponent(arrivyId)}`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json() as { configured: boolean; photos: PhotoEntry[] }
+    photoCache.value = {
+      ...photoCache.value,
+      [t.rid]: { loading: false, configured: json.configured, error: '', photos: json.photos || [] },
+    }
+  } catch (e) {
+    photoCache.value = {
+      ...photoCache.value,
+      [t.rid]: { loading: false, configured: true, error: e instanceof Error ? e.message : String(e), photos: [] },
+    }
+  }
+}
+
 function toggleExpand(t: TaskItem) {
   if (!isExpandable(t)) return
   if (expandedRid.value === t.rid) {
@@ -373,6 +427,7 @@ function toggleExpand(t: TaskItem) {
   }
   expandedRid.value = t.rid
   fetchLog(t.rid)
+  fetchPhotos(t)
 }
 
 // Filter the raw log to the events that matter for cancellation context.
@@ -592,8 +647,46 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                     </li>
                   </ol>
 
-                  <!-- Open-in-Arrivy footer (where photos live) -->
-                  <div v-if="t.taskUrl" class="mt-2.5 flex items-center justify-between">
+                  <!-- Inline photos pulled directly from Arrivy's REST API
+                       (server-side proxy uses ARRIVY_AUTH_KEY/_TOKEN env
+                       vars). When the task has photos attached — e.g.
+                       arrival-on-site shots — they render as a thumb grid
+                       so the user sees the proof without leaving the
+                       project view. -->
+                  <div class="mt-3">
+                    <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Surveyor photos</div>
+                    <div v-if="photoCache[t.rid]?.loading" class="text-[11px] text-slate-400">Loading photos…</div>
+                    <div v-else-if="photoCache[t.rid] && !photoCache[t.rid]?.configured" class="text-[11px] text-amber-700/90">
+                      Arrivy API not configured — set <code class="text-[10.5px]">ARRIVY_AUTH_KEY</code> + <code class="text-[10.5px]">ARRIVY_AUTH_TOKEN</code> on the server.
+                    </div>
+                    <div v-else-if="photoCache[t.rid]?.error" class="text-[11px] text-rose-600">{{ photoCache[t.rid]?.error }}</div>
+                    <div v-else-if="photoCache[t.rid]?.photos.length" class="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+                      <button
+                        v-for="(p, i) in photoCache[t.rid]?.photos"
+                        :key="(p.url || '') + i"
+                        type="button"
+                        class="relative aspect-square rounded-md overflow-hidden bg-slate-100 ring-1 ring-slate-200 hover:ring-rose-400 transition-all cursor-pointer"
+                        :title="`${p.action || ''}${p.uploadedBy ? ' · ' + p.uploadedBy : ''}${p.uploadedOn ? ' · ' + p.uploadedOn : ''}`"
+                        @click.stop="openLightbox(p.url)"
+                      >
+                        <img
+                          v-if="p.thumb || p.url"
+                          :src="p.thumb || p.url"
+                          :alt="p.filename || 'Surveyor photo'"
+                          class="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        <span
+                          v-if="p.action"
+                          class="absolute bottom-0 left-0 right-0 px-1.5 py-0.5 text-[9.5px] font-medium text-white bg-black/55 truncate"
+                        >{{ p.action }}</span>
+                      </button>
+                    </div>
+                    <div v-else class="text-[11px] text-slate-400">No photos attached on Arrivy.</div>
+                  </div>
+
+                  <!-- Open-in-Arrivy footer -->
+                  <div v-if="t.taskUrl" class="mt-3 flex items-center justify-between">
                     <a
                       :href="t.taskUrl"
                       target="_blank"
@@ -601,7 +694,7 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                       class="inline-flex items-center gap-1 text-[11.5px] text-teal-700 hover:text-teal-800 hover:underline cursor-pointer"
                       @click.stop
                     >
-                      Open in Arrivy for photos & details
+                      Open task in Arrivy
                       <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M7 17L17 7"/><path d="M8 7h9v9"/>
                       </svg>
@@ -673,4 +766,30 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
       </div>
     </div>
   </SectionCard>
+
+  <!-- Photo lightbox — full-bleed view of a tapped surveyor photo. -->
+  <div
+    v-if="lightboxUrl"
+    class="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4 cursor-pointer"
+    role="dialog"
+    aria-label="Photo viewer"
+    @click="closeLightbox"
+  >
+    <img
+      :src="lightboxUrl"
+      alt="Surveyor photo"
+      class="max-w-full max-h-full object-contain rounded-md shadow-2xl"
+      @click.stop
+    />
+    <button
+      type="button"
+      class="absolute top-4 right-4 size-9 rounded-full bg-white/90 text-slate-800 hover:bg-white flex items-center justify-center shadow cursor-pointer"
+      aria-label="Close photo"
+      @click.stop="closeLightbox"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="size-4">
+        <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+      </svg>
+    </button>
+  </div>
 </template>

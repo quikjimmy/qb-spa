@@ -8,6 +8,7 @@
 // from the QB projects table separately) — no QB round-trip per render.
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { arrivyConfigured, getArrivyTask, getArrivyTaskFiles, ArrivyApiError, type ArrivyFile, type ArrivyTask } from '../lib/arrivy'
 
 const router = Router()
 
@@ -167,6 +168,66 @@ router.get('/late', async (req: Request, res: Response): Promise<void> => {
     }
     res.json({ lateByTask })
   } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// GET /api/field/arrivy-task/:arrivyId — direct Arrivy REST proxy.
+// Surfaces the photo + extras data that QB's mirror doesn't carry. The
+// :arrivyId is the long numeric task ID from app.arrivy.com/tasks/<id>.
+//
+// Returns:
+//   {
+//     configured: bool,        — false if env vars are missing
+//     photos: [{ url, thumb, action, uploadedOn, uploadedBy, filename }],
+//     raw: { ...full Arrivy task payload }
+//   }
+//
+// Photo extraction tolerates both `task.files` (inline) and a separate
+// /tasks/{id}/files endpoint, since which one Arrivy populates depends
+// on the account tier. We try inline first to keep API calls minimal.
+router.get('/arrivy-task/:arrivyId', async (req: Request, res: Response): Promise<void> => {
+  if (!arrivyConfigured()) {
+    res.json({
+      configured: false,
+      photos: [],
+      raw: null,
+      hint: 'Set ARRIVY_AUTH_KEY and ARRIVY_AUTH_TOKEN env vars on the server.',
+    })
+    return
+  }
+  const id = String(req.params['arrivyId'] || '').trim()
+  if (!id) { res.status(400).json({ error: 'arrivyId required' }); return }
+  try {
+    const task: ArrivyTask = await getArrivyTask(id)
+    const inlineFiles: ArrivyFile[] = (task.files || task.attachments || []) as ArrivyFile[]
+    let files: ArrivyFile[] = inlineFiles
+    if (!files.length) {
+      // Fallback to the standalone files endpoint if the task object
+      // didn't carry them. Soft-fail: a 404 here just means no separate
+      // files endpoint for this account, not that the task is broken.
+      try { files = await getArrivyTaskFiles(id) } catch { /* ignore */ }
+    }
+    const photos = files
+      .filter(f => {
+        const t = String(f.type || '').toLowerCase()
+        const url = String(f.file_url || '').toLowerCase()
+        return t.startsWith('image') || /\.(jpg|jpeg|png|gif|heic|webp)(\?|$)/.test(url)
+      })
+      .map(f => ({
+        url: f.file_url || '',
+        thumb: f.thumb_url || f.file_url || '',
+        action: f.action || '',
+        uploadedOn: f.uploaded_on || '',
+        uploadedBy: f.uploaded_by || '',
+        filename: f.filename || '',
+      }))
+    res.json({ configured: true, photos, raw: task })
+  } catch (e) {
+    if (e instanceof ArrivyApiError) {
+      res.status(e.status === 404 ? 404 : 502).json({ error: e.message })
+      return
+    }
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
 })
