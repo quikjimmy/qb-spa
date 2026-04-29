@@ -115,11 +115,15 @@ function getStatus(t: QbRecord): StatusInfo {
   const enrouteDt = qbv(t, F.value.enrouteStatus)
   const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete'
   const isOverdue = arrivyStatus === 'overdue'
-  // Calm tones for cancelled/exception — these are factual, not alerts.
-  const isCancelled = arrivyStatus === 'cancelled' || arrivyStatus === 'cancel'
-  const isException = arrivyStatus === 'exception' || arrivyStatus === 'not done' || arrivyStatus === 'notdone'
-  if (isCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-amber-50 text-amber-800', borderCls: 'border-l-amber-400', emoji: '⊘' }
-  if (isException) return { key: 'exception', label: 'Exception', pillCls: 'bg-amber-50 text-amber-800', borderCls: 'border-l-amber-400', emoji: '⊘' }
+  // Cancelled/exception are loud — this is the user's signal to pay attention
+  // (surveyor went out, project blocked). Defensive against QB casing variants:
+  // "cancelled", "canceled", "cancel", "Exception", "Not Done", with or
+  // without spaces / underscores.
+  const norm = arrivyStatus.replace(/[\s_-]+/g, '')
+  const isCancelled = norm === 'cancelled' || norm === 'canceled' || norm === 'cancel'
+  const isException = norm === 'exception' || norm === 'notdone'
+  if (isCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
+  if (isException) return { key: 'exception', label: 'Exception', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
   if (isArrivyComplete && !submittedDt) return { key: 'notsubmitted', label: 'Not Submitted', pillCls: 'bg-rose-100 text-rose-700', borderCls: 'border-l-rose-500', emoji: '❌' }
   if (submittedDt) return { key: 'submitted', label: 'Submitted', pillCls: 'bg-emerald-100 text-emerald-700', borderCls: 'border-l-emerald-500', emoji: '✅' }
   if (isOverdue) return { key: 'overdue', label: 'Overdue', pillCls: 'bg-rose-100 text-rose-700', borderCls: 'border-l-rose-500', emoji: '⚠️' }
@@ -456,12 +460,25 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
         <ul class="space-y-1.5">
           <template v-for="t in b.items" :key="t.rid">
             <li
-              class="rounded-md bg-white border-l-[3px]"
-              :class="[t.status.borderCls, isExpandable(t) ? 'cursor-pointer hover:bg-amber-50/40 transition-colors' : '']"
+              class="rounded-md border-l-[4px]"
+              :class="[
+                t.status.borderCls,
+                isExpandable(t) ? 'bg-rose-50/60 ring-1 ring-rose-200' : 'bg-white',
+                isExpandable(t) ? 'cursor-pointer hover:bg-rose-50 transition-colors' : '',
+              ]"
               @click="isExpandable(t) ? toggleExpand(t) : null"
             >
-              <div class="flex items-stretch gap-3 py-1.5 pl-2.5 pr-2">
-                <div class="shrink-0 w-12 text-center">
+              <div class="flex items-stretch gap-3 py-2 pl-2.5 pr-2">
+                <!-- Date column. For cancelled, swap the chip for a red X so
+                     the row reads "the survey didn't happen" at a glance. -->
+                <div v-if="isExpandable(t)" class="shrink-0 w-12 flex items-center justify-center">
+                  <span class="size-8 rounded-full bg-rose-600 text-white flex items-center justify-center" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-4">
+                      <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+                    </svg>
+                  </span>
+                </div>
+                <div v-else class="shrink-0 w-12 text-center">
                   <div class="text-[10px] text-slate-400 leading-none">{{ t.scheduled ? t.scheduled.toLocaleDateString('en-US', { weekday: 'short' }) : '' }}</div>
                   <div class="text-[12px] text-slate-700 tabular-nums leading-tight">{{ fmtDate(t.scheduled) }}</div>
                   <div class="text-[10px] text-slate-400 tabular-nums">{{ fmtTime(t.scheduled) }}</div>
@@ -473,12 +490,19 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                       :href="t.taskUrl"
                       target="_blank"
                       rel="noopener"
-                      class="text-[12.5px] font-medium text-slate-800 hover:text-teal-700 hover:underline truncate cursor-pointer"
+                      class="text-[12.5px] font-medium truncate cursor-pointer"
+                      :class="isExpandable(t) ? 'text-rose-900 hover:underline' : 'text-slate-800 hover:text-teal-700 hover:underline'"
                       :title="t.template"
                       @click.stop
                     >{{ t.template }}</a>
-                    <span v-else class="text-[12.5px] font-medium text-slate-800 truncate" :title="t.template">{{ t.template }}</span>
-                    <span class="inline-flex items-center px-1.5 py-[1px] rounded-full text-[10px] font-medium" :class="t.status.pillCls">
+                    <span v-else class="text-[12.5px] font-medium truncate" :class="isExpandable(t) ? 'text-rose-900' : 'text-slate-800'" :title="t.template">{{ t.template }}</span>
+                    <span
+                      class="inline-flex items-center gap-1 rounded-full font-semibold uppercase tracking-wide whitespace-nowrap"
+                      :class="[t.status.pillCls, isExpandable(t) ? 'px-2 py-[2px] text-[10.5px]' : 'px-1.5 py-[1px] text-[10px] font-medium normal-case tracking-normal']"
+                    >
+                      <svg v-if="isExpandable(t)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3" aria-hidden="true">
+                        <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+                      </svg>
                       {{ t.status.label }}
                     </span>
                     <!-- At-a-glance proof for cancelled rows: showed up + on-time -->
@@ -491,11 +515,16 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                     </template>
                     <span
                       v-if="isExpandable(t)"
-                      class="ml-auto text-[11px] text-amber-700/70 select-none"
+                      class="ml-auto text-[11px] text-rose-600/80 select-none"
                       aria-hidden="true"
                     >{{ expandedRid === t.rid ? '▾' : '▸' }}</span>
                   </div>
-                  <div v-if="t.crew" class="text-[11px] text-slate-500 truncate" :title="t.crew">{{ t.crew }}</div>
+                  <!-- Re-show date inline when the X icon replaces the date column -->
+                  <div v-if="isExpandable(t)" class="text-[11px] text-rose-700/80 tabular-nums">
+                    {{ t.scheduled ? t.scheduled.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : 'No date' }}
+                    <span v-if="t.scheduled" class="text-rose-700/60"> · {{ fmtTime(t.scheduled) }}</span>
+                  </div>
+                  <div v-if="t.crew" class="text-[11px] truncate" :class="isExpandable(t) ? 'text-rose-700/80' : 'text-slate-500'" :title="t.crew">{{ t.crew }}</div>
                 </div>
               </div>
 

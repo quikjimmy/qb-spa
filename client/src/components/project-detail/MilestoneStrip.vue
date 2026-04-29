@@ -19,6 +19,9 @@ const styles: Record<string, DotStyle> = {
   scheduled: { dot: 'bg-blue-500',     label: 'text-blue-700',  date: 'text-blue-700' },
   rejected:  { dot: 'bg-violet-500',   label: 'text-violet-700', date: 'text-violet-700' },
   overdue:   { dot: 'bg-stone-500 ring-2 ring-stone-300', label: 'text-stone-700', date: 'text-stone-700' },
+  // Cancelled — sized larger to accommodate the X glyph; dot is rendered
+  // separately in the template to lay an SVG over the rose-600 fill.
+  cancelled: { dot: 'bg-rose-600 ring-2 ring-rose-200', label: 'text-rose-700', date: 'text-rose-700' },
   not:       { dot: 'bg-slate-200',    label: 'text-slate-400', date: 'text-slate-300' },
 }
 
@@ -67,8 +70,20 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
           class="absolute left-1/2 right-0 h-px"
           :class="s.state === 'done' ? 'bg-emerald-300' : 'bg-slate-200'"
         />
-        <!-- Dot -->
+        <!-- Dot — cancelled steps render as a red filled circle with a
+             white X inside, matching the EventsView treatment. Other
+             states keep the simple solid dot. -->
         <span
+          v-if="s.state === 'cancelled'"
+          class="relative size-4 rounded-full bg-rose-600 ring-2 ring-rose-200 flex items-center justify-center"
+          aria-label="Cancelled"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" class="size-2.5 text-white">
+            <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+          </svg>
+        </span>
+        <span
+          v-else
           class="relative size-3.5 rounded-full"
           :class="[styles[s.state]?.dot ?? 'bg-slate-200', firstNonDoneIdx === i && s.state !== 'not' ? 'ring-4 ring-amber-100' : '']"
         />

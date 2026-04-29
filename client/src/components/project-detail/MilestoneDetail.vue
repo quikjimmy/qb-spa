@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { StripStep } from '@/lib/milestoneStrip'
 import { fmtFull } from '@/lib/milestoneStrip'
+import { STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 
 interface FeedRow {
   id: string | number
@@ -18,9 +19,16 @@ const props = defineProps<{
   coordinator?: string | null
   // referenceDate (sales_date or last activity) used as fallback when step has no date
   referenceDate?: string | null
+  /** Live Arrivy task status for this step (when there is one) — surfaces
+   *  alongside the milestone state so the user sees both: "Cancelled" the
+   *  Arrivy event AND that the project's overall stage is now blocked. */
+  arrivyStatus?: ArrivyStatusKey | null
+  arrivyTaskUrl?: string | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
+
+const arrivyInfo = computed(() => props.arrivyStatus ? STATUS_INFO[props.arrivyStatus] : null)
 
 const stateLabel: Record<string, string> = {
   done: 'Done',
@@ -28,6 +36,7 @@ const stateLabel: Record<string, string> = {
   scheduled: 'Scheduled',
   rejected: 'Rejected',
   overdue: 'Overdue',
+  cancelled: 'Cancelled',
   not: 'Not started',
 }
 
@@ -37,6 +46,7 @@ const stateClass: Record<string, string> = {
   scheduled: 'bg-blue-50 text-blue-700',
   rejected: 'bg-violet-50 text-violet-700',
   overdue: 'bg-stone-100 text-stone-700',
+  cancelled: 'bg-rose-600 text-white',
   not: 'bg-slate-100 text-slate-500',
 }
 
@@ -72,12 +82,39 @@ function fmtTime(s: string): string {
     role="region"
     :aria-label="`${step.label} detail`"
   >
-    <div class="flex items-center gap-2 px-4 pt-3.5 pb-2">
+    <div class="flex items-center gap-2 px-4 pt-3.5 pb-2 flex-wrap">
       <h3 class="text-[15px] font-semibold text-slate-900">{{ step.label }}</h3>
       <span
-        class="inline-flex items-center px-2 py-[2px] rounded-full text-[11px] font-medium"
+        class="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[11px] font-medium"
         :class="stateClass[step.state] ?? stateClass['not']"
-      >{{ stateLabel[step.state] ?? '—' }}</span>
+      >
+        <svg v-if="step.state === 'cancelled'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3" aria-hidden="true">
+          <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+        </svg>
+        {{ stateLabel[step.state] ?? '—' }}
+      </span>
+      <!-- Arrivy live-status pill: shown when the step has a corresponding
+           field task (survey/install/inspection). Lets the user see the
+           ground-truth Arrivy status without leaving the project view. -->
+      <span
+        v-if="arrivyInfo"
+        class="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[11px] font-medium uppercase tracking-wide"
+        :class="arrivyInfo.pillCls"
+        :title="`Arrivy task status: ${arrivyInfo.label}`"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="size-3 opacity-80" aria-hidden="true">
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+        Arrivy: {{ arrivyInfo.label }}
+      </span>
+      <a
+        v-if="arrivyTaskUrl"
+        :href="arrivyTaskUrl"
+        target="_blank"
+        rel="noopener"
+        class="text-[11px] text-teal-700 hover:text-teal-800 hover:underline cursor-pointer"
+      >Open task</a>
       <div class="flex-1" />
       <button
         class="text-slate-400 hover:text-slate-700 transition-colors text-sm cursor-pointer"

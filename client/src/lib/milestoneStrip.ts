@@ -12,8 +12,14 @@
 // Field IDs mapped from project_cache (see server/src/routes/projects.ts).
 // Future: wire NTP/M1/M2/M3 funding chips when those QB fields are cached.
 
-import type { StepState } from './milestones'
+import type { StepState as BaseStepState } from './milestones'
 import { weekdaysBetween, weekdaysSinceToday } from './bizDays'
+import type { ArrivyStatusKey } from './arrivyStatus'
+
+// Extend the base step state with 'cancelled' so milestones can render the
+// Arrivy cancel/exception case. Kept local to this module; the underlying
+// milestones.ts taxonomy stays unchanged.
+export type StepState = BaseStepState | 'cancelled'
 
 export interface SubStep {
   label: string
@@ -81,6 +87,12 @@ export interface ProjectStripFields {
   pto_submitted?: string | null
   pto_approved?: string | null
   status?: string | null
+  // Latest Arrivy task status per kind — derived from the project's Arrivy
+  // tasks (template name keyword match). Lets the strip render "cancelled"
+  // for survey/install/inspection without re-querying QB.
+  arrivy_survey_status?: ArrivyStatusKey | null
+  arrivy_install_status?: ArrivyStatusKey | null
+  arrivy_inspection_status?: ArrivyStatusKey | null
 }
 
 function has(v: string | null | undefined): boolean {
@@ -181,10 +193,15 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     infoFlag: { show: (p.status || '').toLowerCase().includes('reject') && !has(p.intake_completed), reason: 'Intake rejected' },
   }
 
-  // Survey
+  // Survey — Arrivy 'cancelled' state takes precedence over other in-flight
+  // signals so a cancelled site-survey reads as a red X even if the QB
+  // milestone columns still hold a stale scheduled date.
   const survey: StripStep = (() => {
     let state: StepState = 'not'
+    let flagReason = ''
+    const arrivyCancelled = p.arrivy_survey_status === 'cancelled'
     if (has(p.survey_approved)) state = 'done'
+    else if (arrivyCancelled) { state = 'cancelled'; flagReason = 'Site survey cancelled' }
     else if (has(p.survey_submitted)) state = 'active'
     else if (has(p.survey_scheduled) && isPast(p.survey_scheduled)) state = 'overdue'
     else if (has(p.survey_scheduled)) state = 'scheduled'
@@ -200,7 +217,10 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Approved',  date: pickDate(p.survey_approved),  state: subStateFromDates(p.survey_approved) },
       ],
       feedKeywords: ['survey', 'site visit', 'site survey'],
-      infoFlag: { show: state === 'overdue', reason: 'Survey scheduled date passed' },
+      infoFlag: {
+        show: state === 'overdue' || state === 'cancelled',
+        reason: state === 'cancelled' ? flagReason : 'Survey scheduled date passed',
+      },
     }
   })()
 
@@ -271,7 +291,10 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
   // Install
   const install: StripStep = (() => {
     let state: StepState = 'not'
+    let flagReason = ''
+    const arrivyCancelled = p.arrivy_install_status === 'cancelled'
     if (has(p.install_completed)) state = 'done'
+    else if (arrivyCancelled) { state = 'cancelled'; flagReason = 'Install cancelled' }
     else if (has(p.install_scheduled) && isPast(p.install_scheduled)) state = 'overdue'
     else if (has(p.install_scheduled)) state = 'scheduled'
     const d = durLabel(p.install_scheduled, p.install_completed)
@@ -285,14 +308,20 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Completed', date: pickDate(p.install_completed), state: subStateFromDates(p.install_completed) },
       ],
       feedKeywords: ['install', 'crew', 'installation'],
-      infoFlag: { show: state === 'overdue', reason: 'Install scheduled date passed' },
+      infoFlag: {
+        show: state === 'overdue' || state === 'cancelled',
+        reason: state === 'cancelled' ? flagReason : 'Install scheduled date passed',
+      },
     }
   })()
 
   // Inspection
   const inspection: StripStep = (() => {
     let state: StepState = 'not'
+    let flagReason = ''
+    const arrivyCancelled = p.arrivy_inspection_status === 'cancelled'
     if (has(p.inspection_passed)) state = 'done'
+    else if (arrivyCancelled) { state = 'cancelled'; flagReason = 'Inspection cancelled' }
     else if (has(p.inspection_scheduled) && isPast(p.inspection_scheduled)) state = 'overdue'
     else if (has(p.inspection_scheduled)) state = 'scheduled'
     const d = durLabel(p.inspection_scheduled, p.inspection_passed)
@@ -306,7 +335,10 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Passed',    date: pickDate(p.inspection_passed),    state: subStateFromDates(p.inspection_passed) },
       ],
       feedKeywords: ['inspection', 'inspect', 'ahj inspection'],
-      infoFlag: { show: state === 'overdue', reason: 'Inspection scheduled date passed' },
+      infoFlag: {
+        show: state === 'overdue' || state === 'cancelled',
+        reason: state === 'cancelled' ? flagReason : 'Inspection scheduled date passed',
+      },
     }
   })()
 

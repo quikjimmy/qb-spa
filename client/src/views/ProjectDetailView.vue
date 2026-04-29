@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
 import { weekdaysSinceToday } from '@/lib/bizDays'
+import { classifyArrivyTask, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 import CustomerCard from '@/components/project-detail/CustomerCard.vue'
 import CancelBanner from '@/components/project-detail/CancelBanner.vue'
 import UrgentBanner from '@/components/project-detail/UrgentBanner.vue'
@@ -335,8 +336,91 @@ async function loadFeed() {
   } catch { /* ignore */ }
 }
 
+// ── Arrivy task overlay for milestone strip ──
+//
+// We pull the project's Arrivy tasks once and derive the *latest* status
+// per template kind (survey/install/inspection). The milestone strip
+// reads these to surface a 'cancelled' state when a site visit was
+// cancelled, even if QB's milestone date columns still hold a stale
+// scheduled date.
+
+interface ArrivyTaskInfo {
+  status: ArrivyStatusKey
+  taskUrl: string
+  scheduledIso: string  // for picking the most recent
+}
+interface QbValue { value: unknown }
+type QbRecord = Record<string, QbValue>
+
+const arrivySurveyTask = ref<ArrivyTaskInfo | null>(null)
+const arrivyInstallTask = ref<ArrivyTaskInfo | null>(null)
+const arrivyInspectionTask = ref<ArrivyTaskInfo | null>(null)
+
+function qbVal(rec: QbRecord, fid: number): unknown { return rec[String(fid)]?.value ?? null }
+function qbStrField(rec: QbRecord, fid: number): string {
+  const v = qbVal(rec, fid)
+  if (v == null) return ''
+  if (Array.isArray(v)) {
+    return (v as Array<unknown>).map(item => {
+      if (item && typeof item === 'object') {
+        const o = item as Record<string, unknown>
+        return (o['name'] as string) || (o['email'] as string) || ''
+      }
+      return String(item ?? '')
+    }).filter(Boolean).join(', ')
+  }
+  return String(v)
+}
+
+async function loadArrivy() {
+  arrivySurveyTask.value = null
+  arrivyInstallTask.value = null
+  arrivyInspectionTask.value = null
+  try {
+    const res = await fetch(`/api/field/project-tasks?project_rid=${recordId.value}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json() as { records: QbRecord[]; fields: Record<string, number> }
+    const F = data.fields
+    if (!F) return
+    // Group records by kind, sort by scheduled-datetime desc, classify the latest.
+    const byKind: Record<'survey' | 'install' | 'inspection', QbRecord[]> = { survey: [], install: [], inspection: [] }
+    for (const rec of data.records || []) {
+      const tpl = qbStrField(rec, F['templateName']!).toLowerCase()
+      if (!tpl) continue
+      if (tpl.includes('survey') || tpl.includes('site visit')) byKind.survey.push(rec)
+      else if (tpl.includes('install')) byKind.install.push(rec)
+      else if (tpl.includes('inspect')) byKind.inspection.push(rec)
+    }
+    function latest(kind: 'survey' | 'install' | 'inspection'): ArrivyTaskInfo | null {
+      const recs = byKind[kind]
+      if (!recs.length) return null
+      // Pick the most recently scheduled (scheduled-DT field on Arrivy task).
+      recs.sort((a, b) => {
+        const av = String(qbVal(a, F['scheduledDateTime']!) ?? '')
+        const bv = String(qbVal(b, F['scheduledDateTime']!) ?? '')
+        return bv.localeCompare(av)
+      })
+      const rec = recs[0]!
+      const status = classifyArrivyTask({
+        rawStatus: qbStrField(rec, F['taskStatus']!),
+        arrived: qbStrField(rec, F['startedStatus']!) || null,
+        enroute: qbStrField(rec, F['enrouteStatus']!) || null,
+        submitted: qbStrField(rec, F['submittedDateTime']!) || null,
+      })
+      return {
+        status,
+        taskUrl: qbStrField(rec, F['taskUrl']!),
+        scheduledIso: String(qbVal(rec, F['scheduledDateTime']!) ?? ''),
+      }
+    }
+    arrivySurveyTask.value = latest('survey')
+    arrivyInstallTask.value = latest('install')
+    arrivyInspectionTask.value = latest('inspection')
+  } catch { /* arrivy is optional context — failing here shouldn't break the page */ }
+}
+
 async function loadAll() {
-  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed()])
+  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed(), loadArrivy()])
 }
 
 async function toggleStar() {
@@ -489,9 +573,27 @@ const customerForCard = computed(() => {
   }
 })
 
-const stripSteps = computed<StripStep[]>(() => project.value ? computeStripSteps(project.value) : [])
+const stripSteps = computed<StripStep[]>(() => {
+  if (!project.value) return []
+  return computeStripSteps({
+    ...project.value,
+    arrivy_survey_status: arrivySurveyTask.value?.status ?? null,
+    arrivy_install_status: arrivyInstallTask.value?.status ?? null,
+    arrivy_inspection_status: arrivyInspectionTask.value?.status ?? null,
+  })
+})
 const transits = computed(() => project.value ? computeTransits(project.value) : [])
 const selectedStep = computed<StripStep | null>(() => stripSteps.value.find(s => s.id === selectedStepId.value) ?? null)
+// Pick the Arrivy task that maps to the currently-selected milestone step
+// — only survey/install/inspection have Arrivy tasks; other steps return
+// null and the pill stays hidden.
+const selectedStepArrivy = computed<ArrivyTaskInfo | null>(() => {
+  const id = selectedStepId.value
+  if (id === 'survey') return arrivySurveyTask.value
+  if (id === 'install') return arrivyInstallTask.value
+  if (id === 'inspection') return arrivyInspectionTask.value
+  return null
+})
 
 function onStripSelect(id: string) {
   selectedStepId.value = selectedStepId.value === id ? null : id
@@ -594,6 +696,8 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :feed="feedItems"
             :coordinator="project.coordinator"
             :reference-date="project.sales_date"
+            :arrivy-status="selectedStepArrivy?.status ?? null"
+            :arrivy-task-url="selectedStepArrivy?.taskUrl ?? null"
             @close="closeDetail"
           />
         </div>

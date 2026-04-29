@@ -127,17 +127,24 @@ function fmtTime(ds: unknown): string {
 }
 
 // ─── Status classifier — direct port of getTaskStatus from the example ──
-type StatusKey = 'submitted' | 'notsubmitted' | 'overdue' | 'onsite' | 'enroute' | 'scheduled'
+// 'cancelled' added so a cancelled Arrivy task is loud + filterable here too,
+// using the same rose-600 fill as the project view's milestone X.
+type StatusKey = 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
 interface StatusInfo { key: StatusKey; label: string; pillCls: string; borderCls: string }
 function getTaskStatus(t: QbRecord): StatusInfo {
   const F = fieldIds.value
   if (!F) return { key: 'scheduled', label: 'Scheduled', pillCls: '', borderCls: '' }
-  const arrivyStatus = String(qbv(t, F.taskStatus) || '').toLowerCase()
+  const arrivyStatusRaw = String(qbv(t, F.taskStatus) || '').toLowerCase()
+  const arrivyStatus = arrivyStatusRaw.replace(/[\s_-]+/g, '')
   const submittedDt = qbv(t, F.submittedDateTime)
   const arrivedDt = qbv(t, F.startedStatus)
   const enrouteDt = qbv(t, F.enrouteStatus)
-  const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete'
+  const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'siteworkcomplete'
   const isOverdue = arrivyStatus === 'overdue'
+  const isCancelled = arrivyStatus === 'cancelled' || arrivyStatus === 'canceled' || arrivyStatus === 'cancel' || arrivyStatus === 'exception' || arrivyStatus === 'notdone'
+  // 0. Cancelled — loud red, takes precedence so the row reads as cancelled
+  //    even if a stale submitted/arrived timestamp is on the record.
+  if (isCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600 bg-rose-50/40' }
   // 1. Arrivy says complete but tech never submitted = Not Submitted (red flag)
   if (isArrivyComplete && !submittedDt) return { key: 'notsubmitted', label: 'Not Submitted', pillCls: 'bg-red-100 text-red-700', borderCls: 'border-l-red-500 bg-red-50/40' }
   // 2. Tech submitted = Submitted (the real completion signal)
@@ -156,6 +163,7 @@ function statusEmoji(t: QbRecord): string {
   const s = getTaskStatus(t)
   if (s.key === 'submitted') return '✅'
   if (s.key === 'notsubmitted') return '❌'
+  if (s.key === 'cancelled') return '✗'
   if (s.key === 'onsite') return '🚧'
   if (s.key === 'enroute') return '🚗'
   if (s.key === 'overdue') return '⚠️'
@@ -196,11 +204,12 @@ const kpis = computed<Kpi[]>(() => {
   const tasks = filteredTasks.value
   const F = fieldIds.value
   if (!F) return []
-  let submitted = 0, notSubmitted = 0, ssOverdue = 0, active = 0, lateCount = 0
+  let submitted = 0, notSubmitted = 0, ssOverdue = 0, active = 0, lateCount = 0, cancelled = 0
   for (const t of tasks) {
     const s = getTaskStatus(t)
     if (s.key === 'submitted') submitted++
     else if (s.key === 'notsubmitted') notSubmitted++
+    else if (s.key === 'cancelled') cancelled++
     else if (s.key === 'onsite' || s.key === 'enroute') active++
     if (isSurveyOverdue(t)) ssOverdue++
     if (lateLoaded.value) {
@@ -211,6 +220,7 @@ const kpis = computed<Kpi[]>(() => {
   }
   const list: Kpi[] = [
     { key: 'all', label: 'Total', value: tasks.length, tone: 'info' },
+    { key: 'cancelled', label: 'Cancelled', value: cancelled, tone: 'danger' },
     { key: 'notsubmitted', label: 'Not Submitted', value: notSubmitted, tone: 'danger' },
   ]
   if (lateLoaded.value) list.push({ key: 'late', label: 'SS Late', value: lateCount, tone: 'warning' })
@@ -306,6 +316,7 @@ function activityDot(t: QbRecord): string {
 function drillKpi(key: string) {
   let tasks: QbRecord[]; let title: string
   if (key === 'all') { tasks = filteredTasks.value; title = 'All Events' }
+  else if (key === 'cancelled') { tasks = filteredTasks.value.filter(t => getTaskStatus(t).key === 'cancelled'); title = 'Cancelled' }
   else if (key === 'notsubmitted') { tasks = filteredTasks.value.filter(t => getTaskStatus(t).key === 'notsubmitted'); title = 'Not Submitted' }
   else if (key === 'ssoverdue') { tasks = filteredTasks.value.filter(t => isSurveyOverdue(t)); title = 'SS Overdue' }
   else if (key === 'submitted') { tasks = filteredTasks.value.filter(t => getTaskStatus(t).key === 'submitted'); title = 'Submitted' }
@@ -356,6 +367,7 @@ function onKeydown(e: KeyboardEvent) {
 // Drill rows grouped by status — same order as the example.
 const drillGroups = computed(() => {
   const groups: Array<{ key: StatusKey; label: string; color: string; rows: QbRecord[] }> = [
+    { key: 'cancelled', label: 'Cancelled', color: 'text-rose-700', rows: [] },
     { key: 'notsubmitted', label: 'Not Submitted', color: 'text-red-600', rows: [] },
     { key: 'overdue', label: 'Overdue', color: 'text-red-600', rows: [] },
     { key: 'onsite', label: 'On Site', color: 'text-sky-600', rows: [] },
