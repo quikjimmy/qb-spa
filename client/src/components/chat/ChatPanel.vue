@@ -343,9 +343,7 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
 
         <!-- Empty state -->
         <div v-if="!activeThread || messages.length === 0" class="py-10 sm:py-16 text-center space-y-5">
-          <div class="inline-flex items-center justify-center size-12 rounded-2xl bg-gradient-to-br from-foreground/10 to-foreground/5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="text-foreground/70"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          </div>
+          <img src="/img/ai-chat-icon.png" alt="" class="w-14 h-14 mx-auto" aria-hidden="true" />
           <div class="space-y-1.5">
             <h2 class="text-lg font-semibold tracking-tight">
               {{ activeThread?.space_name ? `Chat Bot — ${activeThread.space_name}` : 'How can I help?' }}
