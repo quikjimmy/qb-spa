@@ -3,7 +3,7 @@ import db from '../db'
 import { dispatchRoleTask, routeAriRequest } from '../agents/taskDispatcher'
 import { reloadAgentScheduler } from '../agents/scheduler'
 import { proposeTaskPatch, reviewTaskPatch } from '../agents/taskCompliance'
-import { decryptSecret } from '../lib/crypto'
+import { getDefaultKeyFor } from '../lib/userProviderKeys'
 import { ollamaChat } from '../agents/ollamaChat'
 import { ollamaModelFor } from '../lib/llm-options'
 import { executeRoleTask, getRoleForRun } from '../agents/roleRunner'
@@ -37,6 +37,15 @@ interface RoleRow {
   tokens_used_month: number
   approval_required: number
   is_lab_only: number
+}
+
+function actionFeedbackKey(action: Record<string, unknown>): string {
+  return [
+    String(action['project_rid'] || ''),
+    String(action['category'] || ''),
+    String(action['issue'] || ''),
+    String(action['action'] || ''),
+  ].join('::')
 }
 
 function listRoleHierarchy() {
@@ -159,6 +168,61 @@ function listPcDigestRecipients(configId: number): Array<{ user_id: number; name
 
 function deliveryTitle(coordinator: string): string {
   return `Daily coordinator digest - ${coordinator}`
+}
+
+function taskDesignContext(task: Record<string, unknown>): Record<string, unknown> {
+  const department = String(task['department'] || '')
+  const taskName = String(task['name'] || '')
+  const base = {
+    role: task['role_name'],
+    department: task['department'],
+    task_name: task['name'],
+    task_type: task['task_type'],
+    operating_model: [
+      'Agents should route work to other agents/departments before surfacing human work.',
+      'Humans should see approvals, missing input, blocked exceptions, and audit-ready outcomes.',
+      'External messages and business-record mutations stay draft-only or approval-gated.',
+      'Reports should produce actionable inbox items, not passive reading-only summaries.',
+    ],
+  }
+  if (/Project Coordinators/i.test(department) || /daily coordinator digest/i.test(taskName)) {
+    return {
+      ...base,
+      quickbase: {
+        projects_table_id: 'br9kwm8na',
+        coordinator_email_field: { id: 822, label: 'Project Coordinator - Email', matching_rule: 'app user email equals QB email field' },
+        known_project_fields: [
+          { id: 3, label: 'Record ID', use: 'project link and audit reference' },
+          { id: 6, label: 'Project/customer name', use: 'identify project in inbox item' },
+          { id: 13, label: 'System size kW', use: 'optional work context' },
+          { id: 178, label: 'Install date', use: 'today/tomorrow install scope' },
+          { id: 189, label: 'State/location', use: 'regional filtering and routing' },
+          { id: 207, label: 'Permit submitted', use: 'permit aging and stuck permit detection' },
+          { id: 208, label: 'Permit approved', use: 'permit complete check' },
+          { id: 255, label: 'Project status', use: 'active project filter' },
+          { id: 318, label: 'AHJ', use: 'permit context' },
+          { id: 344, label: 'Lender', use: 'limited operational context, avoid sensitive financial details' },
+          { id: 491, label: 'Inspection passed/date context', use: 'inspection-to-PTO aging' },
+          { id: 534, label: 'Install complete', use: 'install complete/no inspection detection' },
+          { id: 538, label: 'PTO-related status/date context', use: 'inspection complete/no PTO detection' },
+        ],
+        current_live_queries: [
+          'todays_installs',
+          'tomorrows_installs',
+          'stuck_permits',
+          'ic_no_inspection',
+          'inspection_no_pto',
+        ],
+        recommended_scope: [
+          'projects assigned to the coordinator by field 822',
+          'active projects only unless the user explicitly asks for closed/cancelled context',
+          'actionable exceptions where an agent or human has a next step',
+          'install/permit/inspection/PTO milestone handoffs',
+        ],
+      },
+    }
+  }
+  return base
 }
 
 router.get('/roles', (_req: Request, res: Response): void => {
@@ -504,6 +568,30 @@ router.patch('/tasks/:id', (req: Request, res: Response): void => {
   res.json({ ok: true, review })
 })
 
+router.delete('/tasks/:id', (req: Request, res: Response): void => {
+  if (!requireAdmin(req, res)) return
+  const id = Number(req.params['id'])
+  const task = db.prepare(`SELECT id FROM agent_role_tasks WHERE id = ?`).get(id) as { id: number } | undefined
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' })
+    return
+  }
+
+  const removeTask = db.transaction(() => {
+    db.prepare(`DELETE FROM agent_delivery_items WHERE delivery_config_id IN (SELECT id FROM agent_delivery_configs WHERE task_id = ?)`).run(id)
+    db.prepare(`DELETE FROM agent_delivery_recipients WHERE delivery_config_id IN (SELECT id FROM agent_delivery_configs WHERE task_id = ?)`).run(id)
+    db.prepare(`DELETE FROM agent_delivery_configs WHERE task_id = ?`).run(id)
+    db.prepare(`DELETE FROM agent_task_schedules WHERE task_id = ?`).run(id)
+    db.prepare(`DELETE FROM agent_task_draft_messages WHERE task_id = ?`).run(id)
+    db.prepare(`DELETE FROM agent_task_drafts WHERE task_id = ?`).run(id)
+    db.prepare(`UPDATE agent_task_runs SET task_id = NULL WHERE task_id = ?`).run(id)
+    db.prepare(`DELETE FROM agent_role_tasks WHERE id = ?`).run(id)
+  })
+  removeTask()
+  reloadAgentScheduler()
+  res.json({ ok: true })
+})
+
 router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise<void> => {
   if (!requireAdmin(req, res)) return
   const id = Number(req.params['id'])
@@ -538,14 +626,13 @@ router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise
     ? { ...task, ...(workingDraft as Record<string, unknown>) }
     : task
   let proposal = proposeTaskPatch(workingTask, message)
-  const cfg = db.prepare(
-    `SELECT api_key_encrypted, base_url FROM user_ollama_config WHERE user_id = ?`
-  ).get(req.user?.userId || 0) as { api_key_encrypted: string | null; base_url: string } | undefined
-  if (cfg?.api_key_encrypted) {
+  const context = taskDesignContext(task)
+  const cfg = req.user ? getDefaultKeyFor(req.user.userId, 'ollama') : null
+  if (cfg) {
     try {
-      const apiKey = decryptSecret(cfg.api_key_encrypted)
+      const apiKey = cfg.apiKey
       const llm = await ollamaChat({
-        baseUrl: cfg.base_url || 'https://ollama.com',
+        baseUrl: cfg.baseUrl || 'https://ollama.com',
         apiKey,
         model: ollamaModelFor('ollama-qwen2.5-7b') || 'qwen2.5:7b',
         temperature: 0.1,
@@ -555,9 +642,12 @@ router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise
           {
             role: 'system',
             content: [
-              'You help admins edit controlled production agent tasks.',
+              'You help admins design controlled production agent tasks through chat.',
+              'Act like a configuration partner: answer questions, offer options, explain tradeoffs, then propose edits only when the user asks to change the task.',
               'Return only JSON with keys reply and patch.',
               'patch may include name, task_type, instructions, input_template_json, output_schema_json, enabled.',
+              'If the user is asking a question or exploring scope, return a useful reply and use an empty patch object.',
+              'If you propose instructions, write the full recommended instructions, not only an appended note.',
               'Do not include irreversible actions as enabled behavior. Keep external communication draft-only.',
               'Prefer agent-to-agent routing recommendations over human report reading.',
             ].join(' '),
@@ -567,6 +657,7 @@ router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise
             content: JSON.stringify({
               current_task: task,
               current_draft: workingTask,
+              role_and_crm_context: context,
               prior_conversation: db.prepare(
                 `SELECT role, content FROM agent_task_draft_messages
                  WHERE task_id = ? AND user_id = ?
@@ -582,13 +673,15 @@ router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise
         const cleaned = llm.output.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
         const parsed = JSON.parse(cleaned) as { reply?: string; patch?: Record<string, unknown> }
         if (parsed.patch && typeof parsed.patch === 'object') {
-          const fallback = proposeTaskPatch(workingTask, message)
+          const fallback = proposal
           proposal = {
-            reply: parsed.reply || 'I drafted a task update and ran the compliance review.',
+            reply: parsed.reply || fallback.reply,
             patch: {
               ...fallback.patch,
               ...parsed.patch,
-              instructions: parsed.patch['instructions'] || fallback.patch['instructions'],
+              ...(Object.prototype.hasOwnProperty.call(parsed.patch, 'instructions') || Object.prototype.hasOwnProperty.call(fallback.patch, 'instructions')
+                ? { instructions: parsed.patch['instructions'] || fallback.patch['instructions'] }
+                : {}),
             },
           }
         }
@@ -603,7 +696,9 @@ router.post('/tasks/:id/edit-chat', async (req: Request, res: Response): Promise
   const review = reviewTaskPatch(workingTask, proposal.patch)
   const assistantContent = review.review_required === 'blocked'
     ? `${review.summary} I did not apply this change to the draft.`
-    : `${proposal.reply}\n\nProposed draft changes: ${Object.keys(proposal.patch || {}).join(', ') || 'none'}. Apply them if they match what you want.`
+    : Object.keys(proposal.patch || {}).length
+      ? `${proposal.reply}\n\nProposed draft changes: ${Object.keys(proposal.patch || {}).join(', ')}. Apply them if they match what you want.`
+      : proposal.reply
   db.prepare(
     `INSERT INTO agent_task_draft_messages
        (task_id, user_id, role, content, patch_json, compliance_review_json)
@@ -749,7 +844,41 @@ router.get('/delivery/inbox', (req: Request, res: Response): void => {
      ${where}
      ORDER BY di.created_at DESC
      LIMIT ?`
-  ).all(...params, limit)
+  ).all(...params, limit) as Array<Record<string, unknown>>
+  const feedbackRows = db.prepare(
+    `SELECT source_delivery_item_id, action_key, decision, comment, user_id, created_at
+     FROM agent_action_feedback
+     WHERE source_delivery_item_id IN (${rows.map(() => '?').join(',') || 'NULL'})
+     ORDER BY created_at DESC`
+  ).all(...rows.map(row => row['id'])) as Array<{ source_delivery_item_id: number; action_key: string; decision: string; comment: string | null; user_id: number | null; created_at: string }>
+
+  const feedbackByDelivery = new Map<number, Map<string, { decision: string; comment: string | null; created_at: string }>>()
+  for (const feedback of feedbackRows) {
+    if (!feedbackByDelivery.has(feedback.source_delivery_item_id)) feedbackByDelivery.set(feedback.source_delivery_item_id, new Map())
+    const bucket = feedbackByDelivery.get(feedback.source_delivery_item_id)!
+    if (!bucket.has(feedback.action_key)) {
+      bucket.set(feedback.action_key, { decision: feedback.decision, comment: feedback.comment, created_at: feedback.created_at })
+    }
+  }
+
+  for (const row of rows) {
+    const raw = row['body_json']
+    if (typeof raw !== 'string') continue
+    try {
+      const body = JSON.parse(raw) as Record<string, unknown>
+      const actions = Array.isArray(body['actions']) ? body['actions'] as Array<Record<string, unknown>> : []
+      const feedback = feedbackByDelivery.get(Number(row['id']))
+      if (feedback && actions.length) {
+        body['actions'] = actions.map(action => {
+          const matched = feedback.get(actionFeedbackKey(action))
+          return matched ? { ...action, feedback: matched } : action
+        })
+        row['body_json'] = JSON.stringify(body)
+      }
+    } catch {
+      // Ignore malformed body_json; existing preview path will handle it.
+    }
+  }
   res.json({ rows, scope: showAll ? 'all' : 'mine' })
 })
 
@@ -769,6 +898,148 @@ router.post('/delivery/inbox/:id/unread', (req: Request, res: Response): void =>
      WHERE id = ? AND user_id = ?`
   ).run(Number(req.params['id']), req.user?.userId || 0)
   res.json({ ok: true })
+})
+
+router.post('/delivery/inbox/:id/review', (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  const body = req.body as Record<string, unknown>
+  const decision = String(body['decision'] || '').trim().toLowerCase()
+  const comment = String(body['comment'] || '').trim()
+  if (!['approved', 'dismissed', 'commented'].includes(decision)) {
+    res.status(400).json({ error: 'decision must be approved, dismissed, or commented' })
+    return
+  }
+
+  const item = db.prepare(`SELECT id, user_id FROM agent_delivery_items WHERE id = ? AND deleted_at IS NULL`).get(id) as { id: number; user_id: number } | undefined
+  if (!item) {
+    res.status(404).json({ error: 'Inbox item not found' })
+    return
+  }
+  const canReview = item.user_id === (req.user?.userId || 0) || isAdmin(req)
+  if (!canReview) {
+    res.status(403).json({ error: 'Not allowed to review this inbox item' })
+    return
+  }
+
+  db.prepare(
+    `UPDATE agent_delivery_items
+     SET review_status = ?, review_comment = ?, reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(decision, comment || null, req.user?.userId || null, id)
+  res.json({ ok: true })
+})
+
+router.post('/delivery/inbox/:id/actions/create-task', (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  const body = req.body as Record<string, unknown>
+  const action = (body['action'] || {}) as Record<string, unknown>
+  const source = db.prepare(
+    `SELECT di.id, di.task_run_id, tr.agent_role_id
+     FROM agent_delivery_items di
+     LEFT JOIN agent_task_runs tr ON tr.id = di.task_run_id
+     WHERE di.id = ? AND di.deleted_at IS NULL`
+  ).get(id) as { id: number; task_run_id: number | null; agent_role_id: number | null } | undefined
+  if (!source) {
+    res.status(404).json({ error: 'Inbox item not found' })
+    return
+  }
+
+  const title = String(action['action'] || '').trim()
+  if (!title) {
+    res.status(400).json({ error: 'action.action is required' })
+    return
+  }
+
+  const projectRid = action['project_rid'] ? String(action['project_rid']) : null
+  const projectName = action['project'] ? String(action['project']) : null
+  const issue = action['issue'] ? String(action['issue']) : ''
+  const nextStep = action['recommended_next_step'] ? String(action['recommended_next_step']) : ''
+  const detail = [issue, nextStep].filter(Boolean).join('\n\n')
+
+  const result = db.prepare(
+    `INSERT INTO agent_work_items
+       (source_delivery_item_id, task_run_id, project_rid, project_name, title, detail, category, status, assigned_user_id, created_by_user_id, created_by_agent_role_id, action_payload_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  ).run(
+    id,
+    source.task_run_id || null,
+    projectRid,
+    projectName,
+    title,
+    detail || null,
+    action['category'] ? String(action['category']) : null,
+    req.user?.userId || null,
+    req.user?.userId || null,
+    source.agent_role_id || null,
+    JSON.stringify(action),
+  )
+
+  db.prepare(
+    `INSERT INTO agent_action_feedback
+       (source_delivery_item_id, task_run_id, project_rid, category, action_key, decision, comment, user_id)
+     VALUES (?, ?, ?, ?, ?, 'approved', ?, ?)`
+  ).run(
+    id,
+    source.task_run_id || null,
+    projectRid,
+    action['category'] ? String(action['category']) : null,
+    actionFeedbackKey(action),
+    `Follow-up task created: ${title}`,
+    req.user?.userId || null,
+  )
+
+  db.prepare(
+    `UPDATE agent_delivery_items
+     SET review_status = 'approved', review_comment = COALESCE(review_comment, ?), reviewed_by_user_id = ?, reviewed_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(`Follow-up task created from Ari finding: ${title}`, req.user?.userId || null, id)
+
+  res.json({ ok: true, id: Number(result.lastInsertRowid) })
+})
+
+router.post('/delivery/inbox/:id/actions/review', (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  const body = req.body as Record<string, unknown>
+  const action = (body['action'] || {}) as Record<string, unknown>
+  const decision = String(body['decision'] || '').trim().toLowerCase()
+  const comment = String(body['comment'] || '').trim()
+  if (!['approved', 'dismissed', 'commented'].includes(decision)) {
+    res.status(400).json({ error: 'decision must be approved, dismissed, or commented' })
+    return
+  }
+  if (!action || typeof action !== 'object') {
+    res.status(400).json({ error: 'action is required' })
+    return
+  }
+
+  const item = db.prepare(`SELECT id, user_id, task_run_id FROM agent_delivery_items WHERE id = ? AND deleted_at IS NULL`).get(id) as { id: number; user_id: number; task_run_id: number | null } | undefined
+  if (!item) {
+    res.status(404).json({ error: 'Inbox item not found' })
+    return
+  }
+  const canReview = item.user_id === (req.user?.userId || 0) || isAdmin(req)
+  if (!canReview) {
+    res.status(403).json({ error: 'Not allowed to review this action' })
+    return
+  }
+
+  const key = actionFeedbackKey(action)
+  const result = db.prepare(
+    `INSERT INTO agent_action_feedback
+       (source_delivery_item_id, task_run_id, project_rid, category, action_key, decision, comment, user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    item.task_run_id || null,
+    action['project_rid'] ? String(action['project_rid']) : null,
+    action['category'] ? String(action['category']) : null,
+    key,
+    decision,
+    comment || null,
+    req.user?.userId || null,
+  )
+
+  res.json({ ok: true, id: Number(result.lastInsertRowid), action_key: key })
 })
 
 router.delete('/delivery/inbox/:id', (req: Request, res: Response): void => {
@@ -810,6 +1081,99 @@ router.post('/delivery/inbox/:id/forward', (req: Request, res: Response): void =
     source['body_json'] || null,
     source['error'] || null,
   )
+  res.json({ ok: true })
+})
+
+router.get('/work-items', (req: Request, res: Response): void => {
+  const limit = Math.min(Number(req.query['limit'] || 100), 500)
+  const scope = String(req.query['scope'] || 'mine')
+  const status = String(req.query['status'] || 'open')
+  const showAll = scope === 'all' && isAdmin(req)
+  const where: string[] = []
+  const params: unknown[] = []
+  if (!showAll) {
+    where.push('wi.assigned_user_id = ?')
+    params.push(req.user?.userId || 0)
+  }
+  if (status === 'active') {
+    where.push(`wi.status IN ('open', 'in_progress')`)
+  } else if (status !== 'all') {
+    where.push('wi.status = ?')
+    params.push(status)
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const rows = db.prepare(
+    `SELECT wi.*, au.name AS assigned_user_name, cu.name AS created_by_user_name, ar.name AS created_by_agent_name
+     FROM agent_work_items wi
+     LEFT JOIN users au ON au.id = wi.assigned_user_id
+     LEFT JOIN users cu ON cu.id = wi.created_by_user_id
+     LEFT JOIN agent_roles ar ON ar.id = wi.created_by_agent_role_id
+     ${clause}
+     ORDER BY
+       CASE wi.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+       wi.updated_at DESC
+     LIMIT ?`
+  ).all(...params, limit)
+  res.json({ rows, scope: showAll ? 'all' : 'mine' })
+})
+
+router.post('/work-items', (req: Request, res: Response): void => {
+  const body = req.body as Record<string, unknown>
+  const title = String(body['title'] || '').trim()
+  if (!title) {
+    res.status(400).json({ error: 'title is required' })
+    return
+  }
+  const result = db.prepare(
+    `INSERT INTO agent_work_items
+       (project_rid, project_name, title, detail, category, status, assigned_user_id, created_by_user_id, action_payload_json, due_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  ).run(
+    body['project_rid'] ? String(body['project_rid']) : null,
+    body['project_name'] ? String(body['project_name']) : null,
+    title,
+    body['detail'] ? String(body['detail']) : null,
+    body['category'] ? String(body['category']) : null,
+    Number(body['assigned_user_id'] || req.user?.userId || 0),
+    req.user?.userId || null,
+    body['action_payload_json'] ? JSON.stringify(body['action_payload_json']) : null,
+    body['due_at'] ? String(body['due_at']) : null,
+  )
+  res.json({ ok: true, id: Number(result.lastInsertRowid) })
+})
+
+router.patch('/work-items/:id', (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  const body = req.body as Record<string, unknown>
+  const existing = db.prepare(`SELECT id, assigned_user_id FROM agent_work_items WHERE id = ?`).get(id) as { id: number; assigned_user_id: number | null } | undefined
+  if (!existing) {
+    res.status(404).json({ error: 'Work item not found' })
+    return
+  }
+  const canEdit = isAdmin(req) || existing.assigned_user_id === (req.user?.userId || 0)
+  if (!canEdit) {
+    res.status(403).json({ error: 'Not allowed to update this work item' })
+    return
+  }
+  const allowed = ['title', 'detail', 'status', 'due_at']
+  const sets: string[] = []
+  const params: unknown[] = []
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      sets.push(`${key} = ?`)
+      params.push(body[key] ?? null)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'status') && String(body['status']) === 'done') {
+    sets.push('completed_at = CURRENT_TIMESTAMP')
+  }
+  if (!sets.length) {
+    res.status(400).json({ error: 'Nothing to update' })
+    return
+  }
+  sets.push('updated_at = CURRENT_TIMESTAMP')
+  params.push(id)
+  db.prepare(`UPDATE agent_work_items SET ${sets.join(', ')} WHERE id = ?`).run(...params)
   res.json({ ok: true })
 })
 
@@ -876,7 +1240,7 @@ router.get('/runs', (req: Request, res: Response): void => {
   if (roleId) { where.push('r.agent_role_id = ?'); params.push(roleId) }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const rows = db.prepare(
-    `SELECT r.*, ar.name AS role_name, t.name AS task_name
+    `SELECT r.*, ar.name AS role_name, t.name AS task_name, t.runtime AS task_runtime
      FROM agent_task_runs r
      JOIN agent_roles ar ON ar.id = r.agent_role_id
      LEFT JOIN agent_role_tasks t ON t.id = r.task_id

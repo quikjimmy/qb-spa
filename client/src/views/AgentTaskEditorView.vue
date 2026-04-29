@@ -28,6 +28,8 @@ const testing = ref(false)
 const requestingReview = ref(false)
 const error = ref('')
 const saved = ref('')
+const users = ref<Array<{ id: number; name: string; email: string }>>([])
+const selectedTestUserId = ref<number | ''>('')
 
 const taskId = computed(() => Number(route.params.id))
 const criteria = computed(() => [
@@ -45,6 +47,14 @@ const taskSummary = computed(() => ({
   status: isRequested.value ? 'In production review' : 'Draft editable',
   schedule: task.value?.cron_expr ? `${task.value.cron_expr} (${task.value.timezone || 'local'})` : 'Manual',
 }))
+const taskTypes = ['summary', 'outreach', 'classification', 'escalation', 'digest', 'custom']
+const proposedDraft = computed(() => pendingPatch.value ? { ...draft.value, ...pendingPatch.value } : null)
+const instructionDiff = computed(() => {
+  const patchInstructions = pendingPatch.value?.instructions
+  if (typeof patchInstructions !== 'string') return []
+  return diffLines(String(draft.value.instructions || ''), patchInstructions)
+})
+const hasPendingPatch = computed(() => pendingPatch.value && Object.keys(pendingPatch.value).length > 0)
 
 function parseJson(raw: unknown, fallback: any) {
   if (!raw) return fallback
@@ -84,6 +94,44 @@ function summarizePatch(patch: Record<string, any>): string {
   return `Updated draft fields: ${changed.join(', ')}.`
 }
 
+function diffLines(before: string, after: string) {
+  const a = before.split(/\r?\n/)
+  const b = after.split(/\r?\n/)
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0))
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      dp[i]![j] = (a[i] || '') === (b[j] || '') ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
+    }
+  }
+  const out: Array<{ type: 'same' | 'added' | 'removed'; text: string }> = []
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      out.push({ type: 'same', text: a[i] || '' })
+      i++
+      j++
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+      out.push({ type: 'removed', text: a[i] || '' })
+      i++
+    } else {
+      out.push({ type: 'added', text: b[j] || '' })
+      j++
+    }
+  }
+  while (i < a.length) out.push({ type: 'removed', text: a[i++] || '' })
+  while (j < b.length) out.push({ type: 'added', text: b[j++] || '' })
+  return out.filter(line => line.text.trim() || line.type !== 'same')
+}
+
+async function loadUsers() {
+  if (!auth.isAdmin) return
+  const res = await fetch('/api/admin/users', { headers: hdrs() })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return
+  users.value = data.users || []
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -103,6 +151,7 @@ async function load() {
       review: parseJson(row.compliance_review_json, null),
     }))
     resetDraftFromTask()
+    await loadUsers()
   } finally { loading.value = false }
 }
 
@@ -140,10 +189,13 @@ async function ask() {
       return
     }
     const patch = data.patch || {}
-    pendingPatch.value = patch
+    const changed = Object.keys(patch)
+    pendingPatch.value = changed.length ? patch : null
     messages.value.push({
       role: 'assistant',
-      content: `${data.reply || 'I proposed a draft update.'}\n\n${summarizePatch(patch)}\n\nApply these changes if this matches what you want.`,
+      content: changed.length
+        ? `${data.reply || 'I proposed a draft update.'}\n\n${summarizePatch(patch)}\n\nAccept these changes if this matches what you want.`
+        : data.reply || 'I reviewed the task context. Ask me to turn this into draft instructions when you are ready.',
       patch,
       review: review.value,
     })
@@ -155,6 +207,12 @@ function applyPendingPatch() {
   draft.value = { ...draft.value, ...pendingPatch.value }
   messages.value.push({ role: 'system', content: 'Proposed changes applied to the working draft.', review: review.value })
   pendingPatch.value = null
+}
+
+function declinePendingPatch() {
+  if (!pendingPatch.value || isRequested.value) return
+  pendingPatch.value = null
+  messages.value.push({ role: 'system', content: 'Proposed changes declined. Continue the chat with what should change next.', review: review.value })
 }
 
 async function saveDraft(): Promise<boolean> {
@@ -201,13 +259,17 @@ async function withdrawReview() {
 }
 
 function samplePayload() {
-  return {
-    coordinator: 'Paige Prymak',
-    day: new Date().toLocaleDateString(undefined, { weekday: 'long' }),
-    installs: [{ rid: 12345, customer_name: 'Sample Project', location: 'Tampa, FL', lender: 'GoodLeap', permit_status: 'Permit approved', system_kw: 8.4 }],
-    attention_items: [{ rid: 12347, project_name: 'Patel Residence', issue: 'Install complete, no inspection', context: 'Final inspection not confirmed after install completion.', system_kw: 7.2 }],
-    wins: ['Sample win for output validation'],
+  const selectedUser = users.value.find(user => user.id === Number(selectedTestUserId.value))
+  const testUser = selectedUser || auth.user
+  if (String(draft.value.name || task.value?.name || '') === 'Generate daily coordinator digest') {
+    return {
+      use_live_data: true,
+      coordinator: testUser?.name || 'Project Coordinator',
+      coordinator_email: testUser?.email || '',
+      inspection_days: 30,
+    }
   }
+  return testUser ? { test_user_id: testUser.id, test_user_name: testUser.name, test_user_email: testUser.email } : {}
 }
 
 async function testDraft() {
@@ -290,7 +352,8 @@ function reviewClass(level?: string) {
               <CardDescription>Ask for changes. Apply proposed edits only when they match what you want.</CardDescription>
             </div>
             <div class="flex flex-wrap gap-2">
-              <Button v-if="pendingPatch && !isRequested" size="sm" class="h-8 text-xs" @click="applyPendingPatch">Apply proposed changes</Button>
+              <Button v-if="hasPendingPatch && !isRequested" size="sm" class="h-8 text-xs" @click="applyPendingPatch">Accept changes</Button>
+              <Button v-if="hasPendingPatch && !isRequested" size="sm" variant="outline" class="h-8 text-xs" @click="declinePendingPatch">Decline</Button>
               <Button size="sm" variant="outline" class="h-8 text-xs" :disabled="testing" @click="testDraft">{{ testing ? 'Testing...' : 'Test draft' }}</Button>
               <Button size="sm" variant="outline" class="h-8 text-xs" :disabled="saving || isRequested" @click="saveDraft">{{ saving ? 'Saving...' : 'Save draft' }}</Button>
               <Button v-if="!isRequested" size="sm" variant="outline" class="h-8 text-xs" :disabled="requestingReview || review?.review_required === 'blocked'" @click="requestReview">{{ requestingReview ? 'Requesting...' : 'Request review' }}</Button>
@@ -322,6 +385,13 @@ function reviewClass(level?: string) {
             </div>
           </div>
           <div class="space-y-2 border-t pt-3">
+            <div v-if="auth.isAdmin && users.length" class="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2">
+              <Label class="text-xs">Test as user</Label>
+              <select v-model="selectedTestUserId" class="h-8 min-w-52 rounded-md border bg-background px-2 text-xs">
+                <option value="">Me - {{ auth.user?.name }}</option>
+                <option v-for="user in users" :key="user.id" :value="user.id">{{ user.name }} - {{ user.email }}</option>
+              </select>
+            </div>
             <textarea
               v-model="message"
               class="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm"
@@ -358,13 +428,70 @@ function reviewClass(level?: string) {
             <CardDescription>{{ isRequested ? 'Locked during production review.' : 'Editable draft fields.' }}</CardDescription>
           </CardHeader>
           <CardContent class="space-y-3">
+            <div v-if="hasPendingPatch" class="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p class="text-sm font-medium text-amber-950">Proposed changes waiting</p>
+                  <p class="text-xs text-amber-800">Review the red/green diff before accepting it into the draft.</p>
+                </div>
+                <div class="flex gap-2">
+                  <Button size="sm" class="h-7 text-[11px]" @click="applyPendingPatch">Accept</Button>
+                  <Button size="sm" variant="outline" class="h-7 text-[11px]" @click="declinePendingPatch">Decline</Button>
+                </div>
+              </div>
+              <div class="mt-3 space-y-2 text-xs">
+                <div v-if="pendingPatch?.name && pendingPatch.name !== draft.name" class="grid gap-1">
+                  <p class="font-medium">Task name</p>
+                  <p class="rounded bg-red-100 px-2 py-1 text-red-800 line-through">{{ draft.name }}</p>
+                  <p class="rounded bg-emerald-100 px-2 py-1 text-emerald-800">{{ pendingPatch.name }}</p>
+                </div>
+                <div v-if="pendingPatch?.task_type && pendingPatch.task_type !== draft.task_type" class="grid gap-1">
+                  <p class="font-medium">Task type</p>
+                  <p class="rounded bg-red-100 px-2 py-1 text-red-800 line-through">{{ draft.task_type }}</p>
+                  <p class="rounded bg-emerald-100 px-2 py-1 text-emerald-800">{{ pendingPatch.task_type }}</p>
+                </div>
+                <div v-if="Object.prototype.hasOwnProperty.call(pendingPatch || {}, 'enabled') && Number(pendingPatch?.enabled) !== Number(draft.enabled)" class="grid gap-1">
+                  <p class="font-medium">Enabled</p>
+                  <p class="rounded bg-red-100 px-2 py-1 text-red-800 line-through">{{ Number(draft.enabled) === 1 ? 'Yes' : 'No' }}</p>
+                  <p class="rounded bg-emerald-100 px-2 py-1 text-emerald-800">{{ Number(pendingPatch?.enabled) === 1 ? 'Yes' : 'No' }}</p>
+                </div>
+                <div v-if="instructionDiff.length" class="grid gap-1">
+                  <p class="font-medium">Instructions</p>
+                  <div class="max-h-80 overflow-auto rounded-md border bg-background p-2 font-mono text-[11px] leading-relaxed">
+                    <p
+                      v-for="(line, idx) in instructionDiff"
+                      :key="idx"
+                      class="whitespace-pre-wrap px-1"
+                      :class="line.type === 'removed' ? 'bg-red-100 text-red-800 line-through' : line.type === 'added' ? 'bg-emerald-100 text-emerald-800' : 'text-muted-foreground'"
+                    >
+                      <span class="select-none">{{ line.type === 'removed' ? '- ' : line.type === 'added' ? '+ ' : '  ' }}</span>{{ line.text }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="space-y-2">
                 <Label>Task name</Label>
                 <Input v-model="draft.name" :disabled="isRequested" />
             </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="space-y-2">
+                <Label>Task type</Label>
+                <select v-model="draft.task_type" :disabled="isRequested" class="h-9 w-full rounded-md border bg-background px-3 text-sm">
+                  <option v-for="type in taskTypes" :key="type" :value="type">{{ type }}</option>
+                </select>
+              </div>
+              <label class="flex items-end gap-2 rounded-md border px-3 py-2 text-sm">
+                <input type="checkbox" :checked="Number(draft.enabled) === 1" :disabled="isRequested" @change="draft.enabled = ($event.target as HTMLInputElement).checked ? 1 : 0" />
+                Enabled
+              </label>
+            </div>
             <div class="space-y-2">
               <Label>Instructions</Label>
               <textarea v-model="draft.instructions" :disabled="isRequested" class="min-h-72 w-full rounded-md border bg-background px-3 py-2 text-xs" />
+            </div>
+            <div v-if="proposedDraft" class="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              Pending proposal preview: {{ proposedDraft.name }} · {{ proposedDraft.task_type }} · {{ Number(proposedDraft.enabled) === 1 ? 'enabled' : 'disabled' }}
             </div>
           </CardContent>
         </Card>

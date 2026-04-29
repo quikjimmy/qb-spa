@@ -228,10 +228,152 @@ db.exec(`
   const names = new Set(cols.map(c => c.name))
   if (!names.has('prompt')) db.exec(`ALTER TABLE agent_runs ADD COLUMN prompt TEXT`)
   if (!names.has('output')) db.exec(`ALTER TABLE agent_runs ADD COLUMN output TEXT`)
+  if (!names.has('user_id')) db.exec(`ALTER TABLE agent_runs ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`)
 }
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent, started_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs(user_id, started_at DESC)`)
+
+// --- Per-user LLM usage ledger (chatbot + future per-user features) ---
+// agent_runs is for scheduled/system agent work; this table is for any LLM
+// call attributed to a specific user (chatbot, ad-hoc actions). Separate so
+// agent_runs stays focused on agent execution metadata.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_llm_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_cents INTEGER NOT NULL DEFAULT 0,
+    used_own_key INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_llm_usage_user ON user_llm_usage(user_id, created_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_llm_usage_month ON user_llm_usage(user_id, created_at)`)
+
+// --- Chat threads + messages (per-user persistent conversations) ---
+// project_id is the optional in-session project context. NULL = general chat.
+// project_id is intentionally not a FK — projects live in QuickBase, not this DB.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'New chat',
+    project_id INTEGER,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_message_at TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_threads_user ON chat_threads(user_id, archived, last_message_at DESC)`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    provider TEXT,
+    model TEXT,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_cents INTEGER NOT NULL DEFAULT 0,
+    used_own_key INTEGER,
+    tool_calls_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)`)
+
+// Per-thread model + provider preference (sticks across messages once set via /model)
+{
+  const cols = db.prepare(`PRAGMA table_info(chat_threads)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('preferred_provider')) db.exec(`ALTER TABLE chat_threads ADD COLUMN preferred_provider TEXT`)
+  if (!names.has('preferred_model')) db.exec(`ALTER TABLE chat_threads ADD COLUMN preferred_model TEXT`)
+}
+
+// --- Provider rate-limit snapshots (per user, per provider) ---
+// Captured from API response headers on each call. Lets the chat UI show
+// "you have N tokens / requests left in this window" without polling.
+// Note: providers expose short-window limits (per-minute/hour), not monthly
+// spend — that's still dashboard-only. App-level monthly cap lives in user_budgets.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS provider_rate_snapshots (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    tokens_remaining INTEGER,
+    tokens_limit INTEGER,
+    requests_remaining INTEGER,
+    requests_limit INTEGER,
+    reset_at TEXT,
+    used_own_key INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, provider)
+  )
+`)
+
+// --- Chat Spaces (per-user, per-QB-project workspaces holding many threads) ---
+// Mirrors ChatGPT/Claude "Projects": each Space pins a QB project's context.
+// One Space per (user, qb_project_id) so opening chat for the same project
+// always lands the user back in the same workspace.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_spaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    system_instructions TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+  )
+`)
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_spaces_user_project ON chat_spaces(user_id, project_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_spaces_recent ON chat_spaces(user_id, last_used_at DESC)`)
+
+// Bind chat_threads to a space. Nullable: NULL = general (project-less) thread.
+{
+  const cols = db.prepare(`PRAGMA table_info(chat_threads)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('space_id')) db.exec(`ALTER TABLE chat_threads ADD COLUMN space_id INTEGER REFERENCES chat_spaces(id) ON DELETE SET NULL`)
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_threads_space ON chat_threads(space_id, last_message_at DESC)`)
+
+// One-shot migration: existing project-attached threads (project_id set, no space_id)
+// get promoted into auto-spaces named after the project's customer.
+{
+  const orphans = db.prepare(
+    `SELECT t.id, t.user_id, t.project_id, p.customer_name
+       FROM chat_threads t
+       LEFT JOIN project_cache p ON p.record_id = t.project_id
+      WHERE t.space_id IS NULL AND t.project_id IS NOT NULL`
+  ).all() as Array<{ id: number; user_id: number; project_id: number; customer_name: string | null }>
+
+  const findSpace = db.prepare(`SELECT id FROM chat_spaces WHERE user_id = ? AND project_id = ?`)
+  const insertSpace = db.prepare(`INSERT INTO chat_spaces (user_id, project_id, name) VALUES (?, ?, ?)`)
+  const bind = db.prepare(`UPDATE chat_threads SET space_id = ? WHERE id = ?`)
+
+  for (const t of orphans) {
+    let spaceId: number
+    const existing = findSpace.get(t.user_id, t.project_id) as { id: number } | undefined
+    if (existing) {
+      spaceId = existing.id
+    } else {
+      const r = insertSpace.run(t.user_id, t.project_id, t.customer_name || `Project ${t.project_id}`)
+      spaceId = Number(r.lastInsertRowid)
+    }
+    bind.run(spaceId, t.id)
+  }
+}
 
 // --- Agent outputs (latest classification per project+agent) ---
 db.exec(`
@@ -268,6 +410,76 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_app_feedback_status ON app_feedback(status, created_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_app_feedback_user ON app_feedback(user_id)`)
 
+// Add cluster_id link from feedback to its cluster (idempotent)
+const feedbackCols = db.prepare(`PRAGMA table_info(app_feedback)`).all() as Array<{ name: string }>
+if (!feedbackCols.some(c => c.name === 'cluster_id')) {
+  db.exec(`ALTER TABLE app_feedback ADD COLUMN cluster_id INTEGER`)
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_app_feedback_cluster ON app_feedback(cluster_id)`)
+
+// --- Feedback clusters: similar requests grouped by the triage agent ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS feedback_clusters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    theme TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    item_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT,
+    last_seen TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_clusters_status ON feedback_clusters(status, last_seen DESC)`)
+
+// --- Improvement proposals: agent-drafted recommendation per cluster, awaiting human approval ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS improvement_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster_id INTEGER NOT NULL REFERENCES feedback_clusters(id) ON DELETE CASCADE,
+    scope_md TEXT NOT NULL,
+    files_touched_json TEXT NOT NULL DEFAULT '[]',
+    effort_estimate TEXT,
+    risk_notes TEXT,
+    status TEXT NOT NULL DEFAULT 'awaiting_approval',
+    approved_by INTEGER REFERENCES users(id),
+    approved_at TEXT,
+    rejection_reason TEXT,
+    target_release TEXT,
+    triage_run_id INTEGER,
+    model TEXT,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_cents INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_improvement_proposals_status ON improvement_proposals(status, created_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_improvement_proposals_cluster ON improvement_proposals(cluster_id)`)
+
+// --- Triage runs: audit trail of when the feedback agent ran and what it found ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS feedback_triage_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    feedback_considered INTEGER NOT NULL DEFAULT 0,
+    clusters_touched INTEGER NOT NULL DEFAULT 0,
+    proposals_drafted INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_cents INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    triggered_by INTEGER REFERENCES users(id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_triage_runs_started ON feedback_triage_runs(started_at DESC)`)
+
 // --- User-created agents (bones; execution not wired yet) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_agents (
@@ -301,8 +513,18 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )
 `)
+{
+  const cols = db.prepare(`PRAGMA table_info(user_budgets)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  // monthly_cap_cents = USD cap on platform-key spend (null = no cap set, fall back to global env cap)
+  if (!names.has('monthly_cap_cents')) db.exec(`ALTER TABLE user_budgets ADD COLUMN monthly_cap_cents INTEGER`)
+  // 1 = BYOK calls don't count against the cap (encourages users to bring their own key)
+  if (!names.has('byok_bypasses_cap')) db.exec(`ALTER TABLE user_budgets ADD COLUMN byok_bypasses_cap INTEGER NOT NULL DEFAULT 1`)
+}
 
 // --- Per-user Ollama connection (encrypted at rest) ---
+// Legacy single-provider table. New BYOK flow uses user_provider_keys (below);
+// this table is migrated into user_provider_keys at boot and then no longer written to.
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_ollama_config (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -315,6 +537,47 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )
 `)
+
+// --- Generic per-user provider keys (multi-provider, multi-key) ---
+// Replaces user_ollama_config. Supports anthropic / openai / ollama, with
+// multiple labelled keys per provider and one default per (user, provider).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_provider_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    label TEXT,
+    api_key_encrypted TEXT NOT NULL,
+    base_url TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    last_tested_at TEXT,
+    last_test_ok INTEGER,
+    last_test_error TEXT,
+    last_test_models_count INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_user_provider_keys_user ON user_provider_keys(user_id, provider)`)
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_provider_default ON user_provider_keys(user_id, provider) WHERE is_default = 1`)
+
+// One-shot migration: copy any existing user_ollama_config rows into
+// user_provider_keys as the user's default ollama key. Only runs if the
+// destination has no ollama rows for that user yet, so it's idempotent.
+{
+  const legacyRows = db.prepare(`SELECT user_id, api_key_encrypted, base_url, last_tested_at, last_test_ok, last_test_error, last_test_models_count, updated_at FROM user_ollama_config WHERE api_key_encrypted IS NOT NULL`).all() as Array<{
+    user_id: number; api_key_encrypted: string; base_url: string;
+    last_tested_at: string | null; last_test_ok: number | null;
+    last_test_error: string | null; last_test_models_count: number | null;
+    updated_at: string;
+  }>
+  const checkExisting = db.prepare(`SELECT 1 FROM user_provider_keys WHERE user_id = ? AND provider = 'ollama' LIMIT 1`)
+  const insert = db.prepare(`INSERT INTO user_provider_keys (user_id, provider, label, api_key_encrypted, base_url, is_default, last_tested_at, last_test_ok, last_test_error, last_test_models_count, created_at, updated_at) VALUES (?, 'ollama', 'default', ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+  for (const r of legacyRows) {
+    if (checkExisting.get(r.user_id)) continue
+    insert.run(r.user_id, r.api_key_encrypted, r.base_url, r.last_tested_at, r.last_test_ok, r.last_test_error, r.last_test_models_count, r.updated_at, r.updated_at)
+  }
+}
 
 // --- Alternate emails per user (not used for login) ---
 // Primary login email stays on `users.email`. This table holds additional
@@ -642,6 +905,7 @@ db.exec(`
     agent_role_id INTEGER NOT NULL REFERENCES agent_roles(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     task_type TEXT NOT NULL CHECK (task_type IN ('summary', 'outreach', 'classification', 'escalation', 'digest', 'custom')),
+    runtime TEXT NOT NULL DEFAULT 'builtin' CHECK (runtime IN ('builtin', 'openclaw', 'nemoclaw')),
     instructions TEXT NOT NULL,
     input_template_json TEXT,
     output_schema_json TEXT,
@@ -650,6 +914,13 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )
 `)
+{
+  const cols = db.prepare(`PRAGMA table_info(agent_role_tasks)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('runtime')) {
+    try { db.exec(`ALTER TABLE agent_role_tasks ADD COLUMN runtime TEXT NOT NULL DEFAULT 'builtin'`) } catch { /* already exists */ }
+  }
+}
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_role_tasks_role ON agent_role_tasks(agent_role_id, enabled)`)
 
 db.exec(`
@@ -851,6 +1122,23 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_assigned ON agent_work_items(assigned_user_id, status, updated_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_delivery ON agent_work_items(source_delivery_item_id)`)
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_action_feedback (
+    id INTEGER PRIMARY KEY,
+    source_delivery_item_id INTEGER REFERENCES agent_delivery_items(id) ON DELETE SET NULL,
+    task_run_id INTEGER REFERENCES agent_task_runs(id) ON DELETE SET NULL,
+    project_rid TEXT,
+    category TEXT,
+    action_key TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'dismissed', 'commented')),
+    comment TEXT,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_action_feedback_key ON agent_action_feedback(action_key, created_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_action_feedback_delivery ON agent_action_feedback(source_delivery_item_id, created_at DESC)`)
+
 // --- Seed starter departments (idempotent) ---
 const seedDept = db.prepare(`INSERT OR IGNORE INTO departments (name, description) VALUES (?, ?)`)
 const seedDeptTxn = db.transaction(() => {
@@ -933,6 +1221,11 @@ const insertScheduleIfMissing = db.prepare(`
 const updateTaskDefinition = db.prepare(`
   UPDATE agent_role_tasks
   SET instructions = ?, input_template_json = ?, output_schema_json = ?, updated_at = CURRENT_TIMESTAMP
+  WHERE agent_role_id = ? AND name = ?
+`)
+const updateTaskRuntime = db.prepare(`
+  UPDATE agent_role_tasks
+  SET runtime = ?, updated_at = CURRENT_TIMESTAMP
   WHERE agent_role_id = ? AND name = ?
 `)
 const seedAgentOrgTxn = db.transaction(() => {
@@ -1085,6 +1378,7 @@ const seedAgentOrgTxn = db.transaction(() => {
   insertTaskIfMissing.run(ariId, 'Intake / route PC requests', 'custom', 'Review a Project Coordinator request, choose the best worker role task, and delegate the work.', '{"kind":"ari_intake"}', '{"result":"delegation_summary"}', 1, ariId, 'Intake / route PC requests')
   insertTaskIfMissing.run(ariId, 'Delegate to worker roles', 'custom', 'Create delegated child runs for approved Project Coordinator worker roles.', '{"kind":"ari_delegate"}', '{"result":"delegation"}', 1, ariId, 'Delegate to worker roles')
   insertTaskIfMissing.run(ariId, 'Summarize outcomes for PC users', 'summary', 'Summarize delegated worker results into a concise outcome for a Project Coordinator.', '{"kind":"ari_summary"}', '{"result":"summary"}', 1, ariId, 'Summarize outcomes for PC users')
+  insertTaskIfMissing.run(ariId, 'Run coordinator exception pipeline', 'custom', 'Run the coordinator worker scans, merge the findings, and surface only the highest-signal exceptions for human review.', '{"kind":"ari_pipeline","permit_days":21,"inspection_days":7,"schedule_window_days":2}', '{"result":"exception_pipeline","workflow":"detect_review","approval_required":false}', 1, ariId, 'Run coordinator exception pipeline')
 
   const outreachId = (roleIdBySlug.get('pc-outreach-worker') as { id: number }).id
   insertGoalIfMissing.run(outreachId, 'Draft outreach safely', 'Produce reviewable outreach drafts without sending directly.', 'Outreach drafts are clear and approval-ready.', 2, 'active', outreachId, 'Draft outreach safely')
@@ -1126,6 +1420,9 @@ const seedAgentOrgTxn = db.transaction(() => {
   const holdTaskId = (taskIdByRoleAndName.get(riskId, 'Hold classification') as { id: number }).id
   insertScheduleIfMissing.run(holdTaskId, '0 2 * * *', 'America/Los_Angeles', 1, null, holdTaskId)
 
+  const ariPipelineTaskId = (taskIdByRoleAndName.get(ariId, 'Run coordinator exception pipeline') as { id: number }).id
+  insertScheduleIfMissing.run(ariPipelineTaskId, '0 7 * * *', 'America/Denver', 1, null, ariPipelineTaskId)
+
   const notesId = (roleIdBySlug.get('pc-notes-digest-worker') as { id: number }).id
   insertGoalIfMissing.run(notesId, 'Summarize recent notes', 'Turn recent project notes into usable coordinator updates.', 'Recent activity can be scanned quickly by PCs.', 2, 'active', notesId, 'Summarize recent notes')
   insertTaskIfMissing.run(notesId, 'Recent notes digest', 'digest', 'Summarize the most recent notes for a project or coordinator queue.', '{"scope":"recent_notes"}', '{"result":"digest"}', 1, notesId, 'Recent notes digest')
@@ -1140,6 +1437,30 @@ const seedAgentOrgTxn = db.transaction(() => {
   insertGoalIfMissing.run(inspectionPtoId, 'Reduce post-install drag', 'Detect stalled projects between install complete, inspection, and PTO.', 'Project Coordinators get reviewable exception lists before cashflow-impacting delays grow.', 1, 'active', inspectionPtoId, 'Reduce post-install drag')
   insertTaskIfMissing.run(inspectionPtoId, 'Install complete without inspection follow-up', 'classification', 'Scan for install-complete projects with no inspection follow-up and package the recommended next step.', '{"scope":"ic_no_inspection","inspection_days":7}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, inspectionPtoId, 'Install complete without inspection follow-up')
   insertTaskIfMissing.run(inspectionPtoId, 'Inspection passed without PTO follow-up', 'classification', 'Scan for inspection-passed projects that are still waiting on PTO follow-up.', '{"scope":"inspection_no_pto","inspection_days":7}', '{"result":"risk_cards","approval_required":false,"workflow":"detect_review"}', 1, inspectionPtoId, 'Inspection passed without PTO follow-up')
+  updateTaskDefinition.run(
+    [
+      'Run the install-to-inspection case workflow.',
+      'Do not surface raw detection output immediately.',
+      'Investigate with worker-style checks across Arrivy, QuickBase notes, permit context, and existing Agent Ops follow-up tasks.',
+      'Only surface unresolved or approval-worthy cases to humans.',
+      'Return a structured case report with checks performed, classification, confidence, recommended next owner, and why HITL is still needed.',
+    ].join(' '),
+    JSON.stringify({
+      scope: 'ic_no_inspection',
+      inspection_days: 7,
+      workflow_key: 'pc_install_to_inspection_case',
+      stages: ['detect', 'schedule_check', 'notes_check', 'permit_check', 'internal_task_check', 'classify', 'hitl_if_needed'],
+    }),
+    JSON.stringify({
+      result: 'case_report',
+      workflow: 'case_workflow',
+      approval_required: false,
+      openclaw_adapter: 'ready_for_runner',
+    }),
+    inspectionPtoId,
+    'Install complete without inspection follow-up',
+  )
+  updateTaskRuntime.run('openclaw', inspectionPtoId, 'Install complete without inspection follow-up')
 
   const scheduleIntegrityId = (roleIdBySlug.get('pc-schedule-integrity-worker') as { id: number }).id
   insertGoalIfMissing.run(scheduleIntegrityId, 'Catch risky scheduling early', 'Flag installs or surveys that are moving without the right prerequisites.', 'Crew-impacting schedule problems are reviewed before they become day-of surprises.', 2, 'active', scheduleIntegrityId, 'Catch risky scheduling early')

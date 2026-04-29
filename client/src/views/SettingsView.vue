@@ -10,79 +10,166 @@ import { Badge } from '@/components/ui/badge'
 const auth = useAuthStore()
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
-interface OllamaConfig {
-  connected: boolean
-  base_url: string
+type ProviderId = 'ollama' | 'anthropic' | 'openai'
+
+interface ProviderKey {
+  id: number
+  provider: ProviderId
+  label: string | null
+  base_url: string | null
+  is_default: boolean
   key_preview: string | null
   last_tested_at: string | null
   last_test_ok: boolean | null
   last_test_error: string | null
   last_test_models_count: number | null
+  created_at: string
+  updated_at: string
 }
 
-const ollama = ref<OllamaConfig | null>(null)
-const baseUrl = ref('')
-const newKey = ref('')
-const savingKey = ref(false)
-const saveError = ref('')
-const justSaved = ref(false)
-const testing = ref(false)
-const testResult = ref<{ ok: boolean; models?: string[]; error?: string } | null>(null)
+interface ProvidersResponse {
+  providers: ProviderId[]
+  keys: Record<ProviderId, ProviderKey[]>
+}
+
+const PROVIDER_META: Record<ProviderId, { label: string; description: string; defaultBaseUrl: string; needsBaseUrl: boolean }> = {
+  ollama: {
+    label: 'Ollama',
+    description: 'Free tier available at ollama.com — sign up, generate an API key, paste it here.',
+    defaultBaseUrl: 'https://ollama.com',
+    needsBaseUrl: true,
+  },
+  anthropic: {
+    label: 'Anthropic (Claude)',
+    description: 'Get a key at console.anthropic.com. You only pay for what you use.',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    needsBaseUrl: false,
+  },
+  openai: {
+    label: 'OpenAI',
+    description: 'Get a key at platform.openai.com/api-keys. You only pay for what you use.',
+    defaultBaseUrl: 'https://api.openai.com',
+    needsBaseUrl: false,
+  },
+}
+
+const providers = ref<ProvidersResponse | null>(null)
+const addingFor = ref<ProviderId | null>(null)
+const draftKey = ref('')
+const draftLabel = ref('')
+const draftBaseUrl = ref('')
+const addBusy = ref(false)
+const addError = ref('')
+const testingKeyId = ref<number | null>(null)
 
 interface Department { id: number; name: string; description: string }
 const myDepartments = ref<Department[]>([])
 
-async function loadOllama() {
-  const res = await fetch('/api/user-settings/ollama', { headers: hdrs() })
-  if (res.ok) {
-    ollama.value = await res.json()
-    baseUrl.value = ollama.value!.base_url
+interface UsageSummary {
+  month_to_date_cents: number
+  counted_against_cap_cents: number
+  cap_cents: number | null
+  byok_bypasses_cap: boolean
+  tokens_in: number
+  tokens_out: number
+  calls: number
+  breakdown: {
+    agent_runs_cents: number
+    chatbot_byok_cents: number
+    chatbot_platform_cents: number
+    by_provider: Array<{ provider: string; cents: number; calls: number }>
   }
 }
+const usage = ref<UsageSummary | null>(null)
 
-async function saveOllama() {
-  savingKey.value = true
-  saveError.value = ''
-  justSaved.value = false
-  testResult.value = null
+async function loadUsage() {
+  const res = await fetch('/api/user-settings/usage', { headers: hdrs() })
+  if (res.ok) usage.value = await res.json()
+}
+
+function fmtCents(c: number | null | undefined): string {
+  if (c == null) return '—'
+  return `$${(c / 100).toFixed(2)}`
+}
+
+const usagePct = computed(() => {
+  if (!usage.value || !usage.value.cap_cents || usage.value.cap_cents <= 0) return null
+  return Math.min(100, Math.round((usage.value.counted_against_cap_cents / usage.value.cap_cents) * 100))
+})
+
+const usageBarClass = computed(() => {
+  if (usagePct.value == null) return 'bg-muted-foreground/30'
+  if (usagePct.value >= 90) return 'bg-amber-500'
+  if (usagePct.value >= 70) return 'bg-amber-400'
+  return 'bg-emerald-500'
+})
+
+async function loadProviders() {
+  const res = await fetch('/api/user-settings/providers', { headers: hdrs() })
+  if (res.ok) providers.value = await res.json()
+}
+
+function startAdd(p: ProviderId) {
+  addingFor.value = p
+  draftKey.value = ''
+  draftLabel.value = ''
+  draftBaseUrl.value = PROVIDER_META[p].needsBaseUrl ? PROVIDER_META[p].defaultBaseUrl : ''
+  addError.value = ''
+}
+
+function cancelAdd() {
+  addingFor.value = null
+  draftKey.value = ''
+  draftLabel.value = ''
+  draftBaseUrl.value = ''
+  addError.value = ''
+}
+
+async function submitAdd() {
+  if (!addingFor.value) return
+  const provider = addingFor.value
+  addBusy.value = true
+  addError.value = ''
   try {
-    const body: Record<string, string> = { base_url: baseUrl.value.trim() }
-    if (newKey.value.trim()) body.api_key = newKey.value.trim()
-    const res = await fetch('/api/user-settings/ollama', {
-      method: 'PUT', headers: hdrs(), body: JSON.stringify(body),
+    const body: Record<string, unknown> = { api_key: draftKey.value.trim() }
+    if (draftLabel.value.trim()) body.label = draftLabel.value.trim()
+    if (PROVIDER_META[provider].needsBaseUrl && draftBaseUrl.value.trim()) body.base_url = draftBaseUrl.value.trim()
+    const res = await fetch(`/api/user-settings/providers/${provider}/keys`, {
+      method: 'POST', headers: hdrs(), body: JSON.stringify(body),
     })
     const data = await res.json().catch(() => ({}))
-    if (res.ok) {
-      ollama.value = data
-      newKey.value = ''
-      justSaved.value = true
-      setTimeout(() => { justSaved.value = false }, 1800)
-    } else {
-      saveError.value = data.error || `Save failed (HTTP ${res.status})`
-    }
-  } catch (e) {
-    saveError.value = e instanceof Error ? e.message : 'Save failed'
-  } finally { savingKey.value = false }
+    if (!res.ok) { addError.value = data.error || `HTTP ${res.status}`; return }
+    cancelAdd()
+    await loadProviders()
+  } finally { addBusy.value = false }
 }
 
-async function clearKey() {
-  if (!window.confirm('Clear your Ollama API key?')) return
-  const res = await fetch('/api/user-settings/ollama', { method: 'DELETE', headers: hdrs() })
-  if (res.ok) { ollama.value = await res.json() }
+async function deleteKey(key: ProviderKey) {
+  const name = key.label || PROVIDER_META[key.provider].label + ' key'
+  if (!window.confirm(`Delete "${name}"?`)) return
+  const res = await fetch(`/api/user-settings/providers/keys/${key.id}`, { method: 'DELETE', headers: hdrs() })
+  if (res.ok) await loadProviders()
 }
 
-async function testConnection() {
-  testing.value = true
-  testResult.value = null
+async function makeDefault(key: ProviderKey) {
+  const res = await fetch(`/api/user-settings/providers/keys/${key.id}`, {
+    method: 'PATCH', headers: hdrs(), body: JSON.stringify({ make_default: true }),
+  })
+  if (res.ok) await loadProviders()
+}
+
+async function testKey(key: ProviderKey) {
+  testingKeyId.value = key.id
   try {
-    const res = await fetch('/api/user-settings/ollama/test', { method: 'POST', headers: hdrs() })
-    const data = await res.json().catch(() => ({}))
-    testResult.value = { ok: !!data.ok, models: data.sample, error: data.error || (res.ok ? undefined : `HTTP ${res.status}`) }
-    // re-load config so last-tested fields update
-    await loadOllama()
-  } catch (e) {
-    testResult.value = { ok: false, error: e instanceof Error ? e.message : 'Test failed' }
-  } finally { testing.value = false }
+    await fetch(`/api/user-settings/providers/keys/${key.id}/test`, { method: 'POST', headers: hdrs() })
+    await loadProviders()
+  } finally { testingKeyId.value = null }
+}
+
+function statusBadge(key: ProviderKey): { label: string; cls: string } {
+  if (key.last_test_ok === true) return { label: 'Connected', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' }
+  if (key.last_test_ok === false) return { label: 'Last test failed', cls: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300' }
+  return { label: 'Untested', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' }
 }
 
 async function loadDepartments() {
@@ -97,88 +184,145 @@ function fmtTime(iso: string | null) {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-const testBadge = computed(() => {
-  if (!ollama.value) return null
-  if (ollama.value.last_test_ok === true) return { label: 'Connected', cls: 'bg-emerald-100 text-emerald-700' }
-  if (ollama.value.last_test_ok === false) return { label: 'Last test failed', cls: 'bg-red-100 text-red-700' }
-  if (ollama.value.connected) return { label: 'Key saved, not tested', cls: 'bg-amber-100 text-amber-700' }
-  return { label: 'Not configured', cls: 'bg-muted text-muted-foreground' }
-})
-
-onMounted(() => { loadOllama(); loadDepartments() })
+onMounted(() => { loadProviders(); loadDepartments(); loadUsage() })
 </script>
 
 <template>
   <div class="grid gap-6 max-w-3xl">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Settings</h1>
-      <p class="text-muted-foreground mt-1">Your Ollama connection and department membership.</p>
+      <p class="text-muted-foreground mt-1">Your AI usage, connections, and department membership.</p>
     </div>
 
-    <!-- Ollama connection -->
-    <Card>
+    <!-- LLM usage this month -->
+    <Card v-if="usage">
       <CardHeader>
-        <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
           <div>
-            <CardTitle>Ollama connection</CardTitle>
+            <CardTitle>This month's AI usage</CardTitle>
             <CardDescription>
-              Your personal Ollama cloud API key powers agents in the <span class="font-semibold">ollama-free</span> tier.
-              Approved agents switch to the company key — yours is never shared or used by anyone else.
+              Spend attributed to you across agents and in-app AI features. Resets on the 1st.
             </CardDescription>
           </div>
-          <span v-if="testBadge" class="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold" :class="testBadge.cls">
-            {{ testBadge.label }}
-          </span>
+          <div class="text-right">
+            <div class="text-2xl font-semibold tabular-nums">{{ fmtCents(usage.month_to_date_cents) }}</div>
+            <div class="text-[11px] text-muted-foreground">{{ usage.calls.toLocaleString() }} calls</div>
+          </div>
         </div>
       </CardHeader>
       <CardContent class="grid gap-4">
-        <div class="grid sm:grid-cols-2 gap-3">
-          <div class="space-y-1.5">
+        <!-- Cap progress bar (only if a cap is set) -->
+        <div v-if="usage.cap_cents" class="space-y-1.5">
+          <div class="flex items-baseline justify-between text-xs">
+            <span class="text-muted-foreground">
+              {{ fmtCents(usage.counted_against_cap_cents) }} of {{ fmtCents(usage.cap_cents) }} cap
+            </span>
+            <span class="tabular-nums font-medium">{{ usagePct }}%</span>
+          </div>
+          <div class="h-1.5 rounded-full bg-muted overflow-hidden">
+            <div class="h-full transition-all" :class="usageBarClass" :style="{ width: `${usagePct}%` }"></div>
+          </div>
+          <p v-if="usage.byok_bypasses_cap" class="text-[11px] text-muted-foreground">
+            Calls using your own API key don't count against this cap.
+          </p>
+        </div>
+        <p v-else class="text-xs text-muted-foreground">
+          No spend cap set. An admin can set one in your account.
+        </p>
+
+        <!-- Breakdown -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div class="rounded-lg bg-muted/40 p-3">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Agents</div>
+            <div class="text-base font-medium tabular-nums mt-0.5">{{ fmtCents(usage.breakdown.agent_runs_cents) }}</div>
+          </div>
+          <div class="rounded-lg bg-muted/40 p-3">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground">In-app (platform)</div>
+            <div class="text-base font-medium tabular-nums mt-0.5">{{ fmtCents(usage.breakdown.chatbot_platform_cents) }}</div>
+          </div>
+          <div class="rounded-lg bg-muted/40 p-3">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground">In-app (your key)</div>
+            <div class="text-base font-medium tabular-nums mt-0.5">{{ fmtCents(usage.breakdown.chatbot_byok_cents) }}</div>
+          </div>
+        </div>
+
+        <div v-if="usage.breakdown.by_provider.length" class="flex flex-wrap gap-1.5">
+          <Badge v-for="p in usage.breakdown.by_provider" :key="p.provider" variant="secondary" class="text-[11px]">
+            {{ p.provider }} · {{ fmtCents(p.cents) }} · {{ p.calls }} call{{ p.calls === 1 ? '' : 's' }}
+          </Badge>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- AI provider keys (multi-provider, multi-key BYOK) -->
+    <Card v-for="p in (providers?.providers || [])" :key="p">
+      <CardHeader>
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle>{{ PROVIDER_META[p].label }}</CardTitle>
+            <CardDescription>{{ PROVIDER_META[p].description }}</CardDescription>
+          </div>
+          <Button v-if="addingFor !== p" variant="outline" size="sm" @click="startAdd(p)">+ Add key</Button>
+        </div>
+      </CardHeader>
+      <CardContent class="grid gap-3">
+        <!-- Existing keys -->
+        <div v-if="(providers?.keys?.[p] || []).length === 0 && addingFor !== p" class="text-sm text-muted-foreground">
+          No keys yet.
+        </div>
+
+        <div v-for="key in (providers?.keys?.[p] || [])" :key="key.id"
+          class="rounded-lg border bg-muted/20 p-3 grid gap-2"
+        >
+          <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <div class="flex items-baseline gap-2 min-w-0">
+              <span class="font-medium text-sm">{{ key.label || 'Unnamed' }}</span>
+              <span v-if="key.is_default" class="text-[10px] uppercase tracking-widest font-semibold text-emerald-700 dark:text-emerald-300">Default</span>
+              <span class="font-mono text-xs text-muted-foreground truncate">{{ key.key_preview || '—' }}</span>
+            </div>
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="statusBadge(key).cls">
+              {{ statusBadge(key).label }}
+            </span>
+          </div>
+
+          <div v-if="key.base_url" class="text-[11px] text-muted-foreground font-mono truncate">{{ key.base_url }}</div>
+
+          <p v-if="key.last_tested_at" class="text-[11px] text-muted-foreground">
+            Tested {{ fmtTime(key.last_tested_at) }}<span v-if="key.last_test_ok && key.last_test_models_count != null"> · {{ key.last_test_models_count }} models</span>
+            <span v-else-if="key.last_test_error"> · {{ key.last_test_error }}</span>
+          </p>
+
+          <div class="flex gap-2 flex-wrap">
+            <Button size="sm" variant="outline" :disabled="testingKeyId === key.id" @click="testKey(key)">
+              {{ testingKeyId === key.id ? 'Testing…' : 'Test' }}
+            </Button>
+            <Button v-if="!key.is_default" size="sm" variant="ghost" @click="makeDefault(key)">Set as default</Button>
+            <Button size="sm" variant="ghost" class="text-destructive ml-auto" @click="deleteKey(key)">Delete</Button>
+          </div>
+        </div>
+
+        <!-- Add-key form -->
+        <div v-if="addingFor === p" class="rounded-lg border-2 border-dashed bg-card p-3 grid gap-3">
+          <div v-if="PROVIDER_META[p].needsBaseUrl" class="space-y-1.5">
             <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Base URL</Label>
-            <Input v-model="baseUrl" placeholder="https://ollama.com" />
+            <Input v-model="draftBaseUrl" :placeholder="PROVIDER_META[p].defaultBaseUrl" />
           </div>
           <div class="space-y-1.5">
             <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">API Key</Label>
-            <div class="flex gap-2">
-              <Input v-model="newKey" type="password" autocomplete="new-password"
-                :placeholder="ollama?.connected ? `Current: ${ollama.key_preview} · enter to replace` : 'Paste your Ollama API key'" />
-              <Button v-if="ollama?.connected" type="button" variant="outline" size="icon" :title="'Clear key'" @click="clearKey">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-              </Button>
-            </div>
+            <Input v-model="draftKey" type="password" autocomplete="new-password" placeholder="sk-..." />
+          </div>
+          <div class="space-y-1.5">
+            <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Label (optional)</Label>
+            <Input v-model="draftLabel" placeholder="e.g., personal, work, side-project" />
+          </div>
+          <div class="flex gap-2 flex-wrap items-center">
+            <Button :disabled="addBusy || !draftKey.trim()" @click="submitAdd">
+              {{ addBusy ? 'Saving…' : 'Save key' }}
+            </Button>
+            <Button variant="ghost" :disabled="addBusy" @click="cancelAdd">Cancel</Button>
+            <p v-if="addError" class="text-sm text-destructive">{{ addError }}</p>
           </div>
         </div>
-
-        <div class="flex gap-2 flex-wrap items-center">
-          <Button :disabled="savingKey" @click="saveOllama">
-            {{ savingKey ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save' }}
-          </Button>
-          <Button variant="outline" :disabled="!ollama?.connected || testing" @click="testConnection">
-            {{ testing ? 'Testing…' : 'Test Connection' }}
-          </Button>
-          <p v-if="saveError" class="text-sm text-destructive">{{ saveError }}</p>
-        </div>
-
-        <!-- Test result -->
-        <div v-if="testResult" class="rounded-md border p-3 text-sm"
-          :class="testResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/30 dark:border-emerald-900 dark:text-emerald-300' : 'bg-red-50 border-red-200 text-red-800 dark:bg-red-950/30 dark:border-red-900 dark:text-red-300'">
-          <div v-if="testResult.ok" class="space-y-1">
-            <p class="font-medium">✓ Connection works.</p>
-            <p v-if="testResult.models && testResult.models.length">
-              Models visible: <span class="font-mono text-xs">{{ testResult.models.join(', ') }}</span>
-            </p>
-          </div>
-          <div v-else class="space-y-1">
-            <p class="font-medium">✗ {{ testResult.error || 'Failed' }}</p>
-          </div>
-        </div>
-
-        <!-- Last-test meta -->
-        <p v-if="ollama?.last_tested_at" class="text-[11px] text-muted-foreground">
-          Last tested {{ fmtTime(ollama.last_tested_at) }}.
-          <span v-if="ollama.last_test_ok && ollama.last_test_models_count != null">{{ ollama.last_test_models_count }} models visible.</span>
-          <span v-else-if="ollama.last_test_error">{{ ollama.last_test_error }}</span>
-        </p>
       </CardContent>
     </Card>
 

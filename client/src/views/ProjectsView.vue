@@ -1,5 +1,6 @@
-1<script setup lang="ts">
+<script setup lang="ts">
 import { ref, computed, inject, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +13,7 @@ import { computeMilestones, dotStyle, labelStyle, connectorStyle, type Milestone
 import DataFreshness from '@/components/DataFreshness.vue'
 
 const auth = useAuthStore()
+const router = useRouter()
 
 interface Project {
   record_id: number
@@ -174,6 +176,9 @@ function setKpiFilter(key: string) {
 }
 
 function openProject(rid: number) {
+  router.push({ name: 'project-detail', params: { id: String(rid) } })
+}
+function openProjectInQb(rid: number) {
   window.open(`https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8na/action/dr?rid=${rid}&rl=bzuz`, '_blank')
 }
 function setFilter(key: keyof typeof f.value, val: string) { f.value[key] = val === '__all__' ? '' : val; loadProjects() }

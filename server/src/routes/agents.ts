@@ -115,8 +115,9 @@ router.post('/hold-classifier/dry-run', async (req: Request, res: Response): Pro
   }
 })
 
-router.post('/hold-classifier/run', async (_req: Request, res: Response): Promise<void> => {
+router.post('/hold-classifier/run', async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = req.user?.userId ?? null
     const role = db.prepare(`SELECT id FROM agent_roles WHERE slug = 'pc-risk-hold-worker'`).get() as { id: number } | undefined
     const task = db.prepare(`SELECT id FROM agent_role_tasks WHERE agent_role_id = ? AND name = 'Hold classification'`).get(role?.id || 0) as { id: number } | undefined
     if (role && task) {
@@ -129,7 +130,7 @@ router.post('/hold-classifier/run', async (_req: Request, res: Response): Promis
       res.json({ ok: true, agent: HOLD_AGENT_NAME, migrated: true, ...result })
       return
     }
-    const fallback = await runHoldClassifier('manual')
+    const fallback = await runHoldClassifier('manual', userId)
     res.json({ ok: true, agent: HOLD_AGENT_NAME, migrated: false, ...fallback })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

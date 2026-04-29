@@ -73,6 +73,11 @@ const router = createRouter({
           component: () => import('../views/FieldDashboardView.vue'),
         },
         {
+          path: 'projects/:id(\\d+)',
+          name: 'project-detail',
+          component: () => import('../views/ProjectDetailView.vue'),
+        },
+        {
           path: 'comms',
           name: 'comms-hub',
           component: () => import('../views/CommsHubView.vue'),
@@ -107,6 +112,11 @@ const router = createRouter({
           path: 'tickets',
           name: 'tickets',
           component: () => import('../views/TicketsView.vue'),
+        },
+        {
+          path: 'chat',
+          name: 'chat',
+          component: () => import('../views/ChatView.vue'),
         },
         {
           path: 'settings',

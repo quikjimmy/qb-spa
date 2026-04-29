@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
 import { LLM_OPTIONS, isValidLlm, llmAvailableForTier, ollamaModelFor } from '../lib/llm-options'
-import { decryptSecret } from '../lib/crypto'
+import { getDefaultKeyFor } from '../lib/userProviderKeys'
 import { ollamaChat } from '../agents/ollamaChat'
 
 const router = Router()
@@ -277,28 +277,24 @@ router.post('/:id/run-once', async (req: Request, res: Response): Promise<void> 
     res.status(403).json({ error: `Your account has hit its monthly cap (${userBudget.monthly_token_cap.toLocaleString()} tokens).` }); return
   }
 
-  // Load + decrypt the user's Ollama key.
-  const cfg = db.prepare(
-    `SELECT api_key_encrypted, base_url FROM user_ollama_config WHERE user_id = ?`
-  ).get(userId) as { api_key_encrypted: string | null; base_url: string } | undefined
-  if (!cfg || !cfg.api_key_encrypted) {
+  // Load + decrypt the user's default Ollama key.
+  const cfg = getDefaultKeyFor(userId, 'ollama')
+  if (!cfg) {
     res.status(400).json({ error: 'No Ollama key configured. Set one in Settings first.', needs_key: true }); return
   }
-  let apiKey: string
-  try { apiKey = decryptSecret(cfg.api_key_encrypted) }
-  catch { res.status(500).json({ error: 'Stored key could not be decrypted — re-enter it in Settings.' }); return }
+  const apiKey = cfg.apiKey
 
   const modelName = ollamaModelFor(agent.llm)
   if (!modelName) { res.status(400).json({ error: `Unknown LLM '${agent.llm}' — edit the agent and pick one from the list.` }); return }
 
   // Register the run row up-front so we can track in-progress + failures.
   const runInsert = db.prepare(
-    `INSERT INTO agent_runs (agent, trigger, status, model, prompt) VALUES (?, 'manual', 'running', ?, ?)`
-  ).run(`user-agent-${agent.id}`, modelName, effectivePrompt.slice(0, 8000))
+    `INSERT INTO agent_runs (agent, trigger, status, model, prompt, user_id) VALUES (?, 'manual', 'running', ?, ?, ?)`
+  ).run(`user-agent-${agent.id}`, modelName, effectivePrompt.slice(0, 8000), req.user!.userId)
   const runId = Number(runInsert.lastInsertRowid)
 
   const result = await ollamaChat({
-    baseUrl: cfg.base_url || 'https://ollama.com',
+    baseUrl: cfg.baseUrl || 'https://ollama.com',
     apiKey,
     model: modelName,
     messages: [

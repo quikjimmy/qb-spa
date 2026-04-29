@@ -13,14 +13,17 @@ import { feedIngestRouter } from './routes/feed-ingest'
 import { notificationsRouter } from './routes/notifications'
 import { projectsRouter } from './routes/projects'
 import { ticketsRouter } from './routes/tickets'
+import { addersRouter } from './routes/adders'
 import { ptoAnalyticsRouter } from './routes/pto-analytics'
 import { ptoCacheRouter } from './routes/pto-cache'
 import { inspxAnalyticsRouter } from './routes/inspx-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
+import { improvementProposalsRouter } from './routes/improvement-proposals'
 import { userAgentsRouter } from './routes/user-agents'
 import { userSettingsRouter } from './routes/user-settings'
+import { chatRouter } from './routes/chat'
 import { agentOrgRouter } from './routes/agent-org'
 import { agentLabRouter } from './routes/agent-lab'
 import { agentApprovalsRouter } from './routes/agent-approvals'
@@ -64,14 +67,17 @@ app.use('/api/feed', authenticate, feedRouter)
 app.use('/api/notifications', authenticate, notificationsRouter)
 app.use('/api/projects', authenticate, projectsRouter)
 app.use('/api/tickets', authenticate, ticketsRouter)
+app.use('/api/adders', authenticate, addersRouter)
 app.use('/api/analytics/pto', authenticate, ptoAnalyticsRouter)
 app.use('/api/pto', authenticate, ptoCacheRouter)
 app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
+app.use('/api/improvement-proposals', authenticate, improvementProposalsRouter)
 app.use('/api/user-agents', authenticate, userAgentsRouter)
 app.use('/api/user-settings', authenticate, userSettingsRouter)
+app.use('/api/chat', authenticate, chatRouter)
 app.use('/api/agent-org', authenticate, agentOrgRouter)
 app.use('/api/agent-org/approvals', authenticate, agentApprovalsRouter)
 app.use('/api/agent-lab', authenticate, agentLabRouter)

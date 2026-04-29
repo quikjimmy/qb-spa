@@ -249,6 +249,43 @@ router.put('/users/:id/active', (req: Request, res: Response): void => {
   res.json({ success: true })
 })
 
+// --- Per-user LLM budget (admin only) ---
+router.get('/users/:id/budget', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const budget = db.prepare(`SELECT monthly_cap_cents, byok_bypasses_cap FROM user_budgets WHERE user_id = ?`).get(userId) as { monthly_cap_cents: number | null; byok_bypasses_cap: number } | undefined
+  const mtdRow = db.prepare(
+    `SELECT
+        COALESCE((SELECT SUM(cost_cents) FROM agent_runs WHERE user_id = ? AND started_at >= datetime('now','start of month')),0) AS agent_cents,
+        COALESCE((SELECT SUM(cost_cents) FROM user_llm_usage WHERE user_id = ? AND created_at >= datetime('now','start of month')),0) AS ledger_cents,
+        COALESCE((SELECT SUM(CASE WHEN used_own_key=0 THEN cost_cents ELSE 0 END) FROM user_llm_usage WHERE user_id = ? AND created_at >= datetime('now','start of month')),0) AS platform_cents`
+  ).get(userId, userId, userId) as { agent_cents: number; ledger_cents: number; platform_cents: number }
+  res.json({
+    monthly_cap_cents: budget?.monthly_cap_cents ?? null,
+    byok_bypasses_cap: (budget?.byok_bypasses_cap ?? 1) === 1,
+    month_to_date_cents: mtdRow.agent_cents + mtdRow.ledger_cents,
+    counted_against_cap_cents: mtdRow.agent_cents + ((budget?.byok_bypasses_cap ?? 1) === 1 ? mtdRow.platform_cents : mtdRow.ledger_cents),
+  })
+})
+
+router.put('/users/:id/budget', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  const { monthly_cap_cents, byok_bypasses_cap } = req.body as { monthly_cap_cents?: number | null; byok_bypasses_cap?: boolean }
+
+  const cap = monthly_cap_cents == null ? null : Math.max(0, Math.round(Number(monthly_cap_cents)))
+  const bypass = byok_bypasses_cap === false ? 0 : 1
+
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId)
+  if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+  db.prepare(
+    `INSERT INTO user_budgets (user_id, monthly_cap_cents, byok_bypasses_cap, updated_at)
+     VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET monthly_cap_cents=excluded.monthly_cap_cents, byok_bypasses_cap=excluded.byok_bypasses_cap, updated_at=datetime('now')`
+  ).run(userId, cap, bypass)
+
+  res.json({ monthly_cap_cents: cap, byok_bypasses_cap: bypass === 1 })
+})
+
 // --- Alternate emails (cross-system matching; not for login) ---
 // `system` is a free-text tag — convention: 'dialpad', 'quickbase', 'slack', etc.
 // Empty string means the alias matches any system.
@@ -772,6 +809,135 @@ router.put('/users/:id/departments', (req: Request, res: Response): void => {
      ORDER BY d.name`
   ).all(userId)
   res.json({ ok: true, departments: rows })
+})
+
+// --- Chat Bot insights (admin) ---
+// Aggregated, anonymized signal about how the chatbot is being used. Designed
+// for mining "what should we build next" — top user prompts, where errors
+// cluster, BYOK vs platform split. No raw message attribution to specific users.
+//
+// Query: ?days=30 (default 30, also accepts 7, 14, 90, all)
+const STOPWORDS = new Set([
+  'the','a','an','and','or','but','of','to','in','on','at','for','with','by','from','as','is','are','was','were','be','been','being',
+  'i','you','he','she','it','we','they','me','him','her','us','them','my','your','his','its','our','their',
+  'this','that','these','those','what','which','who','whom','whose','where','when','why','how',
+  'can','could','should','would','will','shall','may','might','must','do','does','did','have','has','had',
+  'not','no','yes','if','then','else','than','so','because','about','into','through','over','under','up','down','out',
+  'just','really','very','too','also','only','some','any','all','each','every','many','much','more','most','few','less','least',
+  'get','got','make','made','give','gave','take','took','go','went','come','came','see','saw','know','knew','think','thought','say','said',
+  'one','two','three','four','five','six','seven','eight','nine','ten','first','last','next','same','other','another',
+  'project','projects','chat','please','help','need','want','like','okay','ok','thanks','thank',
+])
+
+router.get('/chat/insights', (req: Request, res: Response): void => {
+  const daysParam = String(req.query['days'] || '30').toLowerCase()
+  let timeFilter = ''
+  if (daysParam !== 'all') {
+    const days = parseInt(daysParam, 10) || 30
+    timeFilter = `AND created_at >= datetime('now', '-${days} days')`
+  }
+
+  // Volume + cost
+  const totals = db.prepare(
+    `SELECT COUNT(*) AS messages,
+            COUNT(DISTINCT thread_id) AS threads,
+            COALESCE(SUM(cost_cents), 0) AS cost_cents,
+            COALESCE(SUM(tokens_in), 0) AS tokens_in,
+            COALESCE(SUM(tokens_out), 0) AS tokens_out
+       FROM chat_messages
+      WHERE 1=1 ${timeFilter}`
+  ).get() as { messages: number; threads: number; cost_cents: number; tokens_in: number; tokens_out: number }
+
+  const userCount = (db.prepare(
+    `SELECT COUNT(DISTINCT t.user_id) AS n
+       FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id
+      WHERE 1=1 ${timeFilter.replace('created_at', 'm.created_at')}`
+  ).get() as { n: number }).n
+
+  // Provider / model split (assistant messages only — user messages don't have a provider)
+  const byModel = db.prepare(
+    `SELECT provider, model,
+            COUNT(*) AS calls,
+            COALESCE(SUM(cost_cents), 0) AS cost_cents,
+            COALESCE(SUM(used_own_key), 0) AS byok_calls
+       FROM chat_messages
+      WHERE role = 'assistant' AND provider IS NOT NULL ${timeFilter}
+      GROUP BY provider, model
+      ORDER BY calls DESC`
+  ).all() as Array<{ provider: string; model: string; calls: number; cost_cents: number; byok_calls: number }>
+
+  // Errors — top error reasons
+  const errors = db.prepare(
+    `SELECT error, COUNT(*) AS n
+       FROM chat_messages
+      WHERE role = 'assistant' AND error IS NOT NULL ${timeFilter}
+      GROUP BY error
+      ORDER BY n DESC
+      LIMIT 20`
+  ).all() as Array<{ error: string; n: number }>
+
+  // Project-tagged share
+  const tagged = db.prepare(
+    `SELECT
+        SUM(CASE WHEN t.space_id IS NOT NULL OR t.project_id IS NOT NULL THEN 1 ELSE 0 END) AS project_threads,
+        COUNT(*) AS total_threads
+       FROM chat_threads t
+      WHERE 1=1 ${timeFilter.replace('created_at', 't.created_at')}`
+  ).get() as { project_threads: number; total_threads: number }
+
+  // Top words from user prompts — simple frequency count, stopword-filtered.
+  // Lowercased, non-alphanumeric stripped, length >= 3.
+  const userMessages = db.prepare(
+    `SELECT content FROM chat_messages WHERE role = 'user' ${timeFilter} LIMIT 5000`
+  ).all() as Array<{ content: string }>
+
+  const wordFreq = new Map<string, number>()
+  for (const m of userMessages) {
+    const tokens = m.content.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    for (const w of tokens) {
+      if (w.length < 3 || w.length > 24) continue
+      if (STOPWORDS.has(w)) continue
+      if (/^\d+$/.test(w)) continue
+      wordFreq.set(w, (wordFreq.get(w) || 0) + 1)
+    }
+  }
+  const topWords = Array.from(wordFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 40)
+    .map(([word, count]) => ({ word, count }))
+
+  // Most-active spaces (project chats with the highest engagement)
+  const topSpaces = db.prepare(
+    `SELECT s.id, s.name, s.project_id,
+            COUNT(DISTINCT t.id) AS thread_count,
+            (SELECT COUNT(*) FROM chat_messages m JOIN chat_threads t2 ON t2.id = m.thread_id WHERE t2.space_id = s.id ${timeFilter.replace('created_at', 'm.created_at')}) AS message_count
+       FROM chat_spaces s
+       LEFT JOIN chat_threads t ON t.space_id = s.id
+      GROUP BY s.id
+      ORDER BY message_count DESC
+      LIMIT 15`
+  ).all() as Array<{ id: number; name: string; project_id: number; thread_count: number; message_count: number }>
+
+  const byokCalls = byModel.reduce((s, r) => s + (r.byok_calls || 0), 0)
+  const totalAssistantCalls = byModel.reduce((s, r) => s + r.calls, 0)
+
+  res.json({
+    range: daysParam,
+    totals: {
+      messages: totals.messages,
+      threads: totals.threads,
+      users: userCount,
+      cost_cents: totals.cost_cents,
+      tokens_in: totals.tokens_in,
+      tokens_out: totals.tokens_out,
+    },
+    project_thread_share: tagged.total_threads > 0 ? Math.round((tagged.project_threads / tagged.total_threads) * 100) : 0,
+    byok_share_pct: totalAssistantCalls > 0 ? Math.round((byokCalls / totalAssistantCalls) * 100) : 0,
+    by_model: byModel,
+    errors,
+    top_words: topWords,
+    top_spaces: topSpaces,
+  })
 })
 
 router.get('/caches', (_req: Request, res: Response): void => {

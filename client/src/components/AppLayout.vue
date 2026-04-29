@@ -16,6 +16,7 @@ import NotificationBell from '@/components/NotificationBell.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
 import CommsLiveRail from '@/components/CommsLiveRail.vue'
+import ProjectJumpSearch from '@/components/project-detail/ProjectJumpSearch.vue'
 import { useDialpadLive, unlockAudio } from '@/lib/dialpadLive'
 import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
@@ -134,6 +135,9 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           </BreadcrumbList>
         </Breadcrumb>
         <div class="ml-auto flex items-center gap-1">
+          <!-- Global ⌘K project search — page-agnostic jump-to. Lives in the
+               topbar so coordinators can switch projects from anywhere. -->
+          <ProjectJumpSearch />
           <!-- Live Hub toggle — sits next to the bell on every breakpoint
                so the mobile entry point doesn't collide with the feedback
                FAB. Badge shows current live event count so users have an

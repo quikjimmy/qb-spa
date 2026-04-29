@@ -2,6 +2,15 @@ import db from '../db'
 import { runHoldClassifier } from './runner'
 import { evaluateRoleAction } from './policy'
 import { buildLivePcMorningBriefingPayload } from './pcMorningBriefing'
+import { executeOpenClawTask } from './openClawRunner'
+import {
+  runInstallCompleteWithoutInspectionScan,
+  runInspectionPassedWithoutPtoScan,
+  runInstallScheduledWithoutPermitScan,
+  runPermitAgingAlertScan,
+  runRecentNotesDigest,
+} from './pcCoordinatorScans'
+import { runCoordinatorExceptionPipeline } from './pcCoordinatorPipeline'
 
 interface AgentRoleRow {
   id: number
@@ -18,6 +27,7 @@ interface AgentTaskRow {
   agent_role_id: number
   name: string
   task_type: 'summary' | 'outreach' | 'classification' | 'escalation' | 'digest' | 'custom'
+  runtime: 'builtin' | 'openclaw' | 'nemoclaw'
   instructions: string
 }
 
@@ -180,8 +190,17 @@ function buildDigestActions(payload: Record<string, unknown>): Array<Record<stri
   })
 }
 
-export async function executeRoleTask(role: AgentRoleRow, task: AgentTaskRow, payloadJson?: string | null): Promise<RoleRunResult> {
+export async function executeRoleTask(role: AgentRoleRow, task: AgentTaskRow, payloadJson?: string | null, runId?: number): Promise<RoleRunResult> {
   let payload = safeJsonParse(payloadJson)
+
+  if (task.runtime === 'openclaw') {
+    return executeOpenClawTask({
+      runId: runId || 0,
+      role,
+      task,
+      payload,
+    })
+  }
 
   if (role.slug === 'pc-risk-hold-worker' && task.name === 'Hold classification') {
     const holdResult = await runHoldClassifier('manual')
@@ -210,6 +229,132 @@ export async function executeRoleTask(role: AgentRoleRow, task: AgentTaskRow, pa
   const decision = evaluateRoleAction(role, 'projects', 'read', false)
   if (!decision.allowed) {
     return { status: 'failed', error: decision.reason || 'Action blocked by policy' }
+  }
+
+  if (task.name === 'Run coordinator exception pipeline') {
+    const result = await runCoordinatorExceptionPipeline(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'detect_review',
+        pipeline: true,
+        human_review_required: result.actions.length > 0,
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
+  }
+
+  if (task.name === 'Permit aging alert scan') {
+    const result = await runPermitAgingAlertScan(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'detect_review',
+        human_review_required: result.actions.length > 0,
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
+  }
+
+  if (task.name === 'Install complete without inspection follow-up') {
+    const result = await runInstallCompleteWithoutInspectionScan(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'case_workflow',
+        human_review_required: result.actions.length > 0,
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
+  }
+
+  if (task.name === 'Inspection passed without PTO follow-up') {
+    const result = await runInspectionPassedWithoutPtoScan(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'detect_review',
+        human_review_required: result.actions.length > 0,
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
+  }
+
+  if (task.name === 'Install scheduled without permit check') {
+    const result = await runInstallScheduledWithoutPermitScan(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'detect_review',
+        human_review_required: result.actions.length > 0,
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
+  }
+
+  if (task.name === 'Recent notes digest' && payload['project_id']) {
+    const result = await runRecentNotesDigest(payload)
+    return {
+      status: 'completed',
+      resultJson: stringifyResult(result.summary, {
+        role: role.name,
+        task: task.name,
+        payload: result.payload,
+        actions: result.actions,
+        query_counts: result.query_counts,
+        query_errors: result.query_errors,
+        mode: 'read_only',
+        model: role.llm,
+      }),
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    }
   }
 
   if (task.task_type === 'digest' && task.name === 'Generate daily coordinator digest' && payload['use_live_data']) {
@@ -244,7 +389,7 @@ export function getRoleForRun(agentRoleId: number): AgentRoleRow | undefined {
 
 export function getTaskForRun(taskId: number): AgentTaskRow | undefined {
   return db.prepare(
-    `SELECT id, agent_role_id, name, task_type, instructions
+    `SELECT id, agent_role_id, name, task_type, runtime, instructions
      FROM agent_role_tasks WHERE id = ?`
   ).get(taskId) as AgentTaskRow | undefined
 }

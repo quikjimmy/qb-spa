@@ -51,7 +51,7 @@ export async function dispatchRoleTask(opts: DispatchOptions): Promise<{ runId: 
   }
 
   const payloadJson = db.prepare(`SELECT payload_json FROM agent_task_runs WHERE id = ?`).get(runId) as { payload_json: string | null }
-  const result = await executeRoleTask(role, task, payloadJson.payload_json)
+  const result = await executeRoleTask(role, task, payloadJson.payload_json, runId)
 
   db.prepare(
     `UPDATE agent_task_runs
