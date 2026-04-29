@@ -41,6 +41,10 @@ interface FieldIds {
 const auth = useAuthStore()
 const records = ref<QbRecord[]>([])
 const F = ref<FieldIds | null>(null)
+// Cancelled task RIDs derived from the QB Arrivy task log on the server
+// (bvbbznmdb). The QB task row itself often still reads "STARTED" when
+// an in-flight task gets cancelled, so the log is the source of truth.
+const cancelledTaskRids = ref<Set<string>>(new Set())
 const loading = ref(true)
 const errorMsg = ref('')
 const isDesktop = ref(false)
@@ -62,6 +66,7 @@ async function load() {
     const data = await res.json()
     records.value = data.records ?? []
     F.value = data.fields ?? null
+    cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -115,14 +120,16 @@ function getStatus(t: QbRecord): StatusInfo {
   const enrouteDt = qbv(t, F.value.enrouteStatus)
   const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete'
   const isOverdue = arrivyStatus === 'overdue'
-  // Cancelled/exception are loud — this is the user's signal to pay attention
-  // (surveyor went out, project blocked). Defensive against QB casing variants:
-  // "cancelled", "canceled", "cancel", "Exception", "Not Done", with or
-  // without spaces / underscores.
-  const norm = arrivyStatus.replace(/[\s_-]+/g, '')
-  const isCancelled = norm === 'cancelled' || norm === 'canceled' || norm === 'cancel'
-  const isException = norm === 'exception' || norm === 'notdone'
-  if (isCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
+  // Source of truth for cancellation: the project's task log (server-derived).
+  // The QB task row's task_status often still reads "STARTED" after an
+  // in-flight cancel, so we trust the log over the row.
+  const taskRid = String(qbv(t, 3) ?? '')
+  const logSaysCancelled = !!taskRid && cancelledTaskRids.value.has(taskRid)
+  // Fallback substring match on the row status for tasks where the log
+  // wasn't returned (older data, log fetch failed, etc.).
+  const rowSaysCancelled = /cancel/i.test(arrivyStatus)
+  const isException = /exception|notdone|not\s*done|notcomplete|incomplete/i.test(arrivyStatus)
+  if (logSaysCancelled || rowSaysCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
   if (isException) return { key: 'exception', label: 'Exception', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
   if (isArrivyComplete && !submittedDt) return { key: 'notsubmitted', label: 'Not Submitted', pillCls: 'bg-rose-100 text-rose-700', borderCls: 'border-l-rose-500', emoji: '❌' }
   if (submittedDt) return { key: 'submitted', label: 'Submitted', pillCls: 'bg-emerald-100 text-emerald-700', borderCls: 'border-l-emerald-500', emoji: '✅' }

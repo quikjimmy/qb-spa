@@ -1,13 +1,14 @@
 // Milestone tracker logic matching the qb-skin progress tracker
 // Color rules:
-//   done     = green  (#10b981) with ✓  — completed/approved
-//   active   = amber  (#f59e0b)         — submitted, in progress
-//   scheduled= blue   (#3b82f6)         — scheduled, not yet past
-//   rejected = red    (#ef4444) with ✗  — rejected
-//   overdue  = purple (#8b5cf6) with !  — past date, not completed
-//   not      = grey   (#e2e8f0)         — not started
+//   done      = green  (#10b981) with ✓  — completed/approved
+//   active    = amber  (#f59e0b)         — submitted, in progress
+//   scheduled = blue   (#3b82f6)         — scheduled, not yet past
+//   rejected  = red    (#ef4444) with ✗  — rejected
+//   overdue   = purple (#8b5cf6) with !  — past date, not completed
+//   cancelled = rose   (#e11d48) with ✗  — Arrivy task cancelled
+//   not       = grey   (#e2e8f0)         — not started
 
-export type StepState = 'done' | 'active' | 'scheduled' | 'rejected' | 'overdue' | 'not'
+export type StepState = 'done' | 'active' | 'scheduled' | 'rejected' | 'overdue' | 'cancelled' | 'not'
 
 export interface MilestoneStep {
   key: string
@@ -36,6 +37,12 @@ export interface ProjectMilestoneFields {
   pto_submitted: string
   pto_approved: string
   status: string
+  // Optional Arrivy cancellation flags (from /api/field/cancellations).
+  // When the project's most recent Arrivy task of the given kind was
+  // cancelled, the matching milestone step renders as 'cancelled' (red X).
+  arrivy_survey_cancelled?: boolean
+  arrivy_install_cancelled?: boolean
+  arrivy_inspection_cancelled?: boolean
 }
 
 function pad(n: number): string {
@@ -73,9 +80,11 @@ export function computeMilestones(p: ProjectMilestoneFields): MilestoneStep[] {
   else if (statusLow.includes('reject')) kca = 'rejected'
   else if (has(p.survey_scheduled)) kca = 'active' // something is moving
 
-  // Survey
+  // Survey — Arrivy 'cancelled' takes precedence over scheduled/overdue
+  // since QB's milestone date columns don't reflect Arrivy cancellations.
   let ss: StepState = 'not'
   if (has(p.survey_approved)) ss = 'done'
+  else if (p.arrivy_survey_cancelled && !has(p.survey_submitted)) ss = 'cancelled'
   else if (has(p.survey_submitted)) ss = 'active'
   else if (has(p.survey_scheduled) && isPast(p.survey_scheduled)) ss = 'overdue'
   else if (has(p.survey_scheduled)) ss = 'scheduled'
@@ -101,12 +110,14 @@ export function computeMilestones(p: ProjectMilestoneFields): MilestoneStep[] {
   // Install
   let inst: StepState = 'not'
   if (has(p.install_completed)) inst = 'done'
+  else if (p.arrivy_install_cancelled) inst = 'cancelled'
   else if (has(p.install_scheduled) && isPast(p.install_scheduled)) inst = 'overdue'
   else if (has(p.install_scheduled)) inst = 'scheduled'
 
   // Inspection
   let insp: StepState = 'not'
   if (has(p.inspection_passed)) insp = 'done'
+  else if (p.arrivy_inspection_cancelled) insp = 'cancelled'
   else if (has(p.inspection_scheduled) && isPast(p.inspection_scheduled)) insp = 'overdue'
   else if (has(p.inspection_scheduled)) insp = 'scheduled'
 
@@ -135,6 +146,8 @@ export const dotStyle: Record<StepState, { bg: string; text: string; icon: strin
   scheduled: { bg: 'bg-blue-500',    text: 'text-white', icon: '' },
   rejected:  { bg: 'bg-red-500',     text: 'text-white', icon: '✗' },
   overdue:   { bg: 'bg-violet-500',  text: 'text-white', icon: '!' },
+  // Cancelled — bold rose with X glyph (consistent with milestoneStrip lib).
+  cancelled: { bg: 'bg-rose-600',    text: 'text-white', icon: '✗' },
   not:       { bg: 'bg-[#e2e8f0]',   text: 'text-transparent', icon: '' },
 }
 
@@ -144,6 +157,7 @@ export const labelStyle: Record<StepState, string> = {
   scheduled: 'text-blue-700',
   rejected:  'text-red-700',
   overdue:   'text-violet-700',
+  cancelled: 'text-rose-700',
   not:       'text-muted-foreground',
 }
 

@@ -9,6 +9,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { arrivyConfigured, getArrivyTask, getArrivyTaskFiles, ArrivyApiError, type ArrivyFile, type ArrivyTask } from '../lib/arrivy'
+import { notifyPcOfSurveyCancel } from '../lib/notify'
 
 const router = Router()
 
@@ -125,7 +126,147 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
     const records = await qbQuery(QB.arrivyTable, where, SELECT_FIELDS, {
       sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
     })
-    res.json({ preset, from: fmtDate(from), to: fmtDate(to), records, fields: F })
+    // Pull cancellation events from the log for the same date window.
+    // The QB Arrivy task row's task_status often doesn't update when an
+    // in-flight task gets cancelled, so the log is the source of truth.
+    // We filter logs to the same date window to keep the query scoped.
+    const logEntries = await qbQuery(QB.arrivyTaskLogTable,
+      `{'${LOG_F.timestamp}'.OAF.'${fromStr}'}AND{'${LOG_F.timestamp}'.OBF.'${toStr}'}AND{'${LOG_F.eventType}'.EX.'TASK_STATUS'}`,
+      [3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.statusSubType, LOG_F.timestamp, LOG_F.reportedBy, LOG_F.reporterName],
+      { options: { top: 1000 } },
+    ).catch(() => [] as QbRecord[])
+    interface CancelInfo { phase: 'onsite' | 'enroute' | 'scheduled'; cancelledAt: string; cancelledBy: string }
+    // Group logs by task and walk chronologically to derive each cancel's
+    // pre-cancel phase. (Note: this only sees logs in the date window, so
+    // tasks where the cancel landed in-window but the prior STARTED/ENROUTE
+    // events were earlier won't have phase derived correctly. We fall back
+    // to the task's QB-mirrored timestamps for those — see classifyPhase.)
+    const logsByTask = new Map<string, QbRecord[]>()
+    for (const log of logEntries) {
+      const taskRid = String(log[String(LOG_F.relatedTask)]?.value || '')
+      if (!taskRid) continue
+      let arr = logsByTask.get(taskRid)
+      if (!arr) { arr = []; logsByTask.set(taskRid, arr) }
+      arr.push(log)
+    }
+    function recordsByRid(): Map<string, QbRecord> {
+      const m = new Map<string, QbRecord>()
+      for (const r of records) {
+        const rid = String(r['3']?.value || '')
+        if (rid) m.set(rid, r)
+      }
+      return m
+    }
+    const taskRecMap = recordsByRid()
+    const cancelledTaskInfo: Record<string, CancelInfo> = {}
+    for (const [taskRid, logs] of logsByTask) {
+      logs.sort((a, b) => {
+        const av = String(a[String(LOG_F.timestamp)]?.value || '')
+        const bv = String(b[String(LOG_F.timestamp)]?.value || '')
+        return av.localeCompare(bv)
+      })
+      let phase: CancelInfo['phase'] = 'scheduled'
+      for (const log of logs) {
+        const subType = String(log[String(LOG_F.statusSubType)]?.value || '').toUpperCase()
+        if (/CANCEL|EXCEPTION|NOT.?DONE/i.test(subType)) {
+          // Final fallback: if the log didn't carry the prior STARTED /
+          // ENROUTE event in our date window, use the task row's mirrored
+          // timestamps — startedStatus implies on-site, enrouteStatus en-route.
+          if (phase === 'scheduled') {
+            const taskRec = taskRecMap.get(taskRid)
+            if (taskRec) {
+              if (taskRec[String(F.startedStatus)]?.value) phase = 'onsite'
+              else if (taskRec[String(F.enrouteStatus)]?.value) phase = 'enroute'
+            }
+          }
+          cancelledTaskInfo[taskRid] = {
+            phase,
+            cancelledAt: String(log[String(LOG_F.timestamp)]?.value || ''),
+            cancelledBy: String(log[String(LOG_F.reportedBy)]?.value || '') ||
+                         String(log[String(LOG_F.reporterName)]?.value || ''),
+          }
+          break
+        }
+        if (subType === 'STARTED') phase = 'onsite'
+        else if (subType === 'ENROUTE' && phase !== 'onsite') phase = 'enroute'
+      }
+    }
+    res.json({
+      preset, from: fmtDate(from), to: fmtDate(to),
+      records, fields: F,
+      cancelledTaskRids: Object.keys(cancelledTaskInfo),
+      cancelledTaskInfo,
+    })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// GET /api/field/cancellations?days=60 — bulk Arrivy cancellation map
+// for the projects list. Returns:
+//   { byProject: { [projectRid]: { survey?: bool, install?: bool, inspection?: bool } } }
+//
+// Survey takes precedence in routing — a cancelled survey on a project
+// surfaces a red X on the SS milestone in the projects table without
+// per-row /api/field/project-tasks calls. Filtered to recent cancels
+// (default 60d) so the projects list scan stays cheap.
+router.get('/cancellations', async (req: Request, res: Response): Promise<void> => {
+  const days = Math.min(365, Math.max(1, Number(req.query['days']) || 60))
+  const since = new Date(); since.setDate(since.getDate() - days)
+  const sinceStr = since.toISOString()
+  try {
+    // 1. Pull all CANCEL/EXCEPTION TASK_STATUS log events in the window.
+    const logs = await qbQuery(QB.arrivyTaskLogTable,
+      `{'${LOG_F.timestamp}'.OAF.'${sinceStr}'}AND{'${LOG_F.eventType}'.EX.'TASK_STATUS'}`,
+      [3, LOG_F.relatedTask, LOG_F.relatedProject, LOG_F.statusSubType, LOG_F.timestamp],
+      { options: { top: 5000 } },
+    ).catch(() => [] as QbRecord[])
+    // 2. Filter to cancel-like subtypes; collect (projectRid, taskRid) pairs.
+    const byProjectTasks = new Map<string, Set<string>>()  // projRid -> set of taskRids
+    for (const log of logs) {
+      const sub = String(log[String(LOG_F.statusSubType)]?.value || '').toUpperCase()
+      if (!/CANCEL|EXCEPTION|NOT.?DONE/i.test(sub)) continue
+      const projRid = String(log[String(LOG_F.relatedProject)]?.value || '')
+      const taskRid = String(log[String(LOG_F.relatedTask)]?.value || '')
+      if (!projRid || !taskRid) continue
+      let s = byProjectTasks.get(projRid)
+      if (!s) { s = new Set<string>(); byProjectTasks.set(projRid, s) }
+      s.add(taskRid)
+    }
+    if (byProjectTasks.size === 0) { res.json({ byProject: {} }); return }
+    // 3. Resolve each cancelled task RID → template kind by querying the
+    //    Arrivy task table. Batch lookup via OR'd RID filter.
+    const allTaskRids = [...new Set([...byProjectTasks.values()].flatMap(s => [...s]))]
+    const tasks: QbRecord[] = []
+    const CHUNK = 100
+    for (let i = 0; i < allTaskRids.length; i += CHUNK) {
+      const chunk = allTaskRids.slice(i, i + CHUNK)
+      const where = chunk.map(r => `{'3'.EX.'${r}'}`).join('OR')
+      const got = await qbQuery(QB.arrivyTable, where, [3, F.templateName], { options: { top: CHUNK } })
+                          .catch(() => [] as QbRecord[])
+      tasks.push(...got)
+    }
+    const taskKind = new Map<string, 'survey' | 'install' | 'inspection' | null>()
+    for (const t of tasks) {
+      const rid = String(t['3']?.value || '')
+      const tpl = String(t[String(F.templateName)]?.value || '').toLowerCase()
+      let kind: 'survey' | 'install' | 'inspection' | null = null
+      if (tpl.includes('survey') || tpl.includes('site visit')) kind = 'survey'
+      else if (tpl.includes('install')) kind = 'install'
+      else if (tpl.includes('inspect')) kind = 'inspection'
+      taskKind.set(rid, kind)
+    }
+    // 4. Roll up per project.
+    const byProject: Record<string, { survey?: boolean; install?: boolean; inspection?: boolean }> = {}
+    for (const [projRid, taskRids] of byProjectTasks) {
+      const flags: { survey?: boolean; install?: boolean; inspection?: boolean } = {}
+      for (const tRid of taskRids) {
+        const k = taskKind.get(tRid)
+        if (k) flags[k] = true
+      }
+      if (Object.keys(flags).length) byProject[projRid] = flags
+    }
+    res.json({ byProject })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
@@ -191,6 +332,7 @@ router.get('/arrivy-task/:arrivyId', async (req: Request, res: Response): Promis
     res.json({
       configured: false,
       photos: [],
+      cancellation: null,
       raw: null,
       hint: 'Set ARRIVY_AUTH_KEY and ARRIVY_AUTH_TOKEN env vars on the server.',
     })
@@ -203,9 +345,6 @@ router.get('/arrivy-task/:arrivyId', async (req: Request, res: Response): Promis
     const inlineFiles: ArrivyFile[] = (task.files || task.attachments || []) as ArrivyFile[]
     let files: ArrivyFile[] = inlineFiles
     if (!files.length) {
-      // Fallback to the standalone files endpoint if the task object
-      // didn't carry them. Soft-fail: a 404 here just means no separate
-      // files endpoint for this account, not that the task is broken.
       try { files = await getArrivyTaskFiles(id) } catch { /* ignore */ }
     }
     const photos = files
@@ -222,7 +361,23 @@ router.get('/arrivy-task/:arrivyId', async (req: Request, res: Response): Promis
         uploadedBy: f.uploaded_by || '',
         filename: f.filename || '',
       }))
-    res.json({ configured: true, photos, raw: task })
+    // Cancellation enrichment: Arrivy carries free-text notes / reason
+    // fields that QB's mirror doesn't. Pull from whichever key the
+    // account uses ("cancellation_reason", "notes", "customer_notes").
+    const t = task as Record<string, unknown>
+    const reason = (t['cancellation_reason'] as string | undefined)
+                || (t['cancel_reason']         as string | undefined)
+                || ''
+    const notes  = (t['notes']                 as string | undefined)
+                || (t['task_notes']            as string | undefined)
+                || ''
+    const customerNotes = (t['customer_notes'] as string | undefined) || ''
+    const cancellation = (reason || notes || customerNotes) ? {
+      reason: reason || null,
+      notes: notes || null,
+      customerNotes: customerNotes || null,
+    } : null
+    res.json({ configured: true, photos, cancellation, raw: task })
   } catch (e) {
     if (e instanceof ArrivyApiError) {
       res.status(e.status === 404 ? 404 : 502).json({ error: e.message })
@@ -251,15 +406,106 @@ router.get('/task-log', async (req: Request, res: Response): Promise<void> => {
 
 // GET /api/field/project-tasks?project_rid=X — Arrivy task list for one
 // project (powers the per-card field activity drawer).
+//
+// Cancellation detection: the QB Arrivy task row's task_status field
+// often does NOT update when an in-flight task gets cancelled — if the
+// surveyor was already on-site, the row still reads "STARTED". Arrivy
+// records the cancel as a TASK_STATUS log event with sub-type CANCELLED
+// in the task log table (bvbbznmdb). We pull that log here and return
+// a set of cancelled task RIDs so the client can paint them red without
+// trusting the stale task row.
 router.get('/project-tasks', async (req: Request, res: Response): Promise<void> => {
   const projRid = String(req.query['project_rid'] || '').trim()
-  if (!projRid) { res.json({ records: [] }); return }
+  if (!projRid) { res.json({ records: [], fields: F, cancelledTaskRids: [] }); return }
   try {
-    const records = await qbQuery(QB.arrivyTable, `{'${F.relatedProject}'.EX.'${projRid}'}`, SELECT_FIELDS, {
-      sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
-      options: { top: 200 },
+    const [records, logEntries] = await Promise.all([
+      qbQuery(QB.arrivyTable, `{'${F.relatedProject}'.EX.'${projRid}'}`, SELECT_FIELDS, {
+        sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+        options: { top: 200 },
+      }),
+      qbQuery(QB.arrivyTaskLogTable, `{'${LOG_F.relatedProject}'.EX.'${projRid}'}`, [
+        3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.statusSubType, LOG_F.timestamp,
+      ], { options: { top: 500 } }).catch(() => [] as QbRecord[]),
+    ])
+    // Derive cancellation context per task: did the cancel happen while
+    // the crew was on-site, en-route, or before they left? Walk the log
+    // chronologically per task — the last non-cancel TASK_STATUS subtype
+    // before the cancel event tells us the phase.
+    interface CancelInfo {
+      phase: 'onsite' | 'enroute' | 'scheduled'
+      cancelledAt: string
+      cancelledBy: string
+    }
+    const logsByTask = new Map<string, QbRecord[]>()
+    for (const log of logEntries) {
+      const taskRid = String(log[String(LOG_F.relatedTask)]?.value || '')
+      if (!taskRid) continue
+      let arr = logsByTask.get(taskRid)
+      if (!arr) { arr = []; logsByTask.set(taskRid, arr) }
+      arr.push(log)
+    }
+    const cancelledTaskInfo: Record<string, CancelInfo> = {}
+    for (const [taskRid, logs] of logsByTask) {
+      logs.sort((a, b) => {
+        const av = String(a[String(LOG_F.timestamp)]?.value || '')
+        const bv = String(b[String(LOG_F.timestamp)]?.value || '')
+        return av.localeCompare(bv)
+      })
+      let phase: CancelInfo['phase'] = 'scheduled'
+      let cancelledAt = ''
+      let cancelledBy = ''
+      for (const log of logs) {
+        const eventType = String(log[String(LOG_F.eventType)]?.value || '').toUpperCase()
+        const subType = String(log[String(LOG_F.statusSubType)]?.value || '').toUpperCase()
+        if (eventType !== 'TASK_STATUS') continue
+        if (/CANCEL|EXCEPTION|NOT.?DONE/i.test(subType)) {
+          cancelledAt = String(log[String(LOG_F.timestamp)]?.value || '')
+          cancelledBy = String(log[String(LOG_F.reportedBy)]?.value || '') ||
+                        String(log[String(LOG_F.reporterName)]?.value || '')
+          cancelledTaskInfo[taskRid] = { phase, cancelledAt, cancelledBy }
+          break
+        }
+        // Track the most recent non-cancel state. STARTED beats ENROUTE
+        // beats anything else — so a task that went enroute then started
+        // ends up phase='onsite' if cancelled during the on-site visit.
+        if (subType === 'STARTED') phase = 'onsite'
+        else if (subType === 'ENROUTE' && phase !== 'onsite') phase = 'enroute'
+      }
+    }
+    // Fire-and-forget: notify the project coordinator when a Site
+    // Survey task is cancelled. Dedup is handled inside the helper so
+    // re-loading the project doesn't spam the PC. Wrapped in try so a
+    // notification failure never breaks the page render.
+    try {
+      const taskByRid = new Map<string, QbRecord>()
+      for (const r of records) {
+        const rid = String(r['3']?.value || '')
+        if (rid) taskByRid.set(rid, r)
+      }
+      for (const [taskRid, info] of Object.entries(cancelledTaskInfo)) {
+        const task = taskByRid.get(taskRid)
+        if (!task) continue
+        const tpl = String(task[String(F.templateName)]?.value || '').toLowerCase()
+        if (!tpl.includes('survey') && !tpl.includes('site visit')) continue
+        const fn = String(task[String(F.customerFirstName)]?.value || '')
+        const ln = String(task[String(F.customerLastName)]?.value || '')
+        notifyPcOfSurveyCancel({
+          projectRid: Number(projRid),
+          taskRid,
+          customerName: `${fn} ${ln}`.trim() || null,
+          cancelledAt: info.cancelledAt || null,
+          cancelledBy: info.cancelledBy || null,
+          phase: info.phase,
+        })
+      }
+    } catch { /* notification is best-effort, don't block the response */ }
+
+    res.json({
+      records,
+      fields: F,
+      cancelledTaskRids: Object.keys(cancelledTaskInfo),
+      cancelledTaskInfo,
     })
-    res.json({ records, fields: F })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }

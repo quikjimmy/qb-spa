@@ -37,19 +37,20 @@ export const STATUS_INFO: Record<ArrivyStatusKey, ArrivyStatusInfo> = {
 }
 
 /** Normalize the raw task_status string from QB into one of our known keys.
+ *  Substring-tolerant so noisy QB labels ("Cancelled by Customer",
+ *  "Task Cancelled", "Site Work Complete") still classify correctly.
  *  Unknown values fall through to null so callers can decide a fallback. */
 export function normalizeRawStatus(raw: string | null | undefined): ArrivyStatusKey | null {
   if (!raw) return null
-  const s = String(raw).trim().toLowerCase().replace(/[\s_-]+/g, '')
-  if (!s) return null
-  // Cancellation variants from Arrivy / QB: CANCELLED, CANCELED, CANCEL, EXCEPTION, NOTDONE.
-  if (s === 'cancelled' || s === 'canceled' || s === 'cancel' || s === 'exception' || s === 'notdone') return 'cancelled'
-  if (s === 'rejected' || s === 'reject' || s === 'rerejected') return 'rejected'
-  if (s === 'approved' || s === 'approve') return 'approved'
-  if (s === 'submitted' || s === 'submit' || s === 'formcomplete' || s === 'sitecomplete' || s === 'siteworkcomplete' || s === 'complete') return 'submitted'
-  if (s === 'onsite' || s === 'started' || s === 'start' || s === 'arrived') return 'onsite'
-  if (s === 'enroute' || s === 'en' || s === 'route') return 'enroute'
-  if (s === 'scheduled' || s === 'notstarted' || s === 'pending') return 'scheduled'
+  const s = String(raw).toLowerCase()
+  if (!s.trim()) return null
+  if (/cancel|exception|notdone|not\s*done/i.test(s)) return 'cancelled'
+  if (/reject/i.test(s)) return 'rejected'
+  if (/approv/i.test(s)) return 'approved'
+  if (/submit|formcomplete|form\s*complete|sitework|site\s*work\s*complete|complete/i.test(s)) return 'submitted'
+  if (/onsite|on\s*site|started|start|arrived/i.test(s)) return 'onsite'
+  if (/enroute|en\s*route/i.test(s)) return 'enroute'
+  if (/scheduled|notstarted|not\s*started|pending/i.test(s)) return 'scheduled'
   return null
 }
 

@@ -116,6 +116,20 @@ function setDatePreset(preset: string) {
   loadProjects()
 }
 
+// Project-rid → kind cancellation map from /api/field/cancellations.
+// Loaded once on mount; refreshed alongside loadProjects so newly-cancelled
+// surveys turn red on the next refresh tick.
+const cancellationsByProject = ref<Record<string, { survey?: boolean; install?: boolean; inspection?: boolean }>>({})
+
+async function loadCancellations() {
+  try {
+    const res = await fetch('/api/field/cancellations?days=60', { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json() as { byProject?: Record<string, { survey?: boolean; install?: boolean; inspection?: boolean }> }
+    cancellationsByProject.value = data.byProject || {}
+  } catch { /* non-fatal */ }
+}
+
 async function loadProjects() {
   loading.value = true
   const now = new Date()
@@ -205,7 +219,13 @@ async function toggleFavorite(e: Event, projectId: number) {
 // ─── Milestones ──────────────────────────────────────────
 
 function getMilestones(p: Project): MilestoneStep[] {
-  return computeMilestones(p)
+  const flags = cancellationsByProject.value[String(p.record_id)] || {}
+  return computeMilestones({
+    ...p,
+    arrivy_survey_cancelled: !!flags.survey,
+    arrivy_install_cancelled: !!flags.install,
+    arrivy_inspection_cancelled: !!flags.inspection,
+  })
 }
 
 function has(val: string): boolean { return !!val && val !== '' && val !== '0' && val !== '-' }
@@ -244,7 +264,12 @@ function shortTaskType(t: string): string {
 }
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() }); loadHoldClassifications(); registerRefresh?.(() => loadProjects()) })
+onMounted(() => {
+  loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() })
+  loadHoldClassifications()
+  loadCancellations()
+  registerRefresh?.(() => { loadProjects(); loadCancellations() })
+})
 </script>
 
 <template>
@@ -384,10 +409,11 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
                         'bg-blue-500 text-white animate-pulse': ms.state === 'scheduled',
                         'bg-red-500 text-white': ms.state === 'rejected',
                         'bg-violet-500 text-white': ms.state === 'overdue',
+                        'bg-rose-600 text-white ring-2 ring-rose-200': ms.state === 'cancelled',
                         'bg-[#e2e8f0] text-transparent': ms.state === 'not',
                       }"
                     >{{ dotStyle[ms.state].icon }}</div>
-                    <span v-if="ms.notify" class="absolute -top-[3px] -right-[3px] size-2 rounded-full bg-red-500 border-[1.5px] border-white" />
+                    <!-- (Red attention dot removed — milestone state styling carries the signal.) -->
                   </div>
                   <span
                     class="text-[9px] font-semibold mt-[3px] whitespace-nowrap"
@@ -463,7 +489,7 @@ onMounted(() => { loadProjects().then(() => { if (cacheInfo.value && cacheInfo.v
                         :class="[dotStyle[ms.state].bg, dotStyle[ms.state].text, ms.state === 'scheduled' ? 'animate-pulse' : '']"
                         :title="ms.label"
                       >{{ dotStyle[ms.state].icon }}</div>
-                      <span v-if="ms.notify" class="absolute -top-[3px] -right-[3px] size-[8px] rounded-full bg-red-500 border-[1.5px] border-white" />
+                      <!-- (Red attention dot removed — milestone state styling carries the signal.) -->
                     </div>
                     <span class="text-[8px] font-semibold mt-[2px] whitespace-nowrap" :class="labelStyle[ms.state]">{{ ms.label }}</span>
                   </div>

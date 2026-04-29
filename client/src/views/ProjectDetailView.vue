@@ -348,6 +348,11 @@ interface ArrivyTaskInfo {
   status: ArrivyStatusKey
   taskUrl: string
   scheduledIso: string  // for picking the most recent
+  // Cancellation context — populated when status === 'cancelled' and the
+  // server's Arrivy log lookup returned phase data.
+  cancelPhase?: 'onsite' | 'enroute' | 'scheduled' | null
+  cancelledAt?: string | null
+  cancelledBy?: string | null
 }
 interface QbValue { value: unknown }
 type QbRecord = Record<string, QbValue>
@@ -379,9 +384,19 @@ async function loadArrivy() {
   try {
     const res = await fetch(`/api/field/project-tasks?project_rid=${recordId.value}`, { headers: hdrs() })
     if (!res.ok) return
-    const data = await res.json() as { records: QbRecord[]; fields: Record<string, number> }
+    interface CancelInfo { phase: 'onsite' | 'enroute' | 'scheduled'; cancelledAt: string; cancelledBy: string }
+    const data = await res.json() as {
+      records: QbRecord[]
+      fields: Record<string, number>
+      cancelledTaskRids?: string[]
+      cancelledTaskInfo?: Record<string, CancelInfo>
+    }
     const F = data.fields
     if (!F) return
+    // Server-derived cancellation set (from QB Arrivy task log). The task
+    // row's task_status often doesn't reflect cancellation — the log does.
+    const cancelled = new Set<string>(data.cancelledTaskRids || [])
+    const cancelInfoMap: Record<string, CancelInfo> = data.cancelledTaskInfo || {}
     // Group records by kind, sort by scheduled-datetime desc, classify the latest.
     const byKind: Record<'survey' | 'install' | 'inspection', QbRecord[]> = { survey: [], install: [], inspection: [] }
     for (const rec of data.records || []) {
@@ -401,16 +416,22 @@ async function loadArrivy() {
         return bv.localeCompare(av)
       })
       const rec = recs[0]!
-      const status = classifyArrivyTask({
+      const taskRid = String(qbVal(rec, 3) ?? '')
+      const logCancelled = !!taskRid && cancelled.has(taskRid)
+      const status = logCancelled ? 'cancelled' : classifyArrivyTask({
         rawStatus: qbStrField(rec, F['taskStatus']!),
         arrived: qbStrField(rec, F['startedStatus']!) || null,
         enroute: qbStrField(rec, F['enrouteStatus']!) || null,
         submitted: qbStrField(rec, F['submittedDateTime']!) || null,
       })
+      const cinfo = logCancelled ? cancelInfoMap[taskRid] : null
       return {
         status,
         taskUrl: qbStrField(rec, F['taskUrl']!),
         scheduledIso: String(qbVal(rec, F['scheduledDateTime']!) ?? ''),
+        cancelPhase: cinfo?.phase ?? null,
+        cancelledAt: cinfo?.cancelledAt ?? null,
+        cancelledBy: cinfo?.cancelledBy ?? null,
       }
     }
     arrivySurveyTask.value = latest('survey')
@@ -698,6 +719,9 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :reference-date="project.sales_date"
             :arrivy-status="selectedStepArrivy?.status ?? null"
             :arrivy-task-url="selectedStepArrivy?.taskUrl ?? null"
+            :cancel-phase="selectedStepArrivy?.cancelPhase ?? null"
+            :cancelled-at="selectedStepArrivy?.cancelledAt ?? null"
+            :cancelled-by="selectedStepArrivy?.cancelledBy ?? null"
             @close="closeDetail"
           />
         </div>

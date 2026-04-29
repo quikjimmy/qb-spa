@@ -41,8 +41,7 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
       v-for="(s, i) in steps"
       :key="s.id"
       type="button"
-      class="group relative flex flex-col items-center text-center pt-1.5 pb-2 px-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-teal-500/50 transition-colors cursor-pointer"
-      :class="activeId === s.id ? 'bg-white shadow-sm' : 'hover:bg-white/70'"
+      class="group relative flex flex-col items-center text-center pt-1.5 pb-3 px-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-teal-500/50 transition-colors cursor-pointer hover:bg-white/40"
       :aria-pressed="activeId === s.id"
       :aria-label="`${s.label} — ${s.state}${s.date ? ', ' + fmtShort(s.date) : ''}${s.infoFlag.show ? ', ' + s.infoFlag.reason : ''}`"
       @click="emit('select', s.id)"
@@ -87,12 +86,9 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
           class="relative size-3.5 rounded-full"
           :class="[styles[s.state]?.dot ?? 'bg-slate-200', firstNonDoneIdx === i && s.state !== 'not' ? 'ring-4 ring-amber-100' : '']"
         />
-        <!-- Red attention dot top-right of the cell -->
-        <span
-          v-if="s.infoFlag.show"
-          class="absolute -top-0.5 right-1/2 translate-x-[14px] size-2 rounded-full bg-rose-500 ring-2 ring-white"
-          :title="s.infoFlag.reason"
-        />
+        <!-- (Red attention dot intentionally omitted — the milestone's
+             own state styling already conveys cancelled / overdue / etc.,
+             and the prior dot caused visual noise.) -->
         <!-- Inter-step transit pill — centered on the boundary between this
              cell and the next (so it floats over the connector line, NOT
              over the neighboring dots). Mobile gets a tighter chip
@@ -122,6 +118,17 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
         class="text-[9.5px] tabular-nums text-slate-400 leading-tight mt-0.5"
         :title="s.durationLabel.includes('open') ? 'Days open in this milestone' : 'Total biz days from submit to approve'"
       >{{ s.durationLabel }}</div>
+
+      <!-- Selected indicator: a single teal accent bar with a soft glow,
+           anchored to the bottom of the cell. Replaces the prior bg-white
+           box treatment so the strip stays calm and the dot/date keep
+           visual primacy. -->
+      <span
+        v-if="activeId === s.id"
+        aria-hidden="true"
+        class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-teal-500"
+        style="box-shadow: 0 0 8px 1px rgba(20, 184, 166, 0.55), 0 0 2px rgba(15, 118, 110, 0.5);"
+      />
     </button>
   </div>
 </template>

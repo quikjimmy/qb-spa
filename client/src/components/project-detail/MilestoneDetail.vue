@@ -19,16 +19,50 @@ const props = defineProps<{
   coordinator?: string | null
   // referenceDate (sales_date or last activity) used as fallback when step has no date
   referenceDate?: string | null
-  /** Live Arrivy task status for this step (when there is one) — surfaces
-   *  alongside the milestone state so the user sees both: "Cancelled" the
-   *  Arrivy event AND that the project's overall stage is now blocked. */
+  /** Live Arrivy task status for this step (when there is one). Hidden
+   *  when its label matches the milestone state to avoid the "Cancelled
+   *  Cancelled" duplication. */
   arrivyStatus?: ArrivyStatusKey | null
   arrivyTaskUrl?: string | null
+  /** Cancellation context — phase the task was in when cancelled
+   *  (onsite / enroute / scheduled), plus actor + timestamp. */
+  cancelPhase?: 'onsite' | 'enroute' | 'scheduled' | null
+  cancelledAt?: string | null
+  cancelledBy?: string | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
 
 const arrivyInfo = computed(() => props.arrivyStatus ? STATUS_INFO[props.arrivyStatus] : null)
+
+// Hide the live Arrivy pill when its label is identical to the milestone
+// state pill (avoids "Cancelled Cancelled"). The phase descriptor below
+// carries the unique signal for cancelled cases.
+const showArrivyPill = computed(() => {
+  if (!arrivyInfo.value) return false
+  const stateText = (stateLabel[props.step?.state ?? 'not'] ?? '').toLowerCase()
+  return arrivyInfo.value.label.toLowerCase() !== stateText
+})
+
+// One-line, human-readable description of how the cancellation went down.
+// Used right under the pills so the user instantly knows whether a tech
+// made the trip or not.
+const cancelPhaseDescriptor = computed<string>(() => {
+  if (props.step?.state !== 'cancelled') return ''
+  const phase = props.cancelPhase
+  const who = props.cancelledBy ? ` by ${props.cancelledBy}` : ''
+  const when = props.cancelledAt ? ` · ${fmtCancelTs(props.cancelledAt)}` : ''
+  if (phase === 'onsite') return `Cancelled while crew was on-site${who}${when}`
+  if (phase === 'enroute') return `Cancelled while crew was en-route${who}${when}`
+  if (phase === 'scheduled') return `Cancelled before arrival${who}${when}`
+  return `Cancelled${who}${when}`
+})
+
+function fmtCancelTs(s: string): string {
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return s
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
 
 const stateLabel: Record<string, string> = {
   done: 'Done',
@@ -85,29 +119,18 @@ function fmtTime(s: string): string {
     <div class="flex items-center gap-2 px-4 pt-3.5 pb-2 flex-wrap">
       <h3 class="text-[15px] font-semibold text-slate-900">{{ step.label }}</h3>
       <span
-        class="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[11px] font-medium"
+        class="inline-flex items-center px-2 py-[2px] rounded-full text-[11px] font-medium"
         :class="stateClass[step.state] ?? stateClass['not']"
-      >
-        <svg v-if="step.state === 'cancelled'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3" aria-hidden="true">
-          <path d="M6 6l12 12" /><path d="M18 6L6 18" />
-        </svg>
-        {{ stateLabel[step.state] ?? '—' }}
-      </span>
-      <!-- Arrivy live-status pill: shown when the step has a corresponding
-           field task (survey/install/inspection). Lets the user see the
-           ground-truth Arrivy status without leaving the project view. -->
+      >{{ stateLabel[step.state] ?? '—' }}</span>
+      <!-- Live status pill from the latest Arrivy task on this milestone
+           (survey/install/inspection). Hidden when redundant with the
+           milestone-state pill (e.g. both say "Cancelled"). Bare status
+           text — no prefix or icon — so it reads as just the state. -->
       <span
-        v-if="arrivyInfo"
-        class="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[11px] font-medium uppercase tracking-wide"
+        v-if="showArrivyPill && arrivyInfo"
+        class="inline-flex items-center px-2 py-[2px] rounded-full text-[11px] font-medium uppercase tracking-wide"
         :class="arrivyInfo.pillCls"
-        :title="`Arrivy task status: ${arrivyInfo.label}`"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="size-3 opacity-80" aria-hidden="true">
-          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-        Arrivy: {{ arrivyInfo.label }}
-      </span>
+      >{{ arrivyInfo.label }}</span>
       <a
         v-if="arrivyTaskUrl"
         :href="arrivyTaskUrl"
@@ -121,6 +144,19 @@ function fmtTime(s: string): string {
         aria-label="Close milestone detail"
         @click="emit('close')"
       >×</button>
+    </div>
+
+    <!-- Cancellation context line: "Cancelled while crew was on-site by
+         John Smith · Apr 29, 2:03 PM". Carries the unique 'how' signal
+         the pills can't fit. -->
+    <div
+      v-if="cancelPhaseDescriptor"
+      class="px-4 -mt-1 mb-1 text-[12.5px] text-rose-800 flex items-start gap-1.5"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="size-3.5 mt-[2px] text-rose-600 shrink-0" aria-hidden="true">
+        <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+      </svg>
+      <span>{{ cancelPhaseDescriptor }}</span>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">

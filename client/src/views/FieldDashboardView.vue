@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, inject } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import FieldPerformance from '@/components/FieldPerformance.vue'
@@ -36,10 +37,21 @@ interface FieldIds {
 }
 type QbValue = { value: unknown }
 type QbRecord = Record<string, QbValue>
-interface TasksResponse { preset: string; from: string; to: string; records: QbRecord[]; fields: FieldIds }
+interface CancelInfo { phase: 'onsite' | 'enroute' | 'scheduled'; cancelledAt: string; cancelledBy: string }
+interface TasksResponse {
+  preset: string; from: string; to: string;
+  records: QbRecord[]; fields: FieldIds;
+  cancelledTaskRids?: string[]
+  cancelledTaskInfo?: Record<string, CancelInfo>
+}
 
 const records = ref<QbRecord[]>([])
 const fieldIds = ref<FieldIds | null>(null)
+// Server-derived cancellation set + per-task phase info from the QB
+// Arrivy task log. The task row's task_status often doesn't update
+// when an in-flight task gets cancelled, so this is the source of truth.
+const cancelledTaskRids = ref<Set<string>>(new Set())
+const cancelledTaskInfo = ref<Record<string, CancelInfo>>({})
 const loading = ref(true)
 const errorMsg = ref('')
 
@@ -134,14 +146,20 @@ interface StatusInfo { key: StatusKey; label: string; pillCls: string; borderCls
 function getTaskStatus(t: QbRecord): StatusInfo {
   const F = fieldIds.value
   if (!F) return { key: 'scheduled', label: 'Scheduled', pillCls: '', borderCls: '' }
-  const arrivyStatusRaw = String(qbv(t, F.taskStatus) || '').toLowerCase()
-  const arrivyStatus = arrivyStatusRaw.replace(/[\s_-]+/g, '')
+  const arrivyStatus = String(qbv(t, F.taskStatus) || '').toLowerCase()
   const submittedDt = qbv(t, F.submittedDateTime)
   const arrivedDt = qbv(t, F.startedStatus)
   const enrouteDt = qbv(t, F.enrouteStatus)
-  const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'siteworkcomplete'
-  const isOverdue = arrivyStatus === 'overdue'
-  const isCancelled = arrivyStatus === 'cancelled' || arrivyStatus === 'canceled' || arrivyStatus === 'cancel' || arrivyStatus === 'exception' || arrivyStatus === 'notdone'
+  const isArrivyComplete = /\bcomplete\b/i.test(arrivyStatus)
+  const isOverdue = /\boverdue\b/i.test(arrivyStatus)
+  // Source of truth for cancellation = QB Arrivy task log (server-derived).
+  // The QB task row often still reads "STARTED" / "ENROUTE" when an
+  // in-flight task gets cancelled. Fall back to a row substring match
+  // for older tasks where the log entry isn't in our window.
+  const taskRid = String(qbv(t, 3) || '')
+  const logSaysCancelled = !!taskRid && cancelledTaskRids.value.has(taskRid)
+  const rowSaysCancelled = /cancel|exception|notdone|not\s*done/i.test(arrivyStatus)
+  const isCancelled = logSaysCancelled || rowSaysCancelled
   // 0. Cancelled — loud red, takes precedence so the row reads as cancelled
   //    even if a stale submitted/arrived timestamp is on the record.
   if (isCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600 bg-rose-50/40' }
@@ -168,6 +186,21 @@ function statusEmoji(t: QbRecord): string {
   if (s.key === 'enroute') return '🚗'
   if (s.key === 'overdue') return '⚠️'
   return '⏳'
+}
+
+// True when the tech arrived on-site within 15 minutes of the scheduled
+// start. Used on cancelled cards to call out "the surveyor *was* there
+// on time" — i.e. a customer-cancel-after-arrival case worth a callback.
+function surveyArrivedOnTime(t: QbRecord): boolean {
+  const F = fieldIds.value
+  if (!F) return false
+  const arrived = qbv(t, F.startedStatus)
+  const sched = qbv(t, F.scheduledDateTime)
+  if (!arrived || !sched) return false
+  const a = new Date(String(arrived))
+  const s = new Date(String(sched))
+  if (isNaN(a.getTime()) || isNaN(s.getTime())) return false
+  return (a.getTime() - s.getTime()) <= 15 * 60_000
 }
 
 function isSurveyOverdue(t: QbRecord): boolean {
@@ -306,6 +339,7 @@ const activityByPeriod = computed<Record<Period['key'], QbRecord[]>>(() => {
 })
 function activityDot(t: QbRecord): string {
   const s = getTaskStatus(t)
+  if (s.key === 'cancelled') return 'bg-rose-600'
   if (s.key === 'submitted') return 'bg-emerald-500'
   if (s.key === 'onsite') return 'bg-amber-500'
   if (s.key === 'enroute') return 'bg-sky-500'
@@ -468,11 +502,13 @@ function lateBadgeFor(t: QbRecord): { label: string; cls: string } | null {
   return { label: 'PRED. LATE', cls: 'bg-amber-500 text-white' }
 }
 
+// Card click → in-app project detail page (not the QB-hosted UI).
+// QB record id of the related project becomes the route param.
 function projectUrl(t: QbRecord): string {
   const F = fieldIds.value
   if (!F) return ''
   const rid = qbv(t, F.relatedProject)
-  return rid ? `https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-project-detail.html#rid=${rid}` : ''
+  return rid ? `/projects/${rid}` : ''
 }
 
 // ─── Loading ──
@@ -487,6 +523,8 @@ async function load() {
     const data = await res.json() as TasksResponse
     records.value = data.records
     fieldIds.value = data.fields
+    cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
+    cancelledTaskInfo.value = data.cancelledTaskInfo || {}
     lateLoaded.value = false
     lateByTask.value = {}
   } catch (e) {
@@ -688,32 +726,76 @@ watch(preset, load)
                past their row width when long template names / crew labels /
                5-chip Install rows would otherwise force horizontal overflow. -->
           <div class="grid grid-cols-1 gap-2 min-w-0">
-            <a v-for="t in g.rows" :key="String(qbv(t, 3))"
-              :href="projectUrl(t) || undefined" target="_blank" rel="noopener"
-              class="block rounded-xl border-l-[3px] border bg-card p-3 transition-transform active:scale-[0.99] min-w-0 overflow-hidden"
-              :class="getTaskStatus(t).borderCls"
+            <RouterLink v-for="t in g.rows" :key="String(qbv(t, 3))"
+              :to="projectUrl(t) || '/'"
+              class="block rounded-xl border-l-[4px] border p-3 transition-transform active:scale-[0.99] min-w-0 overflow-hidden cursor-pointer"
+              :class="[
+                getTaskStatus(t).borderCls,
+                getTaskStatus(t).key === 'cancelled' ? 'bg-rose-50 ring-1 ring-rose-200' : 'bg-card',
+              ]"
             >
-              <div class="flex items-start justify-between gap-2 mb-0.5 min-w-0">
-                <p class="font-semibold text-sm flex-1 min-w-0 truncate">
-                  {{ statusEmoji(t) }} {{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') || 'Unknown' }}
-                </p>
-                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 whitespace-nowrap" :class="getTaskStatus(t).pillCls">{{ getTaskStatus(t).label }}</span>
-                <span v-if="lateBadgeFor(t)" class="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide shrink-0 whitespace-nowrap" :class="lateBadgeFor(t)!.cls">{{ lateBadgeFor(t)!.label }}</span>
+              <div class="flex items-start gap-2.5 mb-0.5 min-w-0">
+                <!-- Cancelled gets a circular red X marker so the card reads
+                     "this didn't happen" before you scan the text. -->
+                <span
+                  v-if="getTaskStatus(t).key === 'cancelled'"
+                  class="size-7 shrink-0 rounded-full bg-rose-600 text-white flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3.5">
+                    <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+                  </svg>
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-2 min-w-0">
+                    <p class="font-semibold text-sm flex-1 min-w-0 truncate" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-900' : ''">
+                      {{ getTaskStatus(t).key === 'cancelled' ? '' : statusEmoji(t) + ' ' }}{{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') || 'Unknown' }}
+                    </p>
+                    <span
+                      class="rounded-full font-semibold shrink-0 whitespace-nowrap inline-flex items-center gap-1"
+                      :class="[
+                        getTaskStatus(t).pillCls,
+                        getTaskStatus(t).key === 'cancelled' ? 'px-2 py-[2px] text-[10.5px] uppercase tracking-wide' : 'px-2 py-0.5 text-[10px]',
+                      ]"
+                    >
+                      <svg v-if="getTaskStatus(t).key === 'cancelled'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3" aria-hidden="true">
+                        <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+                      </svg>
+                      {{ getTaskStatus(t).label }}
+                    </span>
+                    <span v-if="lateBadgeFor(t)" class="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide shrink-0 whitespace-nowrap" :class="lateBadgeFor(t)!.cls">{{ lateBadgeFor(t)!.label }}</span>
+                  </div>
+                  <p class="text-[11px] truncate mb-1 min-w-0" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-800/80' : 'text-muted-foreground'">
+                    {{ fmtDateTime(qbv(t, fieldIds!.scheduledDateTime)) }} ·
+                    {{ String(qbv(t, fieldIds!.templateName) || 'Task') }}
+                    <template v-if="parseFloat(String(qbv(t, fieldIds!.kw) || '0')) > 0"> · {{ parseFloat(String(qbv(t, fieldIds!.kw) || '0')).toFixed(1) }} kW</template>
+                    · {{ getCrewName(t) || 'TBA' }}
+                  </p>
+                  <!-- Cancelled-specific evidence chips: did the surveyor
+                       arrive (from QB-mirrored Arrivy timestamps), and was
+                       it on time. Lets you see at-a-glance which cancels
+                       have a "tech was on site" story behind them. -->
+                  <div v-if="getTaskStatus(t).key === 'cancelled' && qbv(t, fieldIds!.startedStatus)" class="flex flex-wrap gap-1 min-w-0 mb-1">
+                    <span class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800">Arrived</span>
+                    <span
+                      v-if="surveyArrivedOnTime(t)"
+                      class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800"
+                    >On-time</span>
+                    <span v-else class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">Late arrival</span>
+                  </div>
+                  <!-- Each chip is whitespace-nowrap so it never breaks mid-label,
+                       but the row flex-wraps so 5 install chips stack onto two
+                       rows on 390px screens instead of forcing the card wider. -->
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap" :class="c.cls">{{ c.label }}</span>
+                  </div>
+                  <div class="flex items-center gap-3 mt-1">
+                    <a v-if="qbv(t, fieldIds!.taskUrl)" :href="String(qbv(t, fieldIds!.taskUrl))" target="_blank" rel="noopener" class="text-[11px] font-semibold inline-block" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-700 hover:text-rose-800 hover:underline' : 'text-sky-600'" @click.stop>Open in Arrivy ↗</a>
+                    <span v-if="getTaskStatus(t).key === 'cancelled'" class="text-[11px] text-rose-700/80">Tap card → see proof on project page</span>
+                  </div>
+                </div>
               </div>
-              <p class="text-[11px] text-muted-foreground truncate mb-1 min-w-0">
-                {{ fmtDateTime(qbv(t, fieldIds!.scheduledDateTime)) }} ·
-                {{ String(qbv(t, fieldIds!.templateName) || 'Task') }}
-                <template v-if="parseFloat(String(qbv(t, fieldIds!.kw) || '0')) > 0"> · {{ parseFloat(String(qbv(t, fieldIds!.kw) || '0')).toFixed(1) }} kW</template>
-                · {{ getCrewName(t) || 'TBA' }}
-              </p>
-              <!-- Each chip is whitespace-nowrap so it never breaks mid-label,
-                   but the row flex-wraps so 5 install chips stack onto two
-                   rows on 390px screens instead of forcing the card wider. -->
-              <div class="flex flex-wrap gap-1 min-w-0">
-                <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap" :class="c.cls">{{ c.label }}</span>
-              </div>
-              <a v-if="qbv(t, fieldIds!.taskUrl)" :href="String(qbv(t, fieldIds!.taskUrl))" target="_blank" rel="noopener" class="text-[11px] text-sky-600 font-semibold mt-1 inline-block" @click.stop>Open in Arrivy ↗</a>
-            </a>
+            </RouterLink>
           </div>
         </template>
       </div>
