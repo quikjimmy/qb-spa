@@ -32,6 +32,9 @@ export interface InfoFlag {
   show: boolean
   /** human-readable reason — surfaces in the detail panel + tooltip */
   reason: string
+  /** Structured list of blockers (split from QB's `;`-joined multi-select).
+   *  Surfaced as a checklist in MilestoneDetail when present. */
+  missingItems?: string[]
 }
 
 export interface StripStep {
@@ -99,6 +102,22 @@ export interface ProjectStripFields {
   arrivy_survey_cancelled_at?: string | null
   arrivy_install_cancelled_at?: string | null
   arrivy_inspection_cancelled_at?: string | null
+  // Multi-select missing-items lists per milestone — `;`-joined text.
+  // Drives the red attention dot on the strip + the checklist in
+  // MilestoneDetail when the user opens the step.
+  permit_missing_items?: string | null
+  nem_missing_items?: string | null
+  pto_missing_items?: string | null
+}
+
+// Split a `;`-joined multi-select into a clean string array. Tolerates
+// alternate delimiters (`,`, `|`) since QB report exports vary.
+function splitMissing(s: string | null | undefined): string[] {
+  if (!has(s)) return []
+  return String(s)
+    .split(/[;|,]/)
+    .map(x => x.trim())
+    .filter(Boolean)
 }
 
 function has(v: string | null | undefined): boolean {
@@ -268,6 +287,12 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     else if (has(p.permit_rejected) && !has(p.permit_approved)) { state = 'rejected'; flagReason = 'Permit rejected' }
     else if (has(p.permit_submitted)) state = 'active'
     const d = durLabel(p.permit_submitted, p.permit_approved)
+    const missing = splitMissing(p.permit_missing_items)
+    // Missing items are blockers regardless of submitted/approved state — surface
+    // a red dot whenever the list is non-empty so the coordinator sees the gap.
+    const showFlag = state === 'rejected' || missing.length > 0
+    const reason = flagReason
+      || (missing.length > 0 ? `${missing.length} missing item${missing.length === 1 ? '' : 's'}` : '')
     return {
       id: 'permit', label: 'Permit', abbrev: 'Per',
       state,
@@ -278,7 +303,7 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Approved',  date: pickDate(p.permit_approved),  state: subStateFromDates(p.permit_approved, p.permit_rejected) },
       ],
       feedKeywords: ['permit', 'ahj', 'permitting'],
-      infoFlag: { show: state === 'rejected', reason: flagReason },
+      infoFlag: { show: showFlag, reason, missingItems: missing },
     }
   })()
 
@@ -290,6 +315,10 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     else if (has(p.nem_rejected) && !has(p.nem_approved)) { state = 'rejected'; flagReason = 'NEM rejected' }
     else if (has(p.nem_submitted)) state = 'active'
     const d = durLabel(p.nem_submitted, p.nem_approved)
+    const missing = splitMissing(p.nem_missing_items)
+    const showFlag = state === 'rejected' || missing.length > 0
+    const reason = flagReason
+      || (missing.length > 0 ? `${missing.length} missing item${missing.length === 1 ? '' : 's'}` : '')
     return {
       id: 'nem', label: 'NEM', abbrev: 'NEM',
       state,
@@ -300,7 +329,7 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Approved',  date: pickDate(p.nem_approved),  state: subStateFromDates(p.nem_approved, p.nem_rejected) },
       ],
       feedKeywords: ['nem', 'utility interconnect', 'interconnection'],
-      infoFlag: { show: state === 'rejected', reason: flagReason },
+      infoFlag: { show: showFlag, reason, missingItems: missing },
     }
   })()
 
@@ -376,6 +405,9 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     if (has(p.pto_approved)) state = 'done'
     else if (has(p.pto_submitted)) state = 'active'
     const d = durLabel(p.pto_submitted, p.pto_approved)
+    const missing = splitMissing(p.pto_missing_items)
+    const showFlag = missing.length > 0
+    const reason = missing.length > 0 ? `${missing.length} missing item${missing.length === 1 ? '' : 's'}` : ''
     return {
       id: 'pto', label: 'PTO', abbrev: 'PTO',
       state,
@@ -386,7 +418,7 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
         { label: 'Approved',  date: pickDate(p.pto_approved),  state: subStateFromDates(p.pto_approved) },
       ],
       feedKeywords: ['pto', 'permission to operate'],
-      infoFlag: { show: false, reason: '' },
+      infoFlag: { show: showFlag, reason, missingItems: missing },
     }
   })()
 

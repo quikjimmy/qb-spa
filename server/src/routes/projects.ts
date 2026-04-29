@@ -102,6 +102,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'module_brand', 'module', 'inverter_brand', 'inverter', 'existing_system',
     // Integrations
     'google_drive_link',
+    // Missing-items lists (semicolon-joined multi-select)
+    'permit_missing_items', 'nem_missing_items', 'pto_missing_items',
   ]
   for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
   const FUNDING_REAL = [
@@ -209,6 +211,13 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 167,  col: 'google_drive_link' },    // Google Drive folder URL
   { fid: 2685, col: 'max_arrivy_task_id' },   // Maximum Arrivy Task ID (numeric)
 
+  // ─── Missing-items per milestone — multi-select text. Drives the red
+  // attention dot on the milestone strip + the missing-items list in the
+  // milestone detail panel. Stored as `;`-joined text (QB's ToText output).
+  { fid: 2242, col: 'permit_missing_items' },
+  { fid: 2005, col: 'nem_missing_items' },
+  { fid: 2007, col: 'pto_missing_items' },
+
   // ─── Finance terms (Deal Breakdown → Financing)
   { fid: 349,  col: 'finance_term' },         // Finance Term - Lookup (e.g. "25" yr)
   { fid: 350,  col: 'finance_rate' },         // Finance Rate - Lookup
@@ -302,6 +311,13 @@ const BOOLEAN_COLS = new Set([
   'm1_ready', 'm2_ready', 'm3_ready',
 ])
 
+// Multi-select text columns — QB returns these as either an array of strings
+// or a `;`-joined string depending on report settings. Normalize to `;`-joined
+// so the client can split cleanly.
+const MULTI_SELECT_COLS = new Set([
+  'permit_missing_items', 'nem_missing_items', 'pto_missing_items',
+])
+
 function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
   return fieldMap.map(f => {
     if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
@@ -309,6 +325,11 @@ function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[
     if (NUMERIC_AMOUNT_COLS.has(f.col)) {
       const n = parseFloat(val(record, f.fid))
       return Number.isFinite(n) ? n : null
+    }
+    if (MULTI_SELECT_COLS.has(f.col)) {
+      const v = record[String(f.fid)]?.value
+      if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean).join(';')
+      return val(record, f.fid)  // already a string (likely `;`-joined)
     }
     if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
     if (f.col === 'inspx_pass_fail') {

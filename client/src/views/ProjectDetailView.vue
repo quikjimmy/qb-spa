@@ -128,6 +128,10 @@ interface Project extends Record<string, unknown> {
   google_drive_link?: string | null
   project_number?: number | null
   max_arrivy_task_id?: number | null
+  // Multi-select missing-items lists per milestone (`;`-joined text)
+  permit_missing_items?: string | null
+  nem_missing_items?: string | null
+  pto_missing_items?: string | null
 }
 
 interface CommItem {
@@ -873,7 +877,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
            pattern: tap pill to open, ✕ to minimize to a left-edge tab. -->
       <div
         v-if="!chatMinimized"
-        class="fixed bottom-4 left-4 z-50 inline-flex items-stretch rounded-full bg-slate-900 text-white shadow-lg hover:shadow-xl transition-all overflow-hidden"
+        class="fixed bottom-4 right-4 z-50 inline-flex items-stretch rounded-full bg-slate-900 text-white shadow-lg hover:shadow-xl transition-all overflow-hidden"
         :class="chatOpen ? 'ring-2 ring-teal-400' : ''"
       >
         <button
@@ -883,11 +887,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
           aria-label="Open project chat"
           @click="openChatBot"
         >
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M3 6.5C3 5.4 3.9 4.5 5 4.5H14.5C15.6 4.5 16.5 5.4 16.5 6.5V13C16.5 14.1 15.6 15 14.5 15H7.5L4 18.5V6.5Z" fill="currentColor"/>
-            <path d="M6 8.2H13.5M6 11.5H11" stroke="#0f172a" stroke-width="1.4" stroke-linecap="round"/>
-            <path d="M19 5L19.9 8.1L23 9L19.9 9.9L19 13L18.1 9.9L15 9L18.1 8.1L19 5Z" fill="currentColor"/>
-          </svg>
+          <img src="/img/ai-chat-icon.png" alt="" class="w-7 h-7" aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -900,12 +900,13 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
         </button>
       </div>
 
-      <!-- Minimized: thin vertical pill anchored to the LEFT edge mid-height,
-           matching the FeedbackLauncher's right-edge tab. Tap to restore. -->
+      <!-- Minimized: thin vertical pill anchored to the RIGHT edge, lower than
+           the FeedbackLauncher (which sits right-edge mid-height) so the two
+           don't collide. Tap to restore. -->
       <button
         v-else
         type="button"
-        class="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-slate-900 text-white shadow-lg hover:shadow-xl active:scale-95 transition-all rounded-r-md py-2.5 px-1.5 cursor-pointer"
+        class="fixed right-0 bottom-24 z-50 bg-slate-900 text-white shadow-lg hover:shadow-xl active:scale-95 transition-all rounded-l-md py-2.5 px-1.5 cursor-pointer"
         title="Show project chat"
         aria-label="Show project chat"
         @click="restoreChatFab"
@@ -932,9 +933,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
-            <div class="size-8 rounded-full bg-gradient-to-br from-foreground/10 to-foreground/5 flex items-center justify-center shrink-0">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
-            </div>
+            <img src="/img/ai-chat-icon.png" alt="" class="size-8 shrink-0" aria-hidden="true" />
             <div class="flex-1 min-w-0">
               <div class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Chat Bot</div>
               <div class="text-sm font-medium truncate">

@@ -86,9 +86,17 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
           class="relative size-3.5 rounded-full"
           :class="[styles[s.state]?.dot ?? 'bg-slate-200', firstNonDoneIdx === i && s.state !== 'not' ? 'ring-4 ring-amber-100' : '']"
         />
-        <!-- (Red attention dot intentionally omitted — the milestone's
-             own state styling already conveys cancelled / overdue / etc.,
-             and the prior dot caused visual noise.) -->
+        <!-- Red attention dot — top-right of the cell, anchored to the dot's
+             upper edge so it reads as a "blocker" indicator without crowding
+             the dot itself. Surfaces whenever the step has missing items
+             (Permit / NEM / PTO from QB) or is rejected. Cancelled steps
+             skip this since the X dot already conveys the state. -->
+        <span
+          v-if="s.infoFlag.show && s.state !== 'cancelled'"
+          class="absolute top-0 right-1/2 translate-x-[10px] -translate-y-1 size-2 rounded-full bg-rose-500 ring-2 ring-white"
+          :title="s.infoFlag.reason || 'Needs attention'"
+          aria-hidden="true"
+        />
         <!-- Inter-step transit pill — centered on the boundary between this
              cell and the next (so it floats over the connector line, NOT
              over the neighboring dots). Mobile gets a tighter chip

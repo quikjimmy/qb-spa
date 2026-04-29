@@ -159,6 +159,33 @@ function fmtTime(s: string): string {
       <span>{{ cancelPhaseDescriptor }}</span>
     </div>
 
+    <!-- Missing items — full-width banner above the sub-step / events grid
+         so it's the first thing the user sees when there's a blocker. Items
+         arrive as a `;`-joined multi-select from QB. -->
+    <div
+      v-if="step.infoFlag.missingItems && step.infoFlag.missingItems.length"
+      class="mx-4 mb-3 rounded-lg bg-rose-50 ring-1 ring-rose-100 px-3 py-2"
+    >
+      <div class="flex items-center gap-1.5 mb-1.5">
+        <span class="size-2 rounded-full bg-rose-500" aria-hidden="true" />
+        <span class="text-[10.5px] font-semibold text-rose-700 uppercase tracking-wider">
+          {{ step.infoFlag.reason || 'Needs attention' }}
+        </span>
+      </div>
+      <ul class="space-y-1">
+        <li
+          v-for="(item, i) in step.infoFlag.missingItems"
+          :key="i"
+          class="flex items-start gap-2 text-[12.5px] text-slate-700 leading-snug"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="size-3 mt-1 text-rose-500 shrink-0" aria-hidden="true">
+            <path d="M6 6l12 12" /><path d="M18 6L6 18" />
+          </svg>
+          <span>{{ item }}</span>
+        </li>
+      </ul>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">
       <!-- Sub-checklist -->
       <div>
