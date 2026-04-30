@@ -2589,6 +2589,153 @@ async function refreshDialpadUsers(cfg: { apiKey: string }): Promise<{ count: nu
   return { count, error: null }
 }
 
+// Per-user recent SMS threads. Groups dialpad_events by external_number,
+// scoped to the requesting user's email aliases so the panel reads as "my
+// recent texts". Each row carries an unread count (incoming SMS without a
+// dialpad_sms_reads row for this user) and a needs_reply flag (last message
+// is incoming and unread). Customer name resolves via project_cache phone
+// last-10 digit match. Used by RecentThreads.vue in the Comms Hub.
+router.get('/recent-threads', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '15'), 10) || 15, 1), 50)
+  const days = Math.min(Math.max(parseInt(String(req.query['days'] || '30'), 10) || 30, 1), 180)
+
+  // Email aliases (primary + secondary) so a user with separate Kin /
+  // Dialpad emails sees both halves of their thread history.
+  const myEmails = new Set<string>([req.user.email.toLowerCase()])
+  const aliasRows = db.prepare(
+    `SELECT email FROM user_email_lookup WHERE user_id = ?`
+  ).all(req.user.userId) as Array<{ email: string }>
+  for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+  if (myEmails.size === 0) { res.json({ rows: [] }); return }
+
+  const emailList = Array.from(myEmails)
+  const placeholders = emailList.map(() => '?').join(',')
+
+  interface ThreadAgg {
+    phone: string
+    last_at: string
+    message_count: number
+    unread_count: number
+    last_event_id: number
+  }
+  const threads = db.prepare(
+    `SELECT
+       e.external_number AS phone,
+       MAX(e.received_at) AS last_at,
+       COUNT(*) AS message_count,
+       SUM(CASE
+             WHEN e.direction = 'incoming' AND NOT EXISTS (
+               SELECT 1 FROM dialpad_sms_reads sr
+               WHERE sr.user_id = ? AND sr.event_id = e.id
+             ) THEN 1 ELSE 0 END
+       ) AS unread_count,
+       MAX(e.id) AS last_event_id
+     FROM dialpad_events e
+     WHERE e.event_kind = 'sms'
+       AND substr(e.received_at, 1, 10) >= date('now', ?)
+       AND LOWER(TRIM(COALESCE(e.user_email, ''))) IN (${placeholders})
+       AND e.external_number IS NOT NULL AND e.external_number != ''
+     GROUP BY e.external_number
+     ORDER BY last_at DESC
+     LIMIT ?`
+  ).all(req.user.userId, `-${days} days`, ...emailList, limit) as ThreadAgg[]
+
+  if (threads.length === 0) { res.json({ rows: [], total_unread: 0 }); return }
+
+  // Most-recent message per thread — body + direction so the row can show a
+  // preview ("You: …" vs the customer's reply).
+  const phones = threads.map(t => t.phone)
+  const phPlaceholders = phones.map(() => '?').join(',')
+  const lastMsgs = db.prepare(
+    `SELECT e.external_number, e.id, e.received_at, e.direction, e.user_name,
+            e.text_body, e.raw_json
+     FROM dialpad_events e
+     INNER JOIN (
+       SELECT external_number, MAX(received_at) AS max_at
+       FROM dialpad_events
+       WHERE event_kind = 'sms' AND external_number IN (${phPlaceholders})
+       GROUP BY external_number
+     ) t ON t.external_number = e.external_number AND t.max_at = e.received_at
+     WHERE e.event_kind = 'sms'`
+  ).all(...phones) as Array<{
+    external_number: string; id: number; received_at: string;
+    direction: string; user_name: string | null;
+    text_body: string | null; raw_json: string
+  }>
+  const lastByPhone = new Map(lastMsgs.map(m => [m.external_number, m]))
+
+  // Same body-extraction fallback used by the thread + search endpoints —
+  // older webhook rows might not have populated text_body yet.
+  function extractBody(payload: Record<string, unknown>): string | null {
+    const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body']
+    if (typeof direct === 'string' && direct.trim()) return direct
+    for (const key of ['data', 'sms', 'message_object', 'event']) {
+      const nested = payload[key]
+      if (nested && typeof nested === 'object') {
+        const inner = extractBody(nested as Record<string, unknown>)
+        if (inner) return inner
+      }
+    }
+    return null
+  }
+
+  // Customer resolution by digit suffix — same map approach used by /search.
+  const onlyDigits = (s: string | null | undefined): string =>
+    (s || '').replace(/\D/g, '').slice(-10)
+  const wantedDigits = new Set(phones.map(onlyDigits).filter(d => d.length === 10))
+  const customerByDigits = new Map<string, { record_id: number; customer_name: string; status: string | null }>()
+  if (wantedDigits.size > 0) {
+    const rows = db.prepare(
+      `SELECT record_id, customer_name, status, phone, mobile_phone, alt_phone
+       FROM project_cache
+       WHERE customer_name IS NOT NULL AND customer_name != ''`
+    ).all() as Array<{ record_id: number; customer_name: string; status: string | null; phone: string | null; mobile_phone: string | null; alt_phone: string | null }>
+    for (const c of rows) {
+      for (const p of [c.phone, c.mobile_phone, c.alt_phone]) {
+        const d = onlyDigits(p)
+        if (d.length === 10 && wantedDigits.has(d) && !customerByDigits.has(d)) {
+          customerByDigits.set(d, { record_id: c.record_id, customer_name: c.customer_name, status: c.status })
+        }
+      }
+    }
+  }
+
+  let totalUnread = 0
+  const out = threads.map(t => {
+    const last = lastByPhone.get(t.phone)
+    let body: string | null = last?.text_body || null
+    if (last && !body && last.raw_json) {
+      try { body = extractBody(JSON.parse(last.raw_json) as Record<string, unknown>) } catch { /* ignore */ }
+    }
+    const customer = customerByDigits.get(onlyDigits(t.phone)) || null
+    totalUnread += t.unread_count
+
+    return {
+      phone: t.phone,
+      digits: onlyDigits(t.phone),
+      last_at: t.last_at,
+      message_count: t.message_count,
+      unread_count: t.unread_count,
+      // "Needs reply" = last message in this thread is an unread incoming
+      // (so a response is expected from us). Drives the row badge color.
+      needs_reply: !!last && last.direction === 'incoming' && t.unread_count > 0,
+      customer_name: customer?.customer_name ?? null,
+      project_id: customer?.record_id ?? null,
+      project_status: customer?.status ?? null,
+      last_message: last ? {
+        id: last.id,
+        at: last.received_at,
+        direction: last.direction,
+        user_name: last.user_name,
+        body,
+      } : null,
+    }
+  })
+
+  res.json({ rows: out, total_unread: totalUnread })
+})
+
 // Senders list for the compose flow. Backed by dialpad_users_cache so a user
 // can compose as themselves even if they've never sent SMS through the
 // portal. Cache is refreshed lazily: empty → blocking refresh; >24h old →

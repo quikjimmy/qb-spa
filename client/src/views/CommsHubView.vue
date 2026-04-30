@@ -8,6 +8,7 @@ import CommsHeatmap from '@/components/CommsHeatmap.vue'
 import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
 import CommsInbox from '@/components/CommsInbox.vue'
 import CommsSearch from '@/components/CommsSearch.vue'
+import RecentThreads from '@/components/RecentThreads.vue'
 import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconInbox from '@dialpad/dialtone-icons/vue3/inbox'
 import DtIconBarChart from '@dialpad/dialtone-icons/vue3/bar-chart-2'
@@ -309,6 +310,11 @@ function setMainTab(t: CommsTab) {
     <!-- Search across calls + SMS by name, phone, message text, or agent name.
          Self-contained — owns its own dialogs for click-through. -->
     <CommsSearch />
+
+    <!-- Per-user recent SMS threads digest. Shows unread + needs-reply
+         counts so the user knows what to tackle. Hidden automatically
+         when there are no threads. -->
+    <RecentThreads />
 
     <!-- Live events panel (SSE). Hidden when the persistent Live Hub rail
          is open so we don't render the same feed twice. -->
