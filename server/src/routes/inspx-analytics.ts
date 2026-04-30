@@ -256,20 +256,31 @@ router.get('/', (req: Request, res: Response): void => {
     GROUP BY month ORDER BY month
   `).all(...pP)
 
-  // Chart 6: Scheduled by booking date (from Arrivy). Groups identically
-  // to passedByMonth — week buckets when range ≤ 90d, otherwise month —
-  // so the x-axis matches across the two charts.
-  let arrivyW = "WHERE template_name LIKE '%inspect%'"
-  const arrivyP: unknown[] = []
-  if (dateFrom) { arrivyW += ' AND created_date >= ?'; arrivyP.push(dateFrom) }
-  if (dateTo) { arrivyW += ' AND created_date <= ?'; arrivyP.push(dateTo + 'T23:59:59') }
-
-  const schedGroup = useWeeks ? mondayExpr('created_date') : "SUBSTR(created_date, 1, 7)"
-  const scheduledOnDay = db.prepare(`
-    SELECT ${schedGroup} as period, COUNT(*) as count
-    FROM inspx_arrivy_scheduled ${arrivyW}
+  // Chart 6: Inspections Scheduled (by *scheduled-for* date) — bucket
+  // by inspection_scheduled date, broken into 4 categories per bar so
+  // the user sees outcome-by-scheduled-period at a glance:
+  //   passed         (green)
+  //   failed         (red)        — has inspx_fail_date, not yet passed
+  //   past_pending   (purple)     — scheduled <= today, no decision yet
+  //   future_pending (blue)       — scheduled  > today, no decision yet
+  //
+  // Same smart-grouping as #Passed so the x-axis matches across the
+  // two charts.
+  const schedForGroup = useWeeks ? mondayExpr('inspection_scheduled') : "SUBSTR(inspection_scheduled, 1, 7)"
+  const scheduledFor = db.prepare(`
+    SELECT ${schedForGroup} as period,
+      SUM(CASE WHEN ${has('inspection_passed')} THEN 1 ELSE 0 END) as passed,
+      SUM(CASE WHEN ${has('inspx_fail_date')} AND ${noV('inspection_passed')} THEN 1 ELSE 0 END) as failed,
+      SUM(CASE WHEN ${noV('inspection_passed')} AND ${noV('inspx_fail_date')}
+                AND SUBSTR(inspection_scheduled, 1, 10) <= '${today}'
+               THEN 1 ELSE 0 END) as past_pending,
+      SUM(CASE WHEN ${noV('inspection_passed')} AND ${noV('inspx_fail_date')}
+                AND SUBSTR(inspection_scheduled, 1, 10) >  '${today}'
+               THEN 1 ELSE 0 END) as future_pending,
+      COUNT(*) as total
+    FROM project_cache ${pBase} AND ${has('inspection_scheduled')}
     GROUP BY period ORDER BY period
-  `).all(...arrivyP)
+  `).all(...pP)
 
   // Filters — canonical milestone filter set (EPC, Lender, State, AHJ,
   // Utility). Each milestone analytics endpoint should return the same
@@ -282,7 +293,7 @@ router.get('/', (req: Request, res: Response): void => {
 
   res.json({
     kpi: { scheduled, passed, pctPassed, firstTime, pctFirstTime, needInspx, avgDaysSinceInst: Math.round((avgDaysSinceInstRaw.d || 0) * bizFactor), overallMedian },
-    charts: { passedByMonth, instToInspxBoxes, byState, aging, agingTotal, activeFails, outcomesByMonth, scheduledOnDay },
+    charts: { passedByMonth, instToInspxBoxes, byState, aging, agingTotal, activeFails, outcomesByMonth, scheduledFor },
     filters: {
       states:    states.map(s => s.value),
       lenders:   lenders.map(l => l.value),
@@ -469,6 +480,24 @@ router.get('/drill', (req: Request, res: Response): void => {
     ...dashFilters,
   ]
   const params: unknown[] = [from, to, ...dashParams]
+
+  // Optional segment filter for the new scheduled-for chart's stacked
+  // bar (passed / failed / past_pending / future_pending). Mirrors the
+  // CASE expressions in the chart aggregation so the click count
+  // matches the bar segment count.
+  const segment = String(req.query['segment'] || '').trim()
+  if (metric === 'scheduled_for' && segment) {
+    const todayClient = req.query['today'] as string | undefined
+    const today = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
+      ? todayClient : new Date().toISOString().slice(0, 10)
+    const has2 = (c: string) => `(${c} IS NOT NULL AND ${c} != '' AND ${c} != '0')`
+    const noV2 = (c: string) => `(${c} IS NULL OR ${c} = '' OR ${c} = '0')`
+    if (segment === 'passed')              where.push(has2('inspection_passed'))
+    else if (segment === 'failed')         where.push(`${has2('inspx_fail_date')} AND ${noV2('inspection_passed')}`)
+    else if (segment === 'past_pending')   where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) <= '${today}'`)
+    else if (segment === 'future_pending') where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) >  '${today}'`)
+  }
+
   const rows = db.prepare(`
     SELECT ${projColumns}
     FROM project_cache
@@ -476,7 +505,7 @@ router.get('/drill', (req: Request, res: Response): void => {
     ORDER BY ${dateCol} DESC
     LIMIT ?
   `).all(...params, limit)
-  res.json({ projects: rows, total: rows.length, metric, period, from, to })
+  res.json({ projects: rows, total: rows.length, metric, segment: segment || null, period, from, to })
 })
 
 // GET /api/analytics/inspx/deciles?metric=...&dimension=...&from=...&to=...&biz_days=1

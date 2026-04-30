@@ -32,7 +32,11 @@ const byState = ref<any[]>([])
 const aging = ref<any[]>([])
 const agingTotal = ref(0); const activeFails = ref(0)
 const outcomesByMonth = ref<any[]>([])
-const scheduledOnDay = ref<any[]>([])
+// scheduledFor — bucketed by inspection_scheduled date (when the
+// inspection is scheduled to take place). Each row carries a 4-way
+// breakdown: passed / failed / past_pending / future_pending. Drives
+// the stacked-bar chart on the left.
+const scheduledFor = ref<Array<{ period: string; passed: number; failed: number; past_pending: number; future_pending: number; total: number }>>([])
 const filterOptions = ref<{ states: string[]; lenders: string[]; epcs: string[]; ahjs: string[]; utilities: string[] }>({ states: [], lenders: [], epcs: [], ahjs: [], utilities: [] })
 
 const fState = ref(''); const fLender = ref(''); const fEpc = ref('Kin Home')
@@ -66,7 +70,7 @@ async function loadData() {
     agingTotal.value = d.charts.agingTotal
     activeFails.value = d.charts.activeFails
     outcomesByMonth.value = d.charts.outcomesByMonth
-    scheduledOnDay.value = d.charts.scheduledOnDay
+    scheduledFor.value = d.charts.scheduledFor || []
     filterOptions.value = d.filters
   } finally { loading.value = false }
 }
@@ -208,11 +212,37 @@ function onPassedBarClick(p: { dataIndex: number; name: string }) {
   if (!period) return
   drillBucket('passed', period, `#Passed · ${p.name}`)
 }
-function onSchedBarClick(p: { dataIndex: number; name: string }) {
-  const row = scheduledOnDay.value[p.dataIndex] as { period?: string; day?: string } | undefined
-  const period = row?.period || row?.day
-  if (!period) return
-  drillBucket('booking', period, `Booked · ${p.name}`)
+// Stacked-bar click: seriesName picks the segment (Passed / Failed /
+// Past Pending / Future Pending), dataIndex looks up the period from
+// scheduledFor[]. Server filters project_cache by inspection_scheduled
+// in that bucket + the matching segment WHERE.
+const SCHED_SERIES_MAP: Record<string, { key: string; label: string }> = {
+  'Passed':         { key: 'passed',         label: 'Passed' },
+  'Failed':         { key: 'failed',         label: 'Failed' },
+  'Past Pending':   { key: 'past_pending',   label: 'Past Pending' },
+  'Future Pending': { key: 'future_pending', label: 'Future Pending' },
+}
+async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName: string }) {
+  const row = scheduledFor.value[p.dataIndex]
+  const seg = SCHED_SERIES_MAP[p.seriesName]
+  if (!row || !seg) return
+  drillLabel.value = `Inspx Scheduled · ${seg.label} · ${p.name}`
+  drillLoading.value = true
+  drillProjects.value = []
+  const q = new URLSearchParams({ metric: 'scheduled_for', period: row.period, segment: seg.key, today: lt(), limit: '500' })
+  if (fEpc.value)     q.set('epc', fEpc.value)
+  if (fLender.value)  q.set('lender', fLender.value)
+  if (fState.value)   q.set('state', fState.value)
+  if (fAhj.value)     q.set('ahj', fAhj.value)
+  if (fUtility.value) q.set('utility', fUtility.value)
+  try {
+    const res = await fetch(`/api/analytics/inspx/drill?${q}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { projects: Array<Record<string, unknown>> }
+    drillProjects.value = d.projects || []
+  } finally { drillLoading.value = false }
+  await nextTick()
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
 }
 
 // Aging chart — bar key is the bucket label ("0-5", "6-30", …).
@@ -307,24 +337,43 @@ const outcomesChart = computed(() => {
     ] }
 })
 
-// Booking-date chart — server now buckets weekly when range ≤ 90d,
-// monthly otherwise (same logic as #Passed). r.period carries the
-// bucket key; fp() formats month / day labels appropriately.
+// Inspections Scheduled — bucketed by *scheduled-for* date (when the
+// inspection is scheduled to happen). 4 stacked categories per bar:
+//   • Passed         → green
+//   • Failed         → red
+//   • Past Pending   → purple  (scheduled date passed, no decision)
+//   • Future Pending → blue    (scheduled date upcoming, no decision)
 const schedChart = computed(() => ({
-  tooltip: { trigger: 'axis' as const },
-  grid: { top: 20, bottom: 5, left: 5, right: 5, containLabel: true },
+  tooltip: {
+    trigger: 'axis' as const,
+    axisPointer: { type: 'shadow' as const },
+    formatter: (items: Array<{ name: string; value: number; seriesName: string; color: string }>) => {
+      if (!items.length) return ''
+      const total = items.reduce((s, it) => s + (it.value || 0), 0)
+      const head = items[0]?.name || ''
+      const lines = items
+        .filter(it => it.value > 0)
+        .map(it => `<span style="color:${it.color}">●</span> ${it.seriesName}: <b>${it.value}</b>`)
+      return `<div class="text-xs"><div class="font-semibold mb-1">${head}</div>` +
+             lines.join('<br>') +
+             (total ? `<div class="mt-1 text-muted-foreground">Total: ${total}</div>` : '') +
+             `</div>`
+    },
+  },
+  legend: { data: ['Passed', 'Failed', 'Past Pending', 'Future Pending'], top: 0, textStyle: { fontSize: 9 } },
+  grid: { top: 22, bottom: 5, left: 5, right: 5, containLabel: true },
   xAxis: {
     type: 'category' as const,
-    data: scheduledOnDay.value.map((r: any) => fp(r.period || r.day)),
-    axisLabel: { fontSize: 9, rotate: scheduledOnDay.value.length > 6 ? 45 : 0 },
+    data: scheduledFor.value.map(r => fp(r.period)),
+    axisLabel: { fontSize: 9, rotate: scheduledFor.value.length > 6 ? 45 : 0 },
   },
   yAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } },
-  series: [{
-    type: 'bar' as const,
-    data: scheduledOnDay.value.map((r: any) => r.count),
-    itemStyle: { color: '#8b5cf6', borderRadius: [3, 3, 0, 0] },
-    label: lb,
-  }],
+  series: [
+    { name: 'Passed',         type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.passed),         itemStyle: { color: '#10b981' } },
+    { name: 'Failed',         type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.failed),         itemStyle: { color: '#ef4444' } },
+    { name: 'Past Pending',   type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.past_pending),   itemStyle: { color: '#8b5cf6' } },
+    { name: 'Future Pending', type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.future_pending), itemStyle: { color: '#3b82f6' } },
+  ],
 }))
 
 // Slice mirrors the box plot's last 13 months so the mean / % rows
@@ -406,16 +455,19 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
       </div>
 
       <template v-else>
-        <!-- Row 1: #Passed + Scheduled on a Day. Bars are clickable —
-             tap a bucket to drill its projects into the table below. -->
+        <!-- Row 1: Inspections Scheduled (left) + #Passed (right).
+             Both clickable down to a precise cohort. The scheduled
+             chart's segments drill independently — tap the green
+             Passed slice for that period's passes, red Failed for
+             failures, purple/blue for the pending splits. -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div class="rounded-xl bg-card p-3">
-            <h3 class="text-xs font-semibold mb-2">#Passed by Month</h3>
-            <VChart :option="passedChart" style="height:180px" autoresize @click="onPassedBarClick" />
+            <h3 class="text-xs font-semibold mb-2">Inspections Scheduled</h3>
+            <VChart :option="schedChart" style="height:200px" autoresize @click="onSchedBarClick" />
           </div>
           <div class="rounded-xl bg-card p-3">
-            <h3 class="text-xs font-semibold mb-2">Inspections Scheduled (by booking date)</h3>
-            <VChart :option="schedChart" style="height:180px" autoresize @click="onSchedBarClick" />
+            <h3 class="text-xs font-semibold mb-2">#Passed</h3>
+            <VChart :option="passedChart" style="height:200px" autoresize @click="onPassedBarClick" />
           </div>
         </div>
 
