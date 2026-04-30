@@ -9,7 +9,6 @@ import DtIconMic from '@dialpad/dialtone-icons/vue3/mic'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
-import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import { usePhoneMatches } from '@/composables/usePhoneMatches'
 
 interface InboxRow {
@@ -108,17 +107,14 @@ function callBack(number: string | null) {
   window.location.href = `tel:${number}`
 }
 
-// Thread/timeline dialogs — clicking an inbox row opens the appropriate
-// modal. Only one is open at a time, parameterized by the row clicked.
+// One unified thread dialog for both SMS and call rows. The drawer shows
+// the contact's full timeline (calls + SMS merged) regardless of which row
+// kind was clicked, so the user lands on a single consistent view.
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
-const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
 function openItem(r: InboxRow) {
-  if (r.item_kind === 'sms' && r.external_number) {
-    const matched = projectMatches.value[r.external_number]?.[0]?.customer_name || ''
-    smsThread.value = { open: true, number: r.external_number, name: matched }
-  } else if (r.item_kind === 'call' && r.call_id) {
-    callTimeline.value = { open: true, callId: r.call_id, number: r.external_number || '' }
-  }
+  if (!r.external_number) return
+  const matched = projectMatches.value[r.external_number]?.[0]?.customer_name || ''
+  smsThread.value = { open: true, number: r.external_number, name: matched }
 }
 
 // Audio expansion state — lazily show the <audio> element only after the
@@ -353,18 +349,13 @@ watch([tab, scope], load)
       </div>
     </div>
 
-    <!-- Modals — one of each, parameterized by the row clicked -->
+    <!-- Unified contact thread — both SMS and call clicks land here so the
+         right-side drawer always shows the full comms history. -->
     <SmsThreadDialog
       :open="smsThread.open"
       :external-number="smsThread.number"
       :contact-name="smsThread.name"
       @close="smsThread.open = false"
-    />
-    <CallTimelineDialog
-      :open="callTimeline.open"
-      :call-id="callTimeline.callId"
-      :external-number="callTimeline.number"
-      @close="callTimeline.open = false"
     />
   </div>
 </template>

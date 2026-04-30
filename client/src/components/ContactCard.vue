@@ -42,7 +42,6 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'message'): void
-  (e: 'view-call'): void
 }>()
 
 const router = useRouter()

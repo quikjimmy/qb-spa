@@ -3,7 +3,6 @@ import { ref, watch, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatPhone, fmtTalkSec } from '@/lib/callBuckets'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
-import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import ContactCard, { type ContactCardData } from '@/components/ContactCard.vue'
 import ComposeDialog from '@/components/ComposeDialog.vue'
 import DtIconSearch from '@dialpad/dialtone-icons/vue3/search'
@@ -64,13 +63,11 @@ const lastReqId = ref(0)
 const compose = ref<{ open: boolean; prefillNumber: string; prefillName: string }>({ open: false, prefillNumber: '', prefillName: '' })
 
 // Contact card — first thing shown after a row click. Hosts the Message /
-// Call action buttons; we then escalate into the SMS thread or call timeline
-// based on what the user picks.
+// Call action buttons; the Message path drops into the unified thread so the
+// user sees the full comms history (calls + SMS) in the right-side drawer.
 const contactCard = ref<{ open: boolean; data: ContactCardData | null }>({ open: false, data: null })
-// SMS thread dialog
+// Unified contact thread (handles both SMS and call rows)
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
-// Call timeline dialog
-const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -118,7 +115,7 @@ function clearSearch() {
 
 function onRowClick(r: SearchRow) {
   // Open the contact card first so the user can pick Message / Call. The
-  // card escalates into SmsThreadDialog or CallTimelineDialog via emits.
+  // card escalates into the unified SmsThreadDialog via Message emit.
   contactCard.value = {
     open: true,
     data: {
@@ -144,13 +141,6 @@ function onContactMessage() {
   const name = c.customer_name || formatPhone(c.phone)
   contactCard.value.open = false
   smsThread.value = { open: true, number: c.phone, name }
-}
-
-function onContactViewCall() {
-  const c = contactCard.value.data
-  if (!c?.call) return
-  contactCard.value.open = false
-  callTimeline.value = { open: true, callId: c.call.call_id, number: c.phone }
 }
 
 function openCompose() {
@@ -310,7 +300,6 @@ function escapeHtml(s: string): string {
       :contact="contactCard.data"
       @close="contactCard.open = false"
       @message="onContactMessage"
-      @view-call="onContactViewCall"
     />
     <ComposeDialog
       :open="compose.open"
@@ -324,12 +313,6 @@ function escapeHtml(s: string): string {
       :external-number="smsThread.number"
       :contact-name="smsThread.name"
       @close="smsThread.open = false"
-    />
-    <CallTimelineDialog
-      :open="callTimeline.open"
-      :call-id="callTimeline.callId"
-      :external-number="callTimeline.number"
-      @close="callTimeline.open = false"
     />
   </div>
 </template>

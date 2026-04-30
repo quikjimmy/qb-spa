@@ -5,7 +5,6 @@ import { useDialpadLive, type LiveEvent } from '@/lib/dialpadLive'
 import { usePhoneMatches } from '@/composables/usePhoneMatches'
 import { useAuthStore } from '@/stores/auth'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
-import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
@@ -46,10 +45,9 @@ function customerName(e: LiveEvent): string {
   return e.external_number ? (nameByNumber.value[e.external_number] || '') : ''
 }
 
-// Dialog state — clicking a row opens either the SMS thread or call timeline.
-// Keeping these inline rather than per-row: only one is open at a time.
+// Both SMS and call rows route to the unified contact thread so the user
+// always lands in the same right-side drawer with the full timeline.
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
-const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
 
 const auth = useAuthStore()
 // Local read overlay — when the user opens an event we mark it read on
@@ -75,11 +73,11 @@ function openEvent(e: LiveEvent) {
   // Mark read on every open. SSE rows include is_read but the local
   // overlay covers the gap before the next backfill confirms.
   void markEventRead(e)
-  if (e.event_kind === 'sms' && e.external_number) {
-    smsThread.value = { open: true, number: e.external_number, name: customerName(e) }
-  } else if (e.event_kind === 'call' && e.call_id) {
-    callTimeline.value = { open: true, callId: e.call_id, number: e.external_number || '' }
-  }
+  if (!e.external_number) return
+  // Both SMS and call rows open the same unified thread keyed on the
+  // contact's number — call_id is no longer needed because the drawer
+  // shows every call + every SMS for that contact.
+  smsThread.value = { open: true, number: e.external_number, name: customerName(e) }
 }
 
 // Pull message body out of the raw_json blob for SMS rows so we can render
@@ -231,18 +229,12 @@ function visualFor(e: LiveEvent): EventVisual {
       </div>
     </div>
 
-    <!-- Mounted dialogs — one of each, parameterized by event clicked. -->
+    <!-- Unified contact thread — both SMS and call rows open here. -->
     <SmsThreadDialog
       :open="smsThread.open"
       :external-number="smsThread.number"
       :contact-name="smsThread.name"
       @close="smsThread.open = false"
-    />
-    <CallTimelineDialog
-      :open="callTimeline.open"
-      :call-id="callTimeline.callId"
-      :external-number="callTimeline.number"
-      @close="callTimeline.open = false"
     />
   </div>
 </template>
