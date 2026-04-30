@@ -264,8 +264,9 @@ router.get('/', (req: Request, res: Response): void => {
   //   past_pending   (purple)     — scheduled <= today, no decision yet
   //   future_pending (blue)       — scheduled  > today, no decision yet
   //
-  // Same smart-grouping as #Passed so the x-axis matches across the
-  // two charts.
+  // Uses schedW (not pBase) so the dashboard's date range filters the
+  // x-axis to inspection_scheduled within [from, to]. Same smart-
+  // grouping as #Passed so the two charts share an x-axis.
   const schedForGroup = useWeeks ? mondayExpr('inspection_scheduled') : "SUBSTR(inspection_scheduled, 1, 7)"
   const scheduledFor = db.prepare(`
     SELECT ${schedForGroup} as period,
@@ -278,9 +279,9 @@ router.get('/', (req: Request, res: Response): void => {
                 AND SUBSTR(inspection_scheduled, 1, 10) >  '${today}'
                THEN 1 ELSE 0 END) as future_pending,
       COUNT(*) as total
-    FROM project_cache ${pBase} AND ${has('inspection_scheduled')}
+    FROM project_cache ${schedW}
     GROUP BY period ORDER BY period
-  `).all(...pP)
+  `).all(...schedP)
 
   // Filters — canonical milestone filter set (EPC, Lender, State, AHJ,
   // Utility). Each milestone analytics endpoint should return the same
