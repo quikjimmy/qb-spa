@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
@@ -245,6 +247,23 @@ function canToggle(row: DrillRow): boolean {
 
 // ─── Lifecycle ───────────────────────────────────────────
 
+// Notification deep-link — clicking a "remind me" notification routes here
+// with ?open_thread=<phone>. Pop the thread drawer immediately so the user
+// lands on the conversation they were reminded about.
+const route = useRoute()
+const router = useRouter()
+const reminderThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
+
+function consumeOpenThreadQuery() {
+  const raw = route.query['open_thread']
+  if (typeof raw !== 'string' || !raw) return
+  reminderThread.value = { open: true, number: raw, name: '' }
+  // Drop the query param so a refresh doesn't keep reopening the drawer.
+  const next = { ...route.query }
+  delete next['open_thread']
+  void router.replace({ path: route.path, query: next })
+}
+
 onMounted(() => {
   // Set the default date window for Reporting but only load the summary if
   // Reporting is the active tab — otherwise we wait until the user switches.
@@ -254,7 +273,12 @@ onMounted(() => {
   dateTo.value = fmtLocalDate(t)
   datePreset.value = 'last_30'
   if (mainTab.value === 'reporting') loadSummary()
+  consumeOpenThreadQuery()
 })
+
+// Also re-check the query whenever it changes (router navigation while
+// already on the comms hub).
+watch(() => route.query['open_thread'], () => consumeOpenThreadQuery())
 
 watch([viewMode, fCoordinator], () => { loadSummary() })
 
@@ -577,5 +601,15 @@ function setMainTab(t: CommsTab) {
       </div>
     </template>
     </template>
+
+    <!-- Reminder notification deep-link — when the user clicks a "remind me"
+         notification, the comms hub mounts the thread drawer here so they
+         land directly on the conversation they were reminded about. -->
+    <SmsThreadDialog
+      :open="reminderThread.open"
+      :external-number="reminderThread.number"
+      :contact-name="reminderThread.name"
+      @close="reminderThread.open = false"
+    />
   </div>
 </template>

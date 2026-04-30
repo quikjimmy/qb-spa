@@ -35,6 +35,7 @@ import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
 import { fieldRouter } from './routes/field'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
+import { startMessageReminders } from './lib/messageReminders'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 
@@ -118,4 +119,5 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startAgentScheduler() } catch (e) { console.error('[startup] agent scheduler failed:', e) }
   try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
   try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
+  try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
 })

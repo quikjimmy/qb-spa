@@ -330,6 +330,216 @@ async function trySend() {
   }
 }
 
+// ─── Bubble action menu (long-press / right-click) ────────
+// Slack-style "remind me about this", plus mark-as-unread + save-contact.
+// Triggered by long-press on touch (500ms hold) or right-click on desktop.
+interface ActionMenuState {
+  open: boolean
+  x: number
+  y: number
+  msg: ThreadSms | null
+}
+const actionMenu = ref<ActionMenuState>({ open: false, x: 0, y: 0, msg: null })
+let longPressTimer: ReturnType<typeof setTimeout> | null = null
+let longPressOriginX = 0
+let longPressOriginY = 0
+const LONG_PRESS_MS = 500
+const LONG_PRESS_TOLERANCE = 8 // px movement before we cancel
+
+function startLongPress(e: PointerEvent, msg: ThreadSms) {
+  // Skip mouse non-primary buttons — desktop uses contextmenu instead.
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  longPressOriginX = e.clientX
+  longPressOriginY = e.clientY
+  longPressTimer = setTimeout(() => {
+    actionMenu.value = { open: true, x: e.clientX, y: e.clientY, msg }
+    longPressTimer = null
+  }, LONG_PRESS_MS)
+}
+function maybeCancelLongPress(e: PointerEvent) {
+  if (!longPressTimer) return
+  // Tolerate small wiggles, cancel on a real drag (scroll) so the menu
+  // doesn't fire when the user is just moving the list.
+  if (Math.hypot(e.clientX - longPressOriginX, e.clientY - longPressOriginY) > LONG_PRESS_TOLERANCE) {
+    cancelLongPress()
+  }
+}
+function cancelLongPress() {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null }
+}
+function onContextMenu(e: MouseEvent, msg: ThreadSms) {
+  e.preventDefault()
+  actionMenu.value = { open: true, x: e.clientX, y: e.clientY, msg }
+}
+function closeActionMenu() {
+  actionMenu.value = { open: false, x: 0, y: 0, msg: null }
+}
+
+// Position the menu so it stays inside the viewport. We measure after the
+// browser paints; nudge up/left if it would clip.
+const menuEl = ref<HTMLElement | null>(null)
+const menuStyle = computed(() => ({
+  top: `${actionMenu.value.y}px`,
+  left: `${actionMenu.value.x}px`,
+}))
+watch(() => actionMenu.value.open, async (open) => {
+  if (!open) return
+  await nextTick()
+  const el = menuEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let { x, y } = actionMenu.value
+  if (rect.right > vw - 8) x = vw - rect.width - 8
+  if (rect.bottom > vh - 8) y = vh - rect.height - 8
+  if (x < 8) x = 8
+  if (y < 8) y = 8
+  if (x !== actionMenu.value.x || y !== actionMenu.value.y) {
+    actionMenu.value.x = x
+    actionMenu.value.y = y
+  }
+})
+
+// ─── Action handlers ──────────────────────────────────────
+const markBusy = ref(false)
+async function markCurrentUnread() {
+  const m = actionMenu.value.msg
+  if (!m || markBusy.value) return
+  markBusy.value = true
+  try {
+    await fetch(`/api/dialpad/events/${m.id}/read`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+  } finally {
+    markBusy.value = false
+    closeActionMenu()
+  }
+}
+
+// Reminder presets — minutes from now. "Later today" / "Tomorrow" / "Custom"
+// build absolute timestamps via small helpers below.
+async function scheduleReminderMinutes(mins: number) {
+  await scheduleReminder(new Date(Date.now() + mins * 60_000))
+}
+async function scheduleLaterToday() {
+  // "Later today" = 5pm in local time, or +3 hours if past 4pm to ensure
+  // a future timestamp. Slack uses similar logic.
+  const now = new Date()
+  const candidate = new Date(now)
+  candidate.setHours(17, 0, 0, 0)
+  if (candidate.getTime() <= now.getTime() + 30 * 60_000) {
+    candidate.setTime(now.getTime() + 3 * 60 * 60_000)
+  }
+  await scheduleReminder(candidate)
+}
+async function scheduleTomorrow() {
+  // 9am local tomorrow.
+  const now = new Date()
+  const candidate = new Date(now)
+  candidate.setDate(candidate.getDate() + 1)
+  candidate.setHours(9, 0, 0, 0)
+  await scheduleReminder(candidate)
+}
+
+const customPickerOpen = ref(false)
+const customPickerValue = ref('')
+function openCustomPicker() {
+  // Default to ~tomorrow 9am rendered as datetime-local string.
+  const t = new Date()
+  t.setDate(t.getDate() + 1)
+  t.setHours(9, 0, 0, 0)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  customPickerValue.value = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`
+  customPickerOpen.value = true
+}
+async function submitCustomPicker() {
+  const v = customPickerValue.value
+  if (!v) return
+  const t = new Date(v)
+  if (isNaN(t.getTime())) return
+  await scheduleReminder(t)
+  customPickerOpen.value = false
+}
+
+const reminderToast = ref<{ open: boolean; text: string }>({ open: false, text: '' })
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+function showToast(text: string) {
+  reminderToast.value = { open: true, text }
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { reminderToast.value.open = false }, 3500)
+}
+
+async function scheduleReminder(at: Date) {
+  const m = actionMenu.value.msg
+  if (!m) return
+  try {
+    const res = await fetch(`/api/dialpad/events/${m.id}/remind`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remind_at: at.toISOString() }),
+    })
+    if (res.ok) {
+      showToast(`Reminder set for ${at.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`)
+    } else {
+      const err = await res.json().catch(() => ({})) as { error?: string }
+      showToast(`Reminder failed: ${err.error || res.status}`)
+    }
+  } catch (e) {
+    showToast(`Reminder failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    closeActionMenu()
+  }
+}
+
+// ─── Save contact (inline form) ───────────────────────────
+const saveOpen = ref(false)
+const saveFirst = ref('')
+const saveLast = ref('')
+const saveBusy = ref(false)
+const saveError = ref<string | null>(null)
+const saveSuccess = ref(false)
+function startSaveFromMenu() {
+  closeActionMenu()
+  // Best-effort name split from contactName prop.
+  const nm = (props.contactName || '').trim()
+  if (nm) {
+    const i = nm.indexOf(' ')
+    if (i > 0) { saveFirst.value = nm.slice(0, i); saveLast.value = nm.slice(i + 1) }
+    else { saveFirst.value = nm; saveLast.value = '' }
+  } else {
+    saveFirst.value = ''
+    saveLast.value = ''
+  }
+  saveError.value = null
+  saveSuccess.value = false
+  saveOpen.value = true
+}
+async function trySaveContact() {
+  if (!saveFirst.value.trim()) { saveError.value = 'First name required'; return }
+  saveError.value = null
+  saveBusy.value = true
+  try {
+    const res = await fetch('/api/dialpad/contact/save', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: props.externalNumber,
+        first_name: saveFirst.value.trim(),
+        last_name: saveLast.value.trim() || undefined,
+      }),
+    })
+    const data = await res.json().catch(() => ({})) as { error?: string }
+    if (!res.ok) { saveError.value = data.error || 'Failed to save'; return }
+    saveSuccess.value = true
+    saveOpen.value = false
+    showToast('Contact saved to Dialpad')
+  } catch (e) {
+    saveError.value = e instanceof Error ? e.message : String(e)
+  } finally { saveBusy.value = false }
+}
+
 // ─── Header derivations ────────────────────────────────────
 const headerTitle = computed(() => props.contactName || formatPhone(props.externalNumber) || 'Conversation')
 const headerSub = computed(() => props.contactName ? formatPhone(props.externalNumber) || '' : '')
@@ -580,13 +790,18 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                         <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body">
                           <div class="flex" :class="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
                             <div
-                              class="px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] break-words"
+                              class="px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] break-words select-none"
                               :class="[
                                 bodyHasImage((rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body) ? 'max-w-[88%]' : 'max-w-[78%]',
                                 (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction === 'outgoing'
                                   ? `text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] ${(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).groupBottom ? 'rounded-[18px] rounded-br-md' : 'rounded-[18px]'}`
                                   : `text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] ${(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).groupBottom ? 'rounded-[18px] rounded-bl-md' : 'rounded-[18px]'}`,
                               ]"
+                              @pointerdown="startLongPress($event, (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg)"
+                              @pointerup="cancelLongPress"
+                              @pointermove="maybeCancelLongPress"
+                              @pointercancel="cancelLongPress"
+                              @contextmenu="onContextMenu($event, (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg)"
                             >
                               <template v-for="(part, pi) in parseMessageBody((rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body)" :key="pi">
                                 <span v-if="part.kind === 'text'" class="whitespace-pre-wrap">{{ part.value }}</span>
@@ -820,7 +1035,101 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 No Dialpad senders cached yet — open Compose to refresh the directory.
               </p>
             </footer>
+
+            <!-- Inline Save-contact form. Shown over the composer when the
+                 user picks "Save contact" from the long-press menu. -->
+            <div
+              v-if="saveOpen"
+              class="absolute inset-x-0 bottom-0 z-[5] p-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-card/95 backdrop-blur-xl border-t border-foreground/10 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.25)]"
+            >
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Save to Dialpad contacts</p>
+              <div class="grid grid-cols-2 gap-2 mb-2">
+                <input
+                  v-model="saveFirst"
+                  type="text"
+                  placeholder="First name"
+                  autocomplete="given-name"
+                  :disabled="saveBusy"
+                  class="h-8 px-2 rounded-md border bg-background text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  @keydown.enter.prevent="trySaveContact"
+                />
+                <input
+                  v-model="saveLast"
+                  type="text"
+                  placeholder="Last name"
+                  autocomplete="family-name"
+                  :disabled="saveBusy"
+                  class="h-8 px-2 rounded-md border bg-background text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  @keydown.enter.prevent="trySaveContact"
+                />
+              </div>
+              <div v-if="saveError" class="text-[11px] text-rose-700 dark:text-rose-300 mb-2">{{ saveError }}</div>
+              <div class="flex justify-end gap-2">
+                <button class="h-7 px-2.5 rounded-md text-[12px] text-muted-foreground hover:bg-foreground/5 cursor-pointer" :disabled="saveBusy" @click="saveOpen = false">Cancel</button>
+                <button class="h-7 px-3 rounded-md text-[12px] font-semibold text-white bg-gradient-to-br from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer" :disabled="saveBusy || !saveFirst.trim()" @click="trySaveContact">{{ saveBusy ? 'Saving…' : 'Save' }}</button>
+              </div>
+            </div>
+
+            <!-- Custom reminder picker — shown when the user clicks Custom -->
+            <div
+              v-if="customPickerOpen"
+              class="absolute inset-x-0 bottom-0 z-[5] p-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-card/95 backdrop-blur-xl border-t border-foreground/10 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.25)]"
+            >
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Remind me at</p>
+              <input
+                v-model="customPickerValue"
+                type="datetime-local"
+                class="w-full h-9 px-2 rounded-md border bg-background text-[14px] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <div class="flex justify-end gap-2 mt-2">
+                <button class="h-7 px-2.5 rounded-md text-[12px] text-muted-foreground hover:bg-foreground/5 cursor-pointer" @click="customPickerOpen = false">Cancel</button>
+                <button class="h-7 px-3 rounded-md text-[12px] font-semibold text-white bg-gradient-to-br from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 cursor-pointer" @click="submitCustomPicker">Set reminder</button>
+              </div>
+            </div>
+
+            <!-- Toast for reminder confirmations / errors -->
+            <Transition
+              enter-active-class="transition-all duration-200 ease-out"
+              enter-from-class="opacity-0 translate-y-2"
+              enter-to-class="opacity-100 translate-y-0"
+              leave-active-class="transition-opacity duration-200 ease-in"
+              leave-from-class="opacity-100"
+              leave-to-class="opacity-0"
+            >
+              <div
+                v-if="reminderToast.open"
+                class="absolute bottom-20 left-1/2 -translate-x-1/2 z-[6] px-3 py-2 rounded-full bg-foreground text-background text-[12px] font-medium shadow-lg whitespace-nowrap max-w-[85%] truncate"
+              >{{ reminderToast.text }}</div>
+            </Transition>
       </div>
     </Transition>
+
+    <!-- Action menu — long-press / right-click on a message bubble. Lives
+         outside the panel so positioning stays viewport-relative even when
+         the panel is the right-side drawer. -->
+    <div
+      v-if="actionMenu.open"
+      class="fixed inset-0 z-[124]"
+      @click="closeActionMenu"
+      @contextmenu.prevent="closeActionMenu"
+    />
+    <div
+      v-if="actionMenu.open"
+      ref="menuEl"
+      class="fixed z-[125] w-56 rounded-xl bg-card/95 backdrop-blur-xl shadow-2xl ring-1 ring-foreground/10 py-1 select-none"
+      :style="menuStyle"
+      role="menu"
+    >
+      <button class="w-full px-3 py-2 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" :disabled="markBusy" @click="markCurrentUnread">Mark as unread</button>
+      <button class="w-full px-3 py-2 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="startSaveFromMenu">Save contact…</button>
+      <div class="my-1 border-t border-foreground/10" />
+      <p class="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Remind me</p>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleReminderMinutes(10)">In 10 minutes</button>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleReminderMinutes(30)">In 30 minutes</button>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleReminderMinutes(60)">In 1 hour</button>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleLaterToday">Later today</button>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleTomorrow">Tomorrow</button>
+      <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="closeActionMenu(); openCustomPicker()">Custom…</button>
+    </div>
   </Teleport>
 </template>

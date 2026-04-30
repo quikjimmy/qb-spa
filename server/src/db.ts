@@ -822,6 +822,26 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_users_email ON dialpad_users_cache(LOWER(email))`)
 
+// Per-message reminders (Slack-style "remind me about this"). When a user
+// long-presses a message in the thread drawer they pick a delay; this row
+// is created with remind_at = now + delay. A cron worker fires due rows
+// into the notifications table, with a link back to the originating thread
+// so a click drops the user into the conversation.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_message_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL,
+    external_number TEXT NOT NULL,
+    body_excerpt TEXT,
+    remind_at TEXT NOT NULL,
+    fired_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_due ON dialpad_message_reminders(fired_at, remind_at)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_user ON dialpad_message_reminders(user_id, remind_at)`)
+
 // Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
 // SMS may not be supported on every Dialpad plan — refresh gracefully skips if
 // the stat_type is rejected.

@@ -1446,6 +1446,104 @@ router.post('/events/:id/read', (req: Request, res: Response): void => {
   res.json({ ok: true })
 })
 
+// Inverse of /events/:id/read — drop the read mark so the message reappears
+// in unread tallies. Used by the thread drawer's "Mark as unread" action so
+// the user can come back to a thread without forgetting.
+router.delete('/events/:id/read', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const eventId = parseInt(String(req.params['id'] || ''), 10)
+  if (!eventId) { res.status(400).json({ error: 'invalid id' }); return }
+  const ev = db.prepare(`SELECT id, event_kind, call_id FROM dialpad_events WHERE id = ?`)
+    .get(eventId) as { id: number; event_kind: string; call_id: string | null } | undefined
+  if (!ev) { res.status(404).json({ error: 'event not found' }); return }
+  if (ev.event_kind === 'sms') {
+    db.prepare(`DELETE FROM dialpad_sms_reads WHERE user_id = ? AND event_id = ?`)
+      .run(req.user.userId, ev.id)
+  } else if (ev.event_kind === 'call' && ev.call_id) {
+    db.prepare(`DELETE FROM dialpad_inbox_reads WHERE user_id = ? AND call_id = ?`)
+      .run(req.user.userId, ev.call_id)
+  }
+  res.json({ ok: true })
+})
+
+// Schedule a per-user reminder against an SMS event. Body: { remind_at }
+// where remind_at is an ISO timestamp. The cron worker fires due rows into
+// the notifications table with a link back to the thread.
+router.post('/events/:id/remind', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const eventId = parseInt(String(req.params['id'] || ''), 10)
+  if (!eventId) { res.status(400).json({ error: 'invalid id' }); return }
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { remind_at?: string }
+  const remindAt = String(body.remind_at || '').trim()
+  if (!remindAt) { res.status(400).json({ error: 'remind_at required (ISO timestamp)' }); return }
+  // Sanity: future-only, within one year.
+  const t = new Date(remindAt)
+  if (isNaN(t.getTime())) { res.status(400).json({ error: 'invalid remind_at' }); return }
+  if (t.getTime() < Date.now() - 60_000) { res.status(400).json({ error: 'remind_at must be in the future' }); return }
+  if (t.getTime() > Date.now() + 365 * 24 * 60 * 60_000) { res.status(400).json({ error: 'remind_at too far out (max 1 year)' }); return }
+
+  const ev = db.prepare(
+    `SELECT id, external_number, text_body, raw_json
+     FROM dialpad_events WHERE id = ?`
+  ).get(eventId) as { id: number; external_number: string | null; text_body: string | null; raw_json: string } | undefined
+  if (!ev) { res.status(404).json({ error: 'event not found' }); return }
+  if (!ev.external_number) { res.status(400).json({ error: 'event has no external_number — cannot route reminder' }); return }
+
+  // Excerpt from text_body (preferred) or raw_json fallback. Capped so the
+  // notifications row stays compact.
+  let excerpt = ev.text_body || ''
+  if (!excerpt && ev.raw_json) {
+    try {
+      const p = JSON.parse(ev.raw_json) as Record<string, unknown>
+      const direct = p['text'] || p['message'] || p['body'] || p['message_body']
+      if (typeof direct === 'string') excerpt = direct
+    } catch { /* leave empty */ }
+  }
+  excerpt = excerpt.trim().slice(0, 240)
+
+  const result = db.prepare(
+    `INSERT INTO dialpad_message_reminders (user_id, event_id, external_number, body_excerpt, remind_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(req.user.userId, ev.id, ev.external_number, excerpt || null, t.toISOString())
+
+  res.json({ ok: true, id: result.lastInsertRowid, remind_at: t.toISOString() })
+})
+
+// List the requesting user's pending reminders so the UI can show "you have
+// 3 reminders set on this thread" if needed. Filtered to NOT-yet-fired.
+router.get('/events/reminders', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const externalNumber = String(req.query['external_number'] || '').trim()
+  let where = `user_id = ? AND fired_at IS NULL AND remind_at >= datetime('now', '-1 minute')`
+  const params: unknown[] = [req.user.userId]
+  if (externalNumber) {
+    const digits = externalNumber.replace(/\D/g, '').slice(-10)
+    if (digits.length === 10) {
+      where += ` AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(external_number, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE '%' || ?`
+      params.push(digits)
+    }
+  }
+  const rows = db.prepare(
+    `SELECT id, event_id, external_number, body_excerpt, remind_at, created_at
+     FROM dialpad_message_reminders
+     WHERE ${where}
+     ORDER BY remind_at ASC
+     LIMIT 50`
+  ).all(...params)
+  res.json({ rows })
+})
+
+// Cancel a pending reminder.
+router.delete('/events/reminders/:id', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const id = parseInt(String(req.params['id'] || ''), 10)
+  if (!id) { res.status(400).json({ error: 'invalid id' }); return }
+  db.prepare(
+    `DELETE FROM dialpad_message_reminders WHERE id = ? AND user_id = ? AND fired_at IS NULL`
+  ).run(id, req.user.userId)
+  res.json({ ok: true })
+})
+
 // ── SMS thread (iOS-style conversation view) ───────────
 // Returns every SMS event between this Dialpad user and the given external
 // number, ordered oldest→newest, with the message body extracted from the
@@ -1769,9 +1867,11 @@ router.get('/contact-timeline', (req: Request, res: Response): void => {
   // SMS dedup — Dialpad delivers an outbound webhook AFTER our /sms/send
   // pre-cache lands, so the same message_id ends up in two rows. Window
   // function picks one per call_id, preferring the row with text_body
-  // (so we keep the bubble, not the empty status copy). Rows with NULL
-  // call_id stay distinct via the COALESCE fallback. Cursor + limit are
-  // applied OUTSIDE the partition so paging stays consistent.
+  // (so we keep the bubble, not the empty status copy). Tiebreaker is
+  // LOWEST id so the *same* winner is returned across reloads — without
+  // this, the live SSE refresh would pick a different row than the initial
+  // load and the client would render both bubbles. Rows with NULL call_id
+  // stay distinct via the COALESCE fallback.
   const smsParams: unknown[] = [req.user.userId, last10]
   let smsClause = `e.event_kind = 'sms' AND ${NORM.replace(/external_number/g, 'e.external_number')} LIKE '%' || ?`
   if (beforeAt) { smsClause += ` AND e.received_at < ?`; smsParams.push(beforeAt) }
@@ -1785,8 +1885,7 @@ router.get('/contact-timeline', (req: Request, res: Response): void => {
                 PARTITION BY COALESCE(NULLIF(e.call_id, ''), 'noid_' || e.id)
                 ORDER BY
                   CASE WHEN e.text_body IS NOT NULL AND e.text_body != '' THEN 0 ELSE 1 END,
-                  e.received_at DESC,
-                  e.id DESC
+                  e.id ASC
               ) AS rn
        FROM dialpad_events e
        LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
