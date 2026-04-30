@@ -39,9 +39,9 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   try {
     const payload = jwt.verify(token, getJwtSecret()) as AuthPayload
     req.user = payload
-    // Record activity so background schedulers know whether to run.
-    // Off-hours with no authenticated traffic = no QB pulls.
-    noteUserActivity()
+    // Record activity so background schedulers know whether to run,
+    // and stamp the user's last_active_at for the admin presence view.
+    noteUserActivity(payload.userId)
     next()
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' })

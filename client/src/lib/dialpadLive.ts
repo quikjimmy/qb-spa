@@ -18,6 +18,10 @@ export interface LiveEvent {
   direction: string | null
   raw_json: string
   received_at: string
+  // Per-user "I've seen this" flag. The Comms Hub shows an unread dot
+  // on rows where is_read=0 AND scope=me. Mark-as-read fires when the
+  // user opens the thread / timeline dialog.
+  is_read?: number
 }
 
 const MAX_EVENTS = 50

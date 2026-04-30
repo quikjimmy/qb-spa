@@ -113,8 +113,10 @@ watch([topSentinel, () => props.open], ([el, open]) => {
 })
 onBeforeUnmount(() => topObserver?.disconnect())
 
-// ─── Composer (read-only this iteration) ───────────────────
+// ─── Composer ──────────────────────────────────────────────
 const draft = ref('')
+const sending = ref(false)
+const sendError = ref('')
 const taRef = ref<HTMLTextAreaElement | null>(null)
 function autoGrow() {
   const ta = taRef.value
@@ -128,7 +130,42 @@ const segments = computed(() => {
   const hasUnicode = /[^\x00-\x7F]/.test(draft.value)
   return Math.ceil(len / (hasUnicode ? 70 : 160))
 })
-function trySend() { /* coming next iteration */ }
+const canSend = computed(() => !!draft.value.trim() && !!primaryAgent.value?.dialpad_user_id && !sending.value)
+async function trySend() {
+  if (!canSend.value) return
+  const text = draft.value.trim()
+  const userId = primaryAgent.value?.dialpad_user_id
+  if (!text || !userId) return
+  sending.value = true
+  sendError.value = ''
+  try {
+    const res = await fetch('/api/dialpad/sms/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        external_number: props.externalNumber,
+        text,
+        user_id: userId,
+      }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string; upstream_body?: string }
+      sendError.value = body.error || `Send failed (${res.status})`
+      return
+    }
+    draft.value = ''
+    if (taRef.value) taRef.value.style.height = 'auto'
+    // Pull the latest thread so the new outgoing bubble shows. The
+    // server pre-cached the message, so this is a quick local read.
+    await loadInitial()
+    await nextTick()
+    if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
+  } catch (e) {
+    sendError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    sending.value = false
+  }
+}
 
 // ─── Header derivations ────────────────────────────────────
 const headerTitle = computed(() => props.contactName || formatPhone(props.externalNumber) || 'Conversation')
@@ -437,8 +474,9 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                     v-model="draft"
                     rows="1"
                     :maxlength="1600"
-                    placeholder="Reply coming soon…"
-                    class="block w-full resize-none bg-transparent text-[16px] leading-[1.35] placeholder:text-muted-foreground/70 focus:outline-none max-h-[140px] overflow-y-auto"
+                    :disabled="sending"
+                    :placeholder="primaryAgent?.dialpad_user_id ? 'Reply…' : 'No sending identity yet'"
+                    class="block w-full resize-none bg-transparent text-[16px] leading-[1.35] placeholder:text-muted-foreground/70 focus:outline-none max-h-[140px] overflow-y-auto disabled:opacity-50"
                     @input="autoGrow"
                     @keydown.enter.exact.prevent="trySend"
                     @keydown.meta.enter.prevent="trySend"
@@ -451,17 +489,19 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 </div>
 
                 <button
-                  :disabled="!draft.trim() || true"
+                  :disabled="!canSend"
                   class="shrink-0 size-9 rounded-full grid place-items-center bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-[0_1px_2px_rgba(2,132,199,0.35)] disabled:from-foreground/15 disabled:to-foreground/15 disabled:text-muted-foreground disabled:shadow-none disabled:cursor-not-allowed transition-all"
-                  title="Sending coming soon"
+                  :title="sending ? 'Sending…' : (primaryAgent?.dialpad_user_id ? 'Send' : 'No sender identity for this thread')"
                   aria-label="Send message"
                   @click="trySend"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                  <svg v-if="sending" class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                 </button>
               </div>
-              <p class="text-[10px] text-muted-foreground/60 mt-1 px-1">
-                Replying via the portal is coming next — for now use the Dialpad app or tap call.
+              <p v-if="sendError" class="text-[10px] text-rose-600 mt-1 px-1">{{ sendError }}</p>
+              <p v-else-if="!primaryAgent?.dialpad_user_id" class="text-[10px] text-muted-foreground/60 mt-1 px-1">
+                Sending needs a Dialpad agent on this thread — open from a thread that has prior activity.
               </p>
             </footer>
           </div>

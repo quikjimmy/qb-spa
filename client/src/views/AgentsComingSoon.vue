@@ -23,23 +23,23 @@ function previewWip() {
 const capabilities = [
   {
     icon: Timer,
-    label: 'Stall detection',
-    description: 'Flag projects sitting too long at any milestone, with the rule that tripped.',
+    label: 'Stall detector',
+    description: 'Flags milestones sitting past their threshold.',
   },
   {
     icon: FileText,
     label: 'Project narrative',
-    description: 'Plain-English summary of where every project is and what’s blocking it.',
+    description: 'Plain-English status, refreshed on open.',
   },
   {
     icon: GitBranch,
-    label: 'Track A vs Track B',
-    description: 'Tells you when a project’s gone off the normal path: redesign, AHJ reject, utility reject, PTO delay.',
+    label: 'Track classifier',
+    description: 'Normal flow vs. redesign / AHJ / utility / PTO.',
   },
   {
     icon: CheckCircle2,
     label: 'Review queue',
-    description: 'Every agent suggestion lands in a queue for human approval before it goes live.',
+    description: 'Every suggestion waits for a human OK.',
   },
 ]
 </script>
@@ -55,12 +55,12 @@ const capabilities = [
       <section class="ope-card">
         <header class="ope-eyebrow">
           <img src="/img/kin-logo-white.png" alt="" class="ope-logo" />
-          <span>Agents · In development</span>
+          <span>Agents · Sprint 1</span>
         </header>
 
-        <h1 class="ope-title">Your AI ops team.</h1>
+        <h1 class="ope-title">Four agents, working the pipeline while you sleep.</h1>
         <p class="ope-subtitle">
-          Built to watch every project so you don’t have to. Coming in tranches over the next sprint &mdash; first wave focuses on what’s stalling and why.
+          Sprint 1 ships across April&ndash;May. Each one drops as a separate review queue you can switch on.
         </p>
 
         <ul class="ope-caps">
@@ -76,7 +76,7 @@ const capabilities = [
         </ul>
 
         <p class="ope-footer-note">
-          Shipping in tranches. Updates in <span class="ope-mono">#ops-engineering</span>.
+          Updates land in <span class="ope-mono">#ops-engineering</span> as each agent ships.
         </p>
 
         <template v-if="auth.isAdmin">

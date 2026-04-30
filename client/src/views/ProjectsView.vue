@@ -58,6 +58,7 @@ interface Filters { statuses: FilterOption[]; offices: FilterOption[]; coordinat
 
 const projects = ref<Project[]>([])
 const total = ref(0)
+const totalKw = ref(0)
 const loading = ref(true)
 const refreshing = ref(false)
 const search = ref('')
@@ -155,7 +156,7 @@ async function loadProjects() {
   try {
     const res = await fetch(`/api/projects?${params}`, { headers: hdrs() })
     const data = await res.json()
-    projects.value = data.projects; total.value = data.total; filters.value = data.filters; cacheInfo.value = data.cache; kpi.value = data.kpi || kpi.value
+    projects.value = data.projects; total.value = data.total; totalKw.value = data.total_kw || 0; filters.value = data.filters; cacheInfo.value = data.cache; kpi.value = data.kpi || kpi.value
   } finally { loading.value = false }
 }
 
@@ -279,7 +280,9 @@ onMounted(() => {
       <div class="flex flex-col gap-0.5 min-w-0">
         <div class="flex items-baseline gap-2 min-w-0">
           <h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
-          <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">{{ total.toLocaleString() }}</span>
+          <span class="text-sm font-medium text-muted-foreground tabular-nums shrink-0">
+            {{ total.toLocaleString() }}<span v-if="totalKw > 0" class="text-[11px] font-semibold text-muted-foreground/80"> / {{ totalKw.toFixed(1) }} kW</span>
+          </span>
         </div>
         <DataFreshness label="Cache" />
       </div>

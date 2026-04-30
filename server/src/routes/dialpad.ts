@@ -1402,14 +1402,48 @@ router.get('/events/stream', (req: Request, res: Response): void => {
 router.get('/events/recent', (req: Request, res: Response): void => {
   const limit = Math.min(Math.max(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 1), 500)
   const sinceId = parseInt(String(req.query['since_id'] ?? '0'), 10) || 0
+  // Per-user is_read flag: SMS rows resolve via dialpad_sms_reads
+  // (event_id), call rows via dialpad_inbox_reads (call_id). Anonymous
+  // callers (no JWT) get is_read=0 — the live panel only surfaces unread
+  // visuals when scope=me anyway.
+  const userId = req.user?.userId ?? -1
   const rows = db.prepare(
-    `SELECT id, event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, received_at
-     FROM dialpad_events
-     WHERE id > ?
-     ORDER BY id DESC
+    `SELECT e.id, e.event_kind, e.event_state, e.call_id, e.user_email, e.user_name,
+            e.external_number, e.direction, e.raw_json, e.received_at,
+            CASE
+              WHEN e.event_kind = 'sms' AND sr.event_id IS NOT NULL THEN 1
+              WHEN e.event_kind = 'call' AND ir.call_id IS NOT NULL THEN 1
+              ELSE 0
+            END AS is_read
+     FROM dialpad_events e
+     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
+     LEFT JOIN dialpad_inbox_reads ir ON ir.user_id = ? AND ir.call_id = e.call_id
+     WHERE e.id > ?
+     ORDER BY e.id DESC
      LIMIT ?`
-  ).all(sinceId, limit) as DialpadEvent[]
+  ).all(userId, userId, sinceId, limit) as Array<DialpadEvent & { is_read: number }>
   res.json({ rows, limit, since_id: sinceId })
+})
+
+// Mark a single live event as read for the current user. Used by
+// DialpadLivePanel when the user opens the SMS thread / call timeline.
+// SMS marks dialpad_sms_reads (event id), call marks dialpad_inbox_reads
+// (call id). Idempotent — safe to call repeatedly.
+router.post('/events/:id/read', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const eventId = parseInt(String(req.params['id'] || ''), 10)
+  if (!eventId) { res.status(400).json({ error: 'invalid id' }); return }
+  const ev = db.prepare(`SELECT id, event_kind, call_id FROM dialpad_events WHERE id = ?`)
+    .get(eventId) as { id: number; event_kind: string; call_id: string | null } | undefined
+  if (!ev) { res.status(404).json({ error: 'event not found' }); return }
+  if (ev.event_kind === 'sms') {
+    db.prepare(`INSERT OR IGNORE INTO dialpad_sms_reads (user_id, event_id, read_at) VALUES (?, ?, datetime('now'))`)
+      .run(req.user.userId, ev.id)
+  } else if (ev.event_kind === 'call' && ev.call_id) {
+    db.prepare(`INSERT OR IGNORE INTO dialpad_inbox_reads (user_id, call_id, read_at) VALUES (?, ?, datetime('now'))`)
+      .run(req.user.userId, ev.call_id)
+  }
+  res.json({ ok: true })
 })
 
 // ── SMS thread (iOS-style conversation view) ───────────
@@ -1417,6 +1451,71 @@ router.get('/events/recent', (req: Request, res: Response): void => {
 // number, ordered oldest→newest, with the message body extracted from the
 // raw_json blob so the client doesn't have to parse it itself. Optional
 // scope=me|all controls whether to limit to the requesting user's emails.
+// Send SMS via Dialpad on behalf of a Kin user. The body must include
+// the recipient (external_number), text, and the Dialpad user_id of
+// whoever's sending — clients pull user_id from the SMS thread's
+// primary_agent so the reply lands on the same line the original
+// thread used. Dialpad's POST /api/v2/sms is the documented send
+// endpoint (only one in their public SMS surface).
+router.post('/sms/send', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) { res.status(401).end(); return }
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+    external_number?: string; text?: string; user_id?: string | number; sender_group_id?: string | number
+  }
+  const externalNumber = String(body.external_number || '').trim()
+  const text = String(body.text || '').trim()
+  const userId = body.user_id ? String(body.user_id).trim() : ''
+  if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
+  if (!text) { res.status(400).json({ error: 'text required' }); return }
+  if (!userId) { res.status(400).json({ error: 'user_id required (Dialpad sender id)' }); return }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API not configured' }); return }
+  try {
+    const r = await dialpadApi(cfg, 'POST', '/sms', {
+      user_id: Number(userId),
+      to_numbers: [externalNumber],
+      text,
+      ...(body.sender_group_id ? { sender_group_id: Number(body.sender_group_id) } : {}),
+      infer_country_code: true,
+    })
+    if (!r.ok) {
+      res.status(r.status >= 400 ? r.status : 500).json({
+        error: 'Dialpad rejected the send',
+        upstream_status: r.status,
+        upstream_body: r.text.slice(0, 600),
+      })
+      return
+    }
+    // Best-effort: prime our local cache with the outbound message so
+    // the thread shows the new bubble immediately without waiting for
+    // Dialpad to webhook us back. If the insert collides on a future
+    // webhook (unlikely — different ids), it's fine.
+    const sentId = r.data['id'] != null ? String(r.data['id']) : null
+    if (sentId) {
+      try {
+        db.prepare(
+          `INSERT INTO dialpad_events
+             (event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, text_body, text_body_fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+        ).run(
+          'sms',
+          'sent',
+          sentId,
+          req.user.email || null,
+          null,
+          externalNumber,
+          'outgoing',
+          JSON.stringify(r.data),
+          text,
+        )
+      } catch { /* swallow — webhook will catch up if needed */ }
+    }
+    res.json({ ok: true, message_id: sentId, dialpad_response: r.data })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => {
   if (!req.user) { res.status(401).end(); return }
   const externalNumber = String(req.query['external_number'] || '').trim()
@@ -2428,6 +2527,510 @@ function getHeatmapFilterOptions(): HeatmapFilterOptions {
 
   return { users, departments, contact_centers: contactCenters }
 }
+
+// Pull Dialpad's user directory into dialpad_users_cache. Paginated cursor
+// loop, capped at 10 pages × 100 users = 1000 to bound runtime on bigger
+// orgs. Idempotent — overwrites every row's fetched_at on each refresh.
+async function refreshDialpadUsers(cfg: { apiKey: string }): Promise<{ count: number; error: string | null }> {
+  let cursor: string | undefined
+  let count = 0
+  const upsert = db.prepare(
+    `INSERT INTO dialpad_users_cache (dialpad_user_id, email, name, primary_phone, state, fetched_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(dialpad_user_id) DO UPDATE SET
+       email = excluded.email,
+       name = excluded.name,
+       primary_phone = excluded.primary_phone,
+       state = excluded.state,
+       fetched_at = excluded.fetched_at`
+  )
+  for (let page = 0; page < 10; page++) {
+    const path = cursor ? `/users?limit=100&cursor=${encodeURIComponent(cursor)}` : '/users?limit=100'
+    const r = await dialpadApi(cfg, 'GET', path)
+    if (!r.ok) return { count, error: `HTTP ${r.status}: ${r.text.slice(0, 200)}` }
+    const items = Array.isArray(r.data['items']) ? r.data['items'] as Array<Record<string, unknown>> : []
+    if (page === 0 && items.length > 0) {
+      // One-time shape probe — Dialpad's user object isn't stable across plans
+      // and field names drift over time. Logged once per cold cache so we can
+      // confirm the keys we're picking still exist.
+      console.log('[dialpad/users] sample keys:', Object.keys(items[0]!).join(','))
+    }
+    for (const u of items) {
+      const id = u['id'] != null ? String(u['id']) : ''
+      if (!id) continue
+      const first = typeof u['first_name'] === 'string' ? u['first_name'] : ''
+      const last = typeof u['last_name'] === 'string' ? u['last_name'] : ''
+      const name = [first, last].filter(Boolean).join(' ').trim()
+        || (typeof u['display_name'] === 'string' ? u['display_name'] : '')
+        || null
+      // Dialpad's user object exposes the primary email as `email`, but some
+      // payloads use `primary_email` or the first item of `emails`. Try them
+      // in order of likelihood.
+      let email: string | null = null
+      if (typeof u['email'] === 'string' && u['email']) email = u['email']
+      else if (typeof u['primary_email'] === 'string' && u['primary_email']) email = u['primary_email'] as string
+      else if (Array.isArray(u['emails']) && u['emails'].length > 0) {
+        const first = (u['emails'] as unknown[])[0]
+        if (typeof first === 'string') email = first
+        else if (first && typeof first === 'object' && typeof (first as Record<string, unknown>)['email'] === 'string') {
+          email = (first as Record<string, unknown>)['email'] as string
+        }
+      }
+      const phones = Array.isArray(u['phone_numbers']) ? u['phone_numbers'] as unknown[] : []
+      const primary = phones.length > 0 && typeof phones[0] === 'string' ? String(phones[0]) : null
+      const state = typeof u['state'] === 'string' ? u['state'] : null
+      upsert.run(id, email, name, primary, state)
+      count += 1
+    }
+    const nextCursor = typeof r.data['cursor'] === 'string' ? r.data['cursor'] : ''
+    if (!nextCursor) break
+    cursor = nextCursor
+  }
+  return { count, error: null }
+}
+
+// Senders list for the compose flow. Backed by dialpad_users_cache so a user
+// can compose as themselves even if they've never sent SMS through the
+// portal. Cache is refreshed lazily: empty → blocking refresh; >24h old →
+// background refresh (returns stale data immediately). `?refresh=1` forces
+// a synchronous refresh.
+router.get('/senders', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) { res.status(401).end(); return }
+  const cfg = loadDialpadConfig()
+  const force = req.query['refresh'] === '1'
+
+  // Decide whether to refresh synchronously. Empty cache or `refresh=1` →
+  // block; stale cache → fire-and-forget so the page doesn't wait.
+  const cacheRow = db.prepare(
+    `SELECT COUNT(*) AS n, MAX(fetched_at) AS latest FROM dialpad_users_cache`
+  ).get() as { n: number; latest: string | null }
+  const isEmpty = cacheRow.n === 0
+  const isStale = cacheRow.latest
+    ? Date.now() - new Date(cacheRow.latest.replace(' ', 'T') + 'Z').getTime() > 24 * 60 * 60 * 1000
+    : true
+
+  let refreshError: string | null = null
+  let refreshedCount: number | null = null
+  if (cfg && (force || isEmpty)) {
+    const r = await refreshDialpadUsers(cfg)
+    refreshError = r.error
+    refreshedCount = r.count
+  } else if (cfg && isStale) {
+    // Background refresh — don't await. Errors are swallowed; next request
+    // will retry. Acceptable since we're returning cached data anyway.
+    void refreshDialpadUsers(cfg).catch(() => { /* ignore */ })
+  }
+
+  // Pull from cache. Also count messages-per-user from cached SMS events so
+  // the picker can rank "people who actually use this" higher.
+  const cacheRows = db.prepare(
+    `SELECT dialpad_user_id, email, name, primary_phone, state, fetched_at
+     FROM dialpad_users_cache
+     WHERE state IS NULL OR state IN ('active', 'admin', 'super_admin')`
+  ).all() as Array<{ dialpad_user_id: string; email: string | null; name: string | null; primary_phone: string | null; state: string | null; fetched_at: string }>
+
+  // Email aliases for the requesting user so we can mark `is_me`.
+  const myEmails = new Set<string>([req.user.email.toLowerCase()])
+  const aliasRows = db.prepare(
+    `SELECT email FROM user_email_lookup WHERE user_id = ?`
+  ).all(req.user.userId) as Array<{ email: string }>
+  for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+
+  // Activity counts from cached SMS so the dropdown surfaces real users
+  // first when there's a tie. Pulled in one pass to avoid N queries.
+  const activity = new Map<string, { messages: number; last_at: string | null }>()
+  const smsRows = db.prepare(
+    `SELECT raw_json FROM dialpad_events
+     WHERE event_kind = 'sms' AND raw_json IS NOT NULL AND raw_json != ''
+     ORDER BY received_at DESC
+     LIMIT 2000`
+  ).all() as Array<{ raw_json: string }>
+  for (const r of smsRows) {
+    try {
+      const p = JSON.parse(r.raw_json) as Record<string, unknown>
+      const target = p['target'] as Record<string, unknown> | undefined
+      if (!target || target['id'] == null) continue
+      const dpId = String(target['id'])
+      const at = typeof p['date_started'] === 'string' ? p['date_started']
+        : (typeof p['received_at'] === 'string' ? p['received_at'] : null)
+      const cur = activity.get(dpId) || { messages: 0, last_at: null }
+      cur.messages += 1
+      if (at && (!cur.last_at || at > cur.last_at)) cur.last_at = at
+      activity.set(dpId, cur)
+    } catch { /* skip malformed */ }
+  }
+
+  interface Sender {
+    dialpad_user_id: string
+    name: string | null
+    email: string | null
+    number: string | null
+    messages: number
+    last_at: string | null
+    is_me?: boolean
+  }
+  const senders: Sender[] = cacheRows.map(r => {
+    const act = activity.get(r.dialpad_user_id)
+    return {
+      dialpad_user_id: r.dialpad_user_id,
+      name: r.name,
+      email: r.email,
+      number: r.primary_phone,
+      messages: act?.messages || 0,
+      last_at: act?.last_at || null,
+      is_me: !!(r.email && myEmails.has(r.email.toLowerCase())),
+    }
+  })
+
+  // Sort: current user first, then by SMS activity (recency, count), then
+  // alphabetically by name so the dropdown is predictable for everyone else.
+  senders.sort((a, b) => {
+    if (a.is_me !== b.is_me) return a.is_me ? -1 : 1
+    if (a.last_at && b.last_at && a.last_at !== b.last_at) return a.last_at > b.last_at ? -1 : 1
+    if (a.messages !== b.messages) return b.messages - a.messages
+    return (a.name || '').localeCompare(b.name || '')
+  })
+
+  const defaultId = senders.find(s => s.is_me)?.dialpad_user_id
+    || senders[0]?.dialpad_user_id
+    || null
+
+  res.json({
+    senders,
+    default_sender_id: defaultId,
+    cache: {
+      total: cacheRows.length,
+      last_refresh: cacheRow.latest,
+      stale: isStale,
+      refresh_error: refreshError,
+      refreshed_count: refreshedCount,
+    },
+  })
+})
+
+// Save a contact to Dialpad's address book so future inbound calls show the
+// contact name (instead of just the number). Defaults to "shared" type so
+// the contact is visible across the whole company; falls back to "local"
+// (per-user) if the workspace plan doesn't allow shared contacts. Body:
+// { phone, first_name, last_name?, type?, owner_id? }
+router.post('/contact/save', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) { res.status(401).end(); return }
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+    phone?: string; first_name?: string; last_name?: string;
+    type?: string; owner_id?: string | number
+  }
+  const phone = String(body.phone || '').trim()
+  const firstName = String(body.first_name || '').trim()
+  const lastName = String(body.last_name || '').trim()
+  if (!phone) { res.status(400).json({ error: 'phone required' }); return }
+  if (!firstName) { res.status(400).json({ error: 'first_name required' }); return }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API not configured' }); return }
+  const contactType = body.type === 'local' ? 'local' : 'shared'
+
+  const payload: Record<string, unknown> = {
+    first_name: firstName,
+    phones: [phone],
+    type: contactType,
+  }
+  if (lastName) payload['last_name'] = lastName
+  if (contactType === 'local' && body.owner_id) payload['owner_id'] = Number(body.owner_id)
+
+  try {
+    const r = await dialpadApi(cfg, 'POST', '/contacts', payload)
+    if (!r.ok) {
+      res.status(r.status >= 400 ? r.status : 500).json({
+        error: 'Dialpad rejected the contact',
+        upstream_status: r.status,
+        upstream_body: r.text.slice(0, 600),
+      })
+      return
+    }
+    res.json({ ok: true, contact: r.data })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// Click-to-call — Dialpad rings the chosen user's device first, then bridges
+// to the destination once they pick up. Body: { user_id, to_number }. Returns
+// Dialpad's response so the client can show the call_id / status.
+router.post('/call/initiate', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) { res.status(401).end(); return }
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+    to_number?: string; user_id?: string | number; custom_data?: string
+  }
+  const toNumber = String(body.to_number || '').trim()
+  const userId = body.user_id ? String(body.user_id).trim() : ''
+  if (!toNumber) { res.status(400).json({ error: 'to_number required' }); return }
+  if (!userId) { res.status(400).json({ error: 'user_id required (Dialpad caller id)' }); return }
+  const cfg = loadDialpadConfig()
+  if (!cfg) { res.status(400).json({ error: 'Dialpad API not configured' }); return }
+  try {
+    const r = await dialpadApi(cfg, 'POST', '/call', {
+      user_id: Number(userId),
+      phone_number: toNumber,
+      custom_data: body.custom_data || undefined,
+    })
+    if (!r.ok) {
+      res.status(r.status >= 400 ? r.status : 500).json({
+        error: 'Dialpad rejected the call',
+        upstream_status: r.status,
+        upstream_body: r.text.slice(0, 600),
+      })
+      return
+    }
+    res.json({ ok: true, dialpad_response: r.data })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// Comms Hub search — find recent calls / SMS by customer name, phone digits,
+// agent (coordinator) name, or words inside an SMS body. Results group by
+// external_number so each contact returns one row containing the most-recent
+// SMS + most-recent call within the lookback window. Click-through opens the
+// existing thread / call timeline on the client.
+//
+// Modes:
+//   - phone  — query is mostly digits (≥3), match on the last-10 suffix of
+//     external_number across calls and sms.
+//   - text   — query is words, match across project_cache.customer_name (via
+//     phone digit match), dialpad_events.text_body, and user_name on either
+//     side.
+//
+// Auth: any authenticated user. No scope=me filter — search exists to find
+// any contact the team's been in touch with, not a per-user inbox view.
+router.get('/search', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const q = String(req.query['q'] || '').trim()
+  if (q.length < 2) { res.json({ rows: [], q, mode: 'idle' }); return }
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '25'), 10) || 25, 1), 50)
+  const days = Math.min(Math.max(parseInt(String(req.query['days'] || '90'), 10) || 90, 7), 365)
+  const since = `-${days} days`
+
+  const digits = q.replace(/\D/g, '')
+  const isPhone = digits.length >= 3 && digits.length / q.length >= 0.5
+  const last10 = digits.slice(-10)
+  const like = `%${q.toLowerCase()}%`
+
+  // Strip every common formatting char (space, dash, paren, plus) so we can
+  // suffix-match on a digit-only form without storing a normalized column.
+  const NORM = (col: string) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')`
+
+  // ── Step 1: candidate phones ────────────────────────────
+  // We collect phone numbers from any source that matches the query, then
+  // resolve each to its most-recent activity in step 2. Capped at 200 per
+  // source to keep the JS merge bounded.
+  const candidates = new Set<string>()
+
+  if (isPhone) {
+    const callRows = db.prepare(
+      `SELECT DISTINCT external_number FROM dialpad_call_records
+       WHERE substr(started_at, 1, 10) >= date('now', ?)
+         AND external_number IS NOT NULL AND external_number != ''
+         AND ${NORM('external_number')} LIKE '%' || ?
+       LIMIT 200`
+    ).all(since, last10) as Array<{ external_number: string }>
+    const smsRows = db.prepare(
+      `SELECT DISTINCT external_number FROM dialpad_events
+       WHERE event_kind = 'sms' AND substr(received_at, 1, 10) >= date('now', ?)
+         AND external_number IS NOT NULL AND external_number != ''
+         AND ${NORM('external_number')} LIKE '%' || ?
+       LIMIT 200`
+    ).all(since, last10) as Array<{ external_number: string }>
+    for (const r of callRows) candidates.add(r.external_number)
+    for (const r of smsRows) candidates.add(r.external_number)
+  } else {
+    // (a) customer name match — pull every phone the customer has on file,
+    // normalize to digit suffix, then resolve to the dialpad-canonical form
+    // that actually has activity. Prevents misses caused by formatting drift
+    // ("(863) 450-9055" in project_cache vs "+18634509055" in dialpad rows).
+    const cust = db.prepare(
+      `SELECT phone, mobile_phone, alt_phone FROM project_cache
+       WHERE LOWER(customer_name) LIKE ? LIMIT 200`
+    ).all(like) as Array<{ phone: string | null; mobile_phone: string | null; alt_phone: string | null }>
+    const custDigits = new Set<string>()
+    const onlyDigitsLocal = (s: string | null | undefined): string => (s || '').replace(/\D/g, '').slice(-10)
+    for (const r of cust) {
+      for (const p of [r.phone, r.mobile_phone, r.alt_phone]) {
+        const d = onlyDigitsLocal(p)
+        if (d.length === 10) custDigits.add(d)
+      }
+    }
+    if (custDigits.size > 0) {
+      const arr = Array.from(custDigits)
+      const ph = arr.map(() => '?').join(',')
+      const matches = db.prepare(
+        `SELECT external_number FROM dialpad_call_records
+         WHERE substr(${NORM('external_number')}, -10) IN (${ph})
+         UNION
+         SELECT external_number FROM dialpad_events
+         WHERE event_kind = 'sms' AND substr(${NORM('external_number')}, -10) IN (${ph})`
+      ).all(...arr, ...arr) as Array<{ external_number: string }>
+      for (const m of matches) candidates.add(m.external_number)
+    }
+    // (b) SMS body / sender name match
+    const smsRows = db.prepare(
+      `SELECT DISTINCT external_number FROM dialpad_events
+       WHERE event_kind = 'sms' AND substr(received_at, 1, 10) >= date('now', ?)
+         AND external_number IS NOT NULL AND external_number != ''
+         AND (LOWER(COALESCE(text_body, '')) LIKE ? OR LOWER(COALESCE(user_name, '')) LIKE ?)
+       LIMIT 200`
+    ).all(since, like, like) as Array<{ external_number: string }>
+    for (const r of smsRows) candidates.add(r.external_number)
+    // (c) call agent match — finds every contact handled by that agent
+    const callRows = db.prepare(
+      `SELECT DISTINCT external_number FROM dialpad_call_records
+       WHERE substr(started_at, 1, 10) >= date('now', ?)
+         AND external_number IS NOT NULL AND external_number != ''
+         AND LOWER(COALESCE(user_name, '')) LIKE ?
+       LIMIT 200`
+    ).all(since, like) as Array<{ external_number: string }>
+    for (const r of callRows) candidates.add(r.external_number)
+  }
+
+  if (candidates.size === 0) { res.json({ rows: [], q, mode: isPhone ? 'phone' : 'text' }); return }
+
+  // ── Step 2: most-recent activity per candidate ───────────
+  const phones = Array.from(candidates).slice(0, 100)
+  const placeholders = phones.map(() => '?').join(',')
+
+  const smsLatest = db.prepare(
+    `SELECT e.external_number, e.id, e.received_at, e.direction, e.user_name, e.user_email,
+            e.text_body, e.raw_json, e.call_id
+     FROM dialpad_events e
+     INNER JOIN (
+       SELECT external_number, MAX(received_at) AS max_at
+       FROM dialpad_events
+       WHERE event_kind = 'sms' AND external_number IN (${placeholders})
+       GROUP BY external_number
+     ) t ON t.external_number = e.external_number AND t.max_at = e.received_at
+     WHERE e.event_kind = 'sms'`
+  ).all(...phones) as Array<{
+    external_number: string; id: number; received_at: string; direction: string;
+    user_name: string | null; user_email: string | null;
+    text_body: string | null; raw_json: string; call_id: string | null
+  }>
+
+  const callLatest = db.prepare(
+    `SELECT r.external_number, r.call_id, r.started_at, r.direction, r.user_name, r.user_email,
+            r.bucket, r.talk_time_sec, r.was_voicemail, r.was_recorded
+     FROM dialpad_call_records r
+     INNER JOIN (
+       SELECT external_number, MAX(started_at) AS max_at
+       FROM dialpad_call_records
+       WHERE external_number IN (${placeholders})
+       GROUP BY external_number
+     ) t ON t.external_number = r.external_number AND t.max_at = r.started_at`
+  ).all(...phones) as Array<{
+    external_number: string; call_id: string; started_at: string; direction: string;
+    user_name: string | null; user_email: string | null;
+    bucket: string; talk_time_sec: number; was_voicemail: number; was_recorded: number
+  }>
+
+  // ── Step 3: customer resolution by last-10 digit match ───
+  // Build a digits→customer map once. project_cache has up to 3 phone columns
+  // per record; first hit wins.
+  const onlyDigits = (s: string | null | undefined): string =>
+    (s || '').replace(/\D/g, '').slice(-10)
+
+  const phoneDigitsList = phones.map(onlyDigits).filter(d => d.length === 10)
+  const customerByDigits = new Map<string, { record_id: number; customer_name: string; status: string | null; coordinator: string | null }>()
+  if (phoneDigitsList.length > 0) {
+    const rows = db.prepare(
+      `SELECT record_id, customer_name, status, coordinator, phone, mobile_phone, alt_phone
+       FROM project_cache
+       WHERE customer_name IS NOT NULL AND customer_name != ''`
+    ).all() as Array<{ record_id: number; customer_name: string; status: string | null; coordinator: string | null; phone: string | null; mobile_phone: string | null; alt_phone: string | null }>
+    const wanted = new Set(phoneDigitsList)
+    for (const c of rows) {
+      for (const p of [c.phone, c.mobile_phone, c.alt_phone]) {
+        const d = onlyDigits(p)
+        if (d.length === 10 && wanted.has(d) && !customerByDigits.has(d)) {
+          customerByDigits.set(d, {
+            record_id: c.record_id, customer_name: c.customer_name,
+            status: c.status, coordinator: c.coordinator,
+          })
+        }
+      }
+    }
+  }
+
+  // SMS body fallback — reuse the same nested-payload walk used by /sms/thread
+  // for events that arrived before text_body was being cached.
+  function extractBody(payload: Record<string, unknown>): string | null {
+    const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body'] || payload['content']
+    if (typeof direct === 'string' && direct.trim()) return direct
+    for (const key of ['data', 'sms', 'message_object', 'event']) {
+      const nested = payload[key]
+      if (nested && typeof nested === 'object') {
+        const inner = extractBody(nested as Record<string, unknown>)
+        if (inner) return inner
+      }
+    }
+    return null
+  }
+
+  // ── Step 4: merge into one row per phone ─────────────────
+  const smsMap = new Map(smsLatest.map(s => [s.external_number, s]))
+  const callMap = new Map(callLatest.map(c => [c.external_number, c]))
+
+  const out: Array<Record<string, unknown>> = []
+  for (const phone of phones) {
+    const sms = smsMap.get(phone)
+    const call = callMap.get(phone)
+    if (!sms && !call) continue
+
+    const smsAt = sms ? sms.received_at : ''
+    const callAt = call ? call.started_at : ''
+    const lastAt = smsAt > callAt ? smsAt : callAt
+    const lastKind = smsAt > callAt ? 'sms' : 'call'
+    const customer = customerByDigits.get(onlyDigits(phone)) || null
+
+    let smsBody: string | null = sms?.text_body || null
+    if (sms && !smsBody && sms.raw_json) {
+      try { smsBody = extractBody(JSON.parse(sms.raw_json) as Record<string, unknown>) }
+      catch { /* leave null */ }
+    }
+
+    out.push({
+      phone,
+      digits: onlyDigits(phone),
+      last_at: lastAt,
+      last_kind: lastKind,
+      customer_name: customer?.customer_name ?? null,
+      project_id: customer?.record_id ?? null,
+      project_status: customer?.status ?? null,
+      project_coordinator: customer?.coordinator ?? null,
+      sms: sms ? {
+        id: sms.id,
+        at: sms.received_at,
+        direction: sms.direction,
+        user_name: sms.user_name,
+        body: smsBody,
+      } : null,
+      call: call ? {
+        call_id: call.call_id,
+        at: call.started_at,
+        direction: call.direction,
+        user_name: call.user_name,
+        bucket: call.bucket,
+        talk_time_sec: call.talk_time_sec,
+        was_voicemail: !!call.was_voicemail,
+        was_recorded: !!call.was_recorded,
+      } : null,
+    })
+  }
+
+  out.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)))
+  res.json({
+    rows: out.slice(0, limit),
+    q,
+    mode: isPhone ? 'phone' : 'text',
+    total_candidates: candidates.size,
+  })
+})
 
 // List coordinator names from Dialpad data for filter dropdowns
 router.get('/coordinators', (_req: Request, res: Response): void => {

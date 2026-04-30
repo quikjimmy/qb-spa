@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { bucketMeta, formatPhone, splitStartedAt } from '@/lib/callBuckets'
 import { useDialpadLive, type LiveEvent } from '@/lib/dialpadLive'
 import { usePhoneMatches } from '@/composables/usePhoneMatches'
+import { useAuthStore } from '@/stores/auth'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
 import CallTimelineDialog from '@/components/CallTimelineDialog.vue'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
@@ -50,7 +51,30 @@ function customerName(e: LiveEvent): string {
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
 const callTimeline = ref<{ open: boolean; callId: string; number: string }>({ open: false, callId: '', number: '' })
 
+const auth = useAuthStore()
+// Local read overlay — when the user opens an event we mark it read on
+// the server AND flip the local flag immediately so the unread dot
+// disappears without waiting for the next SSE backfill.
+const locallyRead = ref<Record<number, true>>({})
+function isUnread(e: LiveEvent): boolean {
+  if (scope.value !== 'me') return false   // only Me view shows unread state
+  if (locallyRead.value[e.id]) return false
+  return e.is_read !== 1
+}
+async function markEventRead(e: LiveEvent) {
+  locallyRead.value = { ...locallyRead.value, [e.id]: true }
+  try {
+    await fetch(`/api/dialpad/events/${e.id}/read`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+  } catch { /* swallow — UI already optimistic */ }
+}
+
 function openEvent(e: LiveEvent) {
+  // Mark read on every open. SSE rows include is_read but the local
+  // overlay covers the gap before the next backfill confirms.
+  void markEventRead(e)
   if (e.event_kind === 'sms' && e.external_number) {
     smsThread.value = { open: true, number: e.external_number, name: customerName(e) }
   } else if (e.event_kind === 'call' && e.call_id) {
@@ -162,8 +186,18 @@ function visualFor(e: LiveEvent): EventVisual {
           @keydown.enter.prevent="openEvent(e)"
           @keydown.space.prevent="openEvent(e)"
         >
-          <div class="shrink-0 size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
-            <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
+          <div class="relative shrink-0">
+            <div class="size-8 rounded-full flex items-center justify-center" :class="visualFor(e).bgClass">
+              <component :is="visualFor(e).icon" class="w-4 h-4" :class="visualFor(e).colorClass" />
+            </div>
+            <!-- Unread dot — only visible in Me scope so users can scan
+                 what they still need to look at. Tap-to-open marks it
+                 read both server- and client-side. -->
+            <span
+              v-if="isUnread(e)"
+              class="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-sky-500 ring-2 ring-card"
+              aria-label="Unread"
+            />
           </div>
           <div class="flex-1 min-w-0">
             <!-- Caller line: matched customer name when we have one; otherwise

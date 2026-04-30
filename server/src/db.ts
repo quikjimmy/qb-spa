@@ -28,6 +28,10 @@ db.exec(`
   const names = new Set(cols.map(c => c.name))
   if (!names.has('reset_token')) db.exec(`ALTER TABLE users ADD COLUMN reset_token TEXT`)
   if (!names.has('reset_expires_at')) db.exec(`ALTER TABLE users ADD COLUMN reset_expires_at TEXT`)
+  // Per-user last-active timestamp — written by the auth middleware
+  // (debounced to once per minute per user). Powers the admin user
+  // list "Active 4 min ago" presence column.
+  if (!names.has('last_active_at')) db.exec(`ALTER TABLE users ADD COLUMN last_active_at TEXT`)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token) WHERE reset_token IS NOT NULL`)
 }
 
@@ -802,6 +806,21 @@ db.exec(`
   )
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_sms_read_user ON dialpad_sms_reads(user_id, read_at DESC)`)
+
+// Cached Dialpad user directory. Refreshed via Dialpad's /api/v2/users
+// endpoint. Drives the sender picker so a user can compose / call as
+// themselves even if they've never sent an SMS through the portal yet.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_users_cache (
+    dialpad_user_id TEXT PRIMARY KEY,
+    email TEXT,
+    name TEXT,
+    primary_phone TEXT,
+    state TEXT,
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_users_email ON dialpad_users_cache(LOWER(email))`)
 
 // Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
 // SMS may not be supported on every Dialpad plan — refresh gracefully skips if

@@ -40,6 +40,22 @@ interface PortalUser {
   departments?: Array<{ id: number; name: string }>
   is_active: number
   created_at: string
+  last_active_at: string | null
+}
+
+// "Active 4m ago" / "Active just now" / "—" formatter for the user
+// list. Stamps come from auth-middleware writes (debounced ~60s).
+function relActive(iso: string | null): string {
+  if (!iso) return 'never'
+  const d = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z'))
+  if (isNaN(d.getTime())) return iso
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000))
+  if (sec < 60) return 'just now'
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  return `${Math.round(hr / 24)}d ago`
 }
 
 interface Department {
@@ -1418,6 +1434,7 @@ onMounted(async () => {
                       <TableHead>Roles</TableHead>
                       <TableHead>Departments</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Last active</TableHead>
                       <TableHead class="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1462,6 +1479,9 @@ onMounted(async () => {
                             {{ u.is_active ? 'Active' : 'Inactive' }}
                           </span>
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        <span class="text-xs text-muted-foreground tabular-nums" :title="u.last_active_at || 'Never signed in'">{{ relActive(u.last_active_at) }}</span>
                       </TableCell>
                       <TableCell class="text-right">
                         <div class="flex items-center justify-end gap-2 flex-wrap">

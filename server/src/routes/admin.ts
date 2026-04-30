@@ -143,7 +143,7 @@ router.delete('/roles/:id', (req: Request, res: Response): void => {
 
 router.get('/users', (_req: Request, res: Response): void => {
   const users = db.prepare(`
-    SELECT u.id, u.email, u.name, u.is_active, u.created_at,
+    SELECT u.id, u.email, u.name, u.is_active, u.created_at, u.last_active_at,
       GROUP_CONCAT(DISTINCT r.name) as role_names,
       GROUP_CONCAT(DISTINCT d.id || ':' || d.name) as dept_pairs
     FROM users u
@@ -155,7 +155,8 @@ router.get('/users', (_req: Request, res: Response): void => {
     ORDER BY u.created_at DESC
   `).all() as Array<{
     id: number; email: string; name: string; is_active: number;
-    created_at: string; role_names: string | null; dept_pairs: string | null
+    created_at: string; last_active_at: string | null;
+    role_names: string | null; dept_pairs: string | null
   }>
 
   res.json({
@@ -165,6 +166,7 @@ router.get('/users', (_req: Request, res: Response): void => {
       name: u.name,
       is_active: u.is_active,
       created_at: u.created_at,
+      last_active_at: u.last_active_at,
       roles: u.role_names
         ? [...new Set(u.role_names.split(',').map(normalizeAppRoleName).filter(r => APP_ROLE_NAMES.includes(r)))]
         : [],

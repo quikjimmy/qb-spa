@@ -812,8 +812,8 @@ router.get('/', (req: Request, res: Response): void => {
   `).all(...params, limit, offset)
 
   const countResult = db.prepare(`
-    SELECT COUNT(*) as count FROM project_cache ${where}
-  `).get(...params) as { count: number }
+    SELECT COUNT(*) as count, COALESCE(SUM(system_size_kw), 0) as total_kw FROM project_cache ${where}
+  `).get(...params) as { count: number; total_kw: number }
 
   // Get filter options with counts
   // "Pipeline" = Active or Hold, not yet PTO approved — the projects Ops cares about
@@ -915,6 +915,7 @@ router.get('/', (req: Request, res: Response): void => {
   res.json({
     projects: enriched,
     total: countResult.count,
+    total_kw: Math.round(countResult.total_kw * 10) / 10,
     kpi,
     limit,
     offset,

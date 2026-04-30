@@ -7,6 +7,7 @@ import CallActivityFeed from '@/components/CallActivityFeed.vue'
 import CommsHeatmap from '@/components/CommsHeatmap.vue'
 import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
 import CommsInbox from '@/components/CommsInbox.vue'
+import CommsSearch from '@/components/CommsSearch.vue'
 import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconInbox from '@dialpad/dialtone-icons/vue3/inbox'
 import DtIconBarChart from '@dialpad/dialtone-icons/vue3/bar-chart-2'
@@ -304,6 +305,10 @@ function setMainTab(t: CommsTab) {
         </Button>
       </div>
     </div>
+
+    <!-- Search across calls + SMS by name, phone, message text, or agent name.
+         Self-contained — owns its own dialogs for click-through. -->
+    <CommsSearch />
 
     <!-- Live events panel (SSE). Hidden when the persistent Live Hub rail
          is open so we don't render the same feed twice. -->
