@@ -57,16 +57,30 @@ const navTop = [
 const navBottom = [
   { label: 'Chat Bot', to: '/chat', icon: 'chat' },
   { label: 'Comms Hub', to: '/comms', icon: 'phone' },
+  { label: 'Field', to: '/field', icon: 'truck' },
   { label: 'Agent Ops', to: '/agents', icon: 'bot' },
   { label: 'Tickets', to: '/tickets', icon: 'ticket' },
 ]
 
+// Milestone-organized sub-nav under Projects. Order is intentional and
+// mirrors the project lifecycle: pre-sale → handoff → field work →
+// approvals → install → close-out → post-PTO. Pages without a built
+// view yet point at the shared placeholder so the nav structure exists
+// while individual milestone surfaces grow in.
 const projectSubItems = [
-  { label: 'All Projects', to: '/projects' },
-  { label: 'PC Dashboard', to: '/projects/pc' },
-  { label: 'Field', to: '/projects/field' },
-  { label: 'Inspections', to: '/projects/inspections' },
-  { label: 'PTO', to: '/projects/pto' },
+  { label: 'All Projects',         to: '/projects' },
+  { label: 'Sales',                to: '/projects/sales' },
+  { label: 'Intake',               to: '/projects/intake' },
+  { label: 'Project Coordination', to: '/projects/pc' },
+  { label: 'Site Survey',          to: '/projects/site-survey' },
+  { label: 'Design & Engineering', to: '/projects/design' },
+  { label: 'Permit',               to: '/projects/permit' },
+  { label: 'NEM',                  to: '/projects/nem' },
+  { label: 'Install',              to: '/projects/install' },
+  { label: 'Inspection',           to: '/projects/inspections' },
+  { label: 'PTO',                  to: '/projects/pto' },
+  { label: 'Retention',            to: '/projects/retention' },
+  { label: 'Post PTO',             to: '/projects/post-pto' },
 ]
 
 const projectsOpen = computed(() => route.path.startsWith('/projects'))
@@ -143,6 +157,7 @@ function isActive(path: string) {
                 <RouterLink :to="item.to">
                   <img v-if="item.icon === 'chat'" src="/img/ai-chat-icon.png" alt="" class="w-4 h-4 shrink-0" aria-hidden="true" />
                   <svg v-if="item.icon === 'phone'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  <svg v-if="item.icon === 'truck'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>
                   <svg v-if="item.icon === 'bot'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
                   <svg v-if="item.icon === 'ticket'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
                   <span class="flex-1">{{ item.label }}</span>

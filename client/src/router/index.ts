@@ -52,25 +52,91 @@ const router = createRouter({
           name: 'projects',
           component: () => import('../views/ProjectsView.vue'),
         },
+        // Field is a cross-cutting crew-ops surface, not a single
+        // milestone — promoted out of Projects to a top-level route.
+        // The legacy /projects/field path stays as a redirect so old
+        // bookmarks land somewhere sensible.
         {
-          path: 'projects/inspections',
-          name: 'inspx-dashboard',
-          component: () => import('../views/InspxDashboardView.vue'),
+          path: 'field',
+          name: 'field-dashboard',
+          component: () => import('../views/FieldDashboardView.vue'),
+        },
+        { path: 'projects/field', redirect: '/field' },
+        // Milestone-organized sub-pages within Projects. Order matches
+        // the project lifecycle and the AppSidebar nav. Stubs use the
+        // shared MilestonePlaceholder; built views (PC, Inspections,
+        // PTO, All Projects) keep their existing components.
+        {
+          path: 'projects/sales',
+          name: 'milestone-sales',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 2, title: 'Sales', description: 'Sale agreement signed → handoff to Intake. Pipeline view, sale-date filters, closer / setter performance.' },
         },
         {
-          path: 'projects/pto',
-          name: 'pto-dashboard',
-          component: () => import('../views/PtoDashboardView.vue'),
+          path: 'projects/intake',
+          name: 'milestone-intake',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 3, title: 'Intake', description: 'KCA + welcome call. Decision queue, missing-info follow-ups, intake-rejection turnaround.' },
         },
         {
           path: 'projects/pc',
           name: 'pc-dashboard',
           component: () => import('../views/PcDashboardView.vue'),
+          meta: { order: 4, title: 'Project Coordination' },
         },
         {
-          path: 'projects/field',
-          name: 'field-dashboard',
-          component: () => import('../views/FieldDashboardView.vue'),
+          path: 'projects/site-survey',
+          name: 'milestone-site-survey',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 5, title: 'Site Survey', description: 'Surveys scheduled / in-flight / submitted / cancelled. Field crew + customer reschedule loops live here.' },
+        },
+        {
+          path: 'projects/design',
+          name: 'milestone-design',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 6, title: 'Design & Engineering', description: 'Site Survey Review queue (HITL) + design-team workflow. CAD submission, design completion, rejected-survey rework.' },
+        },
+        {
+          path: 'projects/permit',
+          name: 'milestone-permit',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 7, title: 'Permit', description: 'AHJ submissions, approvals, rejections + missing-items checklists.' },
+        },
+        {
+          path: 'projects/nem',
+          name: 'milestone-nem',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 8, title: 'NEM', description: 'Utility interconnect — submissions, approvals, rejections, follow-ups by utility company.' },
+        },
+        {
+          path: 'projects/install',
+          name: 'milestone-install',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 9, title: 'Install', description: 'Scheduled / in-flight / completed installs. Crew assignment, day-of monitoring, post-install QC.' },
+        },
+        {
+          path: 'projects/inspections',
+          name: 'inspx-dashboard',
+          component: () => import('../views/InspxDashboardView.vue'),
+          meta: { order: 10, title: 'Inspection' },
+        },
+        {
+          path: 'projects/pto',
+          name: 'pto-dashboard',
+          component: () => import('../views/PtoDashboardView.vue'),
+          meta: { order: 11, title: 'PTO' },
+        },
+        {
+          path: 'projects/retention',
+          name: 'milestone-retention',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 12, title: 'Retention', description: 'At-risk / pending-cancel projects, save plays, customer outreach.' },
+        },
+        {
+          path: 'projects/post-pto',
+          name: 'milestone-post-pto',
+          component: () => import('../views/MilestonePlaceholder.vue'),
+          meta: { order: 13, title: 'Post PTO', description: 'After permission to operate — warranty, monitoring exceptions, referrals, NPS.' },
         },
         {
           path: 'projects/:id(\\d+)',
