@@ -170,6 +170,31 @@ export function useSmsThread(externalNumber: Ref<string>) {
     return i.kind === 'sms' ? `sms-${i.id}` : `call-${i.call_id}`
   }
 
+  // Refetch the latest page (no cursor) and merge anything new into the
+  // existing list. Used by the live SSE subscriber when a webhook for this
+  // contact lands while the dialog is open. Returns the count of new items
+  // so the caller can scroll-to-bottom only when something actually changed.
+  async function refreshLatest(): Promise<{ added: number }> {
+    if (!externalNumber.value) return { added: 0 }
+    try {
+      const data = await fetchPage(null)
+      if (!data) return { added: 0 }
+      const existingKeys = new Set(items.value.map(itemKey))
+      const fresh = data.items.filter(i => !existingKeys.has(itemKey(i)))
+      if (fresh.length === 0) return { added: 0 }
+      // Response is ASC; new items are at the tail of that batch and
+      // chronologically newer than anything we've got, so append.
+      items.value = [...items.value, ...fresh]
+      textCount.value = messages.value.filter(m => !!m.body).length
+      // Refresh agent surface in case a new sender just appeared.
+      if (data.agents) agents.value = data.agents
+      if (data.primary_agent !== undefined) primaryAgent.value = data.primary_agent ?? null
+      return { added: fresh.length }
+    } catch {
+      return { added: 0 }
+    }
+  }
+
   return {
     items,
     messages,
@@ -186,5 +211,6 @@ export function useSmsThread(externalNumber: Ref<string>) {
     isStatusOnly,
     loadInitial,
     loadOlder,
+    refreshLatest,
   }
 }

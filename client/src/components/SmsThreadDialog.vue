@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { formatPhone, fmtTalkSec, BUCKET_META, type CallBucket } from '@/lib/callBuckets'
 import { useSmsThread, type ThreadSms, type ThreadCall, type ThreadItem } from '@/composables/useSmsThread'
 import { useAuthStore } from '@/stores/auth'
+import { useDialpadLive } from '@/lib/dialpadLive'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 
 interface Props {
@@ -40,8 +41,22 @@ const {
   items, messages, hasMore, loading, loadingOlder, error,
   isEmpty, isStatusOnly, textCount,
   agents, primaryAgent,
-  loadInitial, loadOlder,
+  loadInitial, loadOlder, refreshLatest,
 } = useSmsThread(externalNumberRef)
+
+// ─── Live updates via SSE ───────────────────────────────────
+// Subscribes to the singleton Dialpad event stream. When a webhook lands
+// for this thread's external_number, debounced refreshLatest() pulls the
+// new SMS / call-record into the timeline so the dialog stays current
+// without a manual refresh.
+const live = useDialpadLive()
+let liveDebounce: ReturnType<typeof setTimeout> | null = null
+let lastSeenLiveId = 0
+
+function digitsLast10(s: string | null | undefined): string {
+  return (s || '').replace(/\D/g, '').slice(-10)
+}
+const myDigits = computed(() => digitsLast10(props.externalNumber))
 
 // ─── Filter pills (ALL / SMS / CALL) ───────────────────────
 // Client-side filter on the unified item stream. Composer + sender stay
@@ -133,7 +148,9 @@ const virtualizer = computed(() =>
   useVirtualizer({
     count: rows.value.length,
     getScrollElement: () => scrollEl.value,
-    estimateSize: () => 56,
+    // Estimate covers a typical SMS bubble or a collapsed call card. Real
+    // heights are measured via measureElement so this is just the seed.
+    estimateSize: () => 64,
     overscan: 12,
     getItemKey: (i: number) => rows.value[i]?.key ?? i,
   }),
@@ -199,6 +216,44 @@ watch(() => [props.open, props.externalNumber], async ([open]) => {
 // (network race). Without this, a fresh thread could land on the wrong line.
 watch(primaryAgent, () => {
   if (props.open && sendersLoaded.value) resolveDefaultSender()
+})
+
+// Live-update subscriber. We watch the singleton SSE events ref; whenever a
+// new event for this contact arrives we debounce a refreshLatest() so a
+// burst (call ringing → connected → ended) only triggers one fetch.
+watch(() => live.events.value, (evs) => {
+  if (!props.open || !myDigits.value) return
+  // Find any genuinely-new event for this thread (id > last seen, digits
+  // suffix matches our external_number). The events ref is module-level
+  // and shared with the Live Activity panel — multiple threads watching
+  // it is fine, each filters down to its own contact.
+  let matched = false
+  let highestId = lastSeenLiveId
+  for (const e of evs) {
+    if (e.id <= lastSeenLiveId) continue
+    if (e.id > highestId) highestId = e.id
+    if (digitsLast10(e.external_number) === myDigits.value) matched = true
+  }
+  lastSeenLiveId = highestId
+  if (!matched) return
+  if (liveDebounce) clearTimeout(liveDebounce)
+  liveDebounce = setTimeout(async () => {
+    const { added } = await refreshLatest()
+    if (added <= 0) return
+    // Auto-scroll to bottom only if the user was already near the end.
+    // Reading older history shouldn't get yanked back down on every reply.
+    const el = scrollEl.value
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+    const wasAtBottom = distanceFromBottom < 120
+    await nextTick()
+    await nextTick()
+    if (wasAtBottom) el.scrollTop = el.scrollHeight
+  }, 500)
+}, { deep: false })
+
+onBeforeUnmount(() => {
+  if (liveDebounce) clearTimeout(liveDebounce)
 })
 
 // ─── Load older when the user scrolls near the top ─────────
@@ -316,39 +371,56 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
 
 <template>
   <Teleport to="body">
+    <!-- Mobile backdrop — dims behind, click to close. Hidden on sm+ so
+         desktop becomes a right-side drawer that doesn't block the rest of
+         the app (worker can keep clicking around while a thread is open). -->
     <Transition
-      enter-active-class="transition-all duration-200 ease-out motion-reduce:transition-none"
+      enter-active-class="transition-opacity duration-200 ease-out motion-reduce:transition-none"
       enter-from-class="opacity-0"
       enter-to-class="opacity-100"
-      leave-active-class="transition-all duration-150 ease-in motion-reduce:transition-none"
+      leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
       leave-from-class="opacity-100"
       leave-to-class="opacity-0"
     >
       <div
         v-if="open"
-        class="fixed inset-0 z-[120] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-md"
-        @click.self="close"
+        class="fixed inset-0 z-[119] bg-black/40 backdrop-blur-md sm:hidden"
+        aria-hidden="true"
+        @click="close"
+      />
+    </Transition>
+
+    <Transition
+      appear
+      enter-active-class="transition-transform duration-300 ease-out motion-reduce:transition-none"
+      enter-from-class="translate-y-full sm:translate-y-0 sm:translate-x-full"
+      enter-to-class="translate-y-0 sm:translate-x-0"
+      leave-active-class="transition-transform duration-250 ease-in motion-reduce:transition-none"
+      leave-from-class="translate-y-0 sm:translate-x-0"
+      leave-to-class="translate-y-full sm:translate-y-0 sm:translate-x-full"
+    >
+      <!-- Drawer panel.
+           Mobile: bottom sheet at 92dvh (dynamic viewport height — handles
+           keyboard show/hide on iOS without the layout breaking).
+           Desktop: fixed right-side drawer, full screen height, no backdrop
+           dim so the rest of the app stays usable. -->
+      <div
+        v-if="open"
+        class="
+          fixed z-[120]
+          inset-x-0 bottom-0 max-h-[92dvh] h-[92dvh] rounded-t-3xl
+          sm:inset-x-auto sm:inset-y-0 sm:right-0 sm:top-0 sm:bottom-0
+          sm:w-[440px] sm:max-w-[90vw] sm:h-dvh sm:max-h-dvh
+          sm:rounded-none sm:border-l sm:border-foreground/10
+          flex flex-col overflow-hidden
+          bg-card/95 supports-[backdrop-filter]:bg-card/85 backdrop-blur-xl
+          shadow-2xl shadow-black/30
+          ring-1 ring-foreground/5
+          motion-reduce:transition-none
+        "
+        role="dialog"
+        :aria-label="`Conversation with ${headerTitle}`"
       >
-        <Transition
-          appear
-          enter-active-class="transition-transform duration-300 ease-out motion-reduce:transition-none"
-          enter-from-class="translate-y-6 sm:translate-y-2 opacity-0"
-          enter-to-class="translate-y-0 opacity-100"
-          leave-active-class="transition-transform duration-200 ease-in motion-reduce:transition-none"
-          leave-from-class="translate-y-0 opacity-100"
-          leave-to-class="translate-y-6 sm:translate-y-2 opacity-0"
-        >
-          <div
-            v-if="open"
-            class="
-              relative flex flex-col overflow-hidden
-              w-full h-[92vh] rounded-t-3xl
-              sm:w-[440px] sm:h-[82vh] sm:rounded-3xl
-              bg-card/95 supports-[backdrop-filter]:bg-card/85 backdrop-blur-2xl
-              shadow-2xl shadow-black/30
-              ring-1 ring-foreground/5
-            "
-          >
             <!-- Drag handle (mobile) -->
             <div class="sm:hidden flex justify-center pt-2 pb-0.5 select-none">
               <div class="w-10 h-1 rounded-full bg-foreground/15" />
@@ -751,8 +823,6 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 No Dialpad senders cached yet — open Compose to refresh the directory.
               </p>
             </footer>
-          </div>
-        </Transition>
       </div>
     </Transition>
   </Teleport>
