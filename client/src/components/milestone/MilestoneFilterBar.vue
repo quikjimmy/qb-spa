@@ -26,6 +26,11 @@ const props = defineProps<{
   filters: FilterDef[]
   /** Show Reset button when ANY filter differs from its defaultValue. */
   showReset?: boolean
+  /** Additional active signal — e.g. "the date preset isn't the default"
+   *  or "the bizDays toggle is on". Adds an OR to the visibility of the
+   *  Reset button so the parent can scope the master reset wider than
+   *  just the dropdown filters. */
+  extraActive?: boolean
 }>()
 const emit = defineEmits<{
   update: [key: string, value: string]
@@ -33,6 +38,7 @@ const emit = defineEmits<{
 }>()
 
 const anyActive = computed(() =>
+  props.extraActive === true ||
   props.filters.some(f => f.value !== '' && f.value !== (f.defaultValue ?? ''))
 )
 
