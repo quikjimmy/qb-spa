@@ -9,6 +9,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { arrivyConfigured, getArrivyTask, getArrivyTaskFiles, ArrivyApiError, type ArrivyFile, type ArrivyTask } from '../lib/arrivy'
+import { syncArrivyUsers } from '../lib/arrivyUsersSync'
 import { notifyPcOfSurveyCancel } from '../lib/notify'
 
 const router = Router()
@@ -203,6 +204,31 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
       cancelledTaskRids: Object.keys(cancelledTaskInfo),
       cancelledTaskInfo,
     })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+// GET /api/field/arrivy-users — list the locally-cached Arrivy roster.
+// Used by the admin tooling + a Comms Hub badge legend.
+router.get('/arrivy-users', (_req: Request, res: Response): void => {
+  const rows = db.prepare(
+    `SELECT arrivy_id, name, email, role, raw_phone, phone_canonical, is_active, last_synced_at
+     FROM arrivy_users ORDER BY is_active DESC, name COLLATE NOCASE ASC`
+  ).all()
+  res.json({ rows })
+})
+
+// POST /api/field/arrivy-users/sync — on-demand sync trigger. Useful to
+// verify the env vars are set without waiting for the hourly cron.
+router.post('/arrivy-users/sync', async (_req: Request, res: Response): Promise<void> => {
+  if (!arrivyConfigured()) {
+    res.status(400).json({ error: 'Arrivy not configured (ARRIVY_AUTH_KEY / ARRIVY_AUTH_TOKEN env vars missing)' })
+    return
+  }
+  try {
+    const r = await syncArrivyUsers()
+    res.json({ ok: true, ...r })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }

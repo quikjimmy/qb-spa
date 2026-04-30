@@ -39,6 +39,7 @@ import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
+import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -122,4 +123,5 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
   try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
+  try { startArrivyUsersScheduler() } catch (e) { console.error('[startup] arrivy users scheduler failed:', e) }
 })

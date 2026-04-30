@@ -5,7 +5,10 @@
 // Optional override:
 //   ARRIVY_API_BASE      (defaults to https://www.arrivy.com/api)
 
-const BASE = process.env['ARRIVY_API_BASE'] || 'https://www.arrivy.com/api'
+// Default base verified against the existing Site Survey Review Bot spec
+// (context-files/full-backup-2026-03-31/workspace/knowledge/site-survey-bot-spec.md).
+// Override via ARRIVY_API_BASE env var if Arrivy ever shifts.
+const BASE = process.env['ARRIVY_API_BASE'] || 'https://app.arrivy.com/api'
 
 interface ArrivyHeaders {
   'X-Auth-Key': string
@@ -99,4 +102,44 @@ export function getArrivyTaskFiles(externalId: string): Promise<ArrivyFile[]> {
  *  with photos that were attached to specific status changes. */
 export function getArrivyTaskStatuses(externalId: string): Promise<unknown[]> {
   return arrivyGet<unknown[]>(`/tasks/${encodeURIComponent(externalId)}/statuses`)
+}
+
+// ─── Users / crew ─────────────────────────────────────────────────────
+//
+// Arrivy returns crew members from /users (legacy) or /team_members on
+// some account tiers. Shapes vary slightly — we keep the union of the
+// fields we use across both. The sync job in lib/arrivyUsersSync.ts
+// pages through results and mirrors them into the local arrivy_users
+// table for fast joins (e.g. "is this inbound caller a crew member?").
+
+export interface ArrivyUser {
+  id?: string | number
+  external_id?: string
+  name?: string
+  first_name?: string
+  last_name?: string
+  email?: string
+  phone?: string
+  mobile_number?: string
+  cell_phone?: string
+  type?: string         // "TECHNICIAN", "DISPATCHER", "ADMIN", etc.
+  role?: string
+  is_active?: boolean
+  is_disabled?: boolean
+  // Free-form bag — Arrivy returns lots of optional metadata.
+  [k: string]: unknown
+}
+
+export async function getArrivyUsers(): Promise<ArrivyUser[]> {
+  // Arrivy's /users endpoint paginates via ?page=N (older accounts) OR
+  // returns a flat list (newer accounts). We try the simple form first
+  // and fall back to /team_members on 404.
+  try {
+    return await arrivyGet<ArrivyUser[]>('/users')
+  } catch (e) {
+    if (e instanceof ArrivyApiError && e.status === 404) {
+      return await arrivyGet<ArrivyUser[]>('/team_members')
+    }
+    throw e
+  }
 }

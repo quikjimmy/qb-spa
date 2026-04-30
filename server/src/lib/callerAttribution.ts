@@ -1,0 +1,121 @@
+// Inbound-call attribution: given one-or-many phone numbers, classify
+// each as 'crew' (Arrivy field member), 'internal' (Arrivy office /
+// qb-spa user), or 'external' (likely customer). Used to colour-code
+// comms entries in Comms Hub + per-project Communications.
+
+import db from '../db'
+import { canonicalPhone } from './phone'
+
+export type CallerKind = 'crew' | 'internal' | 'external'
+
+export interface CallerInfo {
+  kind: CallerKind
+  /** Display name (Arrivy crew name or qb-spa user full_name). */
+  name: string | null
+  /** Arrivy role / type when matched against arrivy_users. */
+  role: string | null
+  /** Source of the match — useful for debugging unexpected attributions. */
+  source: 'arrivy' | 'app_user' | null
+}
+
+const FIELD_ROLE_RX = /tech|crew|field|installer|surveyor|driver/i
+
+function classifyByRole(role: string | null): CallerKind {
+  if (!role) return 'crew'
+  return FIELD_ROLE_RX.test(role) ? 'crew' : 'internal'
+}
+
+/** Bulk-lookup. Pass an array of raw phone strings; returns a Map keyed
+ *  by the canonical phone with the matched caller info. Numbers with
+ *  no match are simply absent — callers can default to 'external'. */
+export function lookupCallers(rawPhones: Array<string | null | undefined>): Map<string, CallerInfo> {
+  const out = new Map<string, CallerInfo>()
+  const canonicals = [...new Set(
+    rawPhones.map(p => canonicalPhone(p)).filter(Boolean)
+  )]
+  if (canonicals.length === 0) return out
+
+  const placeholders = canonicals.map(() => '?').join(',')
+
+  // Arrivy crew first — the more specific source.
+  const arrivyRows = db.prepare(
+    `SELECT phone_canonical, name, role FROM arrivy_users WHERE phone_canonical IN (${placeholders})`
+  ).all(...canonicals) as Array<{ phone_canonical: string; name: string | null; role: string | null }>
+  for (const r of arrivyRows) {
+    if (!r.phone_canonical) continue
+    out.set(r.phone_canonical, {
+      kind: classifyByRole(r.role),
+      name: r.name,
+      role: r.role,
+      source: 'arrivy',
+    })
+  }
+
+  // qb-spa users — fill in any phones Arrivy didn't claim.
+  const remaining = canonicals.filter(c => !out.has(c))
+  if (remaining.length > 0) {
+    // The users table stores primary_phone in raw human format; we
+    // normalize on read with a small helper since SQLite lacks a
+    // built-in regex-replace. Pull all candidate users with non-null
+    // primary_phone and filter in JS — the user count is small.
+    const candidatePhs = remaining
+    const userRows = db.prepare(
+      `SELECT id, full_name, primary_phone FROM users WHERE primary_phone IS NOT NULL AND primary_phone != ''`
+    ).all() as Array<{ id: number; full_name: string | null; primary_phone: string | null }>
+    const userByPhone = new Map<string, { name: string | null }>()
+    for (const u of userRows) {
+      const c = canonicalPhone(u.primary_phone)
+      if (c) userByPhone.set(c, { name: u.full_name })
+    }
+    for (const c of candidatePhs) {
+      const u = userByPhone.get(c)
+      if (!u) continue
+      out.set(c, { kind: 'internal', name: u.name, role: 'app user', source: 'app_user' })
+    }
+  }
+
+  return out
+}
+
+/** Single-shot convenience wrapper. Returns null when no match found
+ *  (callers typically treat that as 'external'). */
+export function lookupCaller(rawPhone: string | null | undefined): CallerInfo | null {
+  const m = lookupCallers([rawPhone])
+  const c = canonicalPhone(rawPhone)
+  return m.get(c) ?? null
+}
+
+/** Decorate an array of comms items in-place with a `caller_kind` and
+ *  `caller_name` field. Picks the right phone for inbound vs outbound:
+ *  inbound  → from_number / external_number  (the *other party*)
+ *  outbound → to_number   / external_number  (the *other party*)
+ *  Anything we can't classify gets caller_kind='external'. */
+export function decorateCommsItems<T extends Record<string, unknown>>(items: T[]): T[] {
+  // Collect every candidate phone in a single bulk lookup.
+  const phones: string[] = []
+  for (const it of items) {
+    const dir = String(it['direction'] ?? '').toLowerCase()
+    const ext = String(it['external_number'] ?? '')
+    const from = String(it['from_number'] ?? '')
+    const to = String(it['to_number'] ?? '')
+    // For inbound, the other party is the from-number; for outbound
+    // it's the to-number. external_number is provided by Dialpad as
+    // "the non-Dialpad side" and is the most reliable when present.
+    if (ext) phones.push(ext)
+    else if (dir === 'inbound' || dir === 'in') phones.push(from)
+    else phones.push(to)
+  }
+  const lookup = lookupCallers(phones)
+  for (const it of items) {
+    const dir = String(it['direction'] ?? '').toLowerCase()
+    const ext = String(it['external_number'] ?? '')
+    const from = String(it['from_number'] ?? '')
+    const to = String(it['to_number'] ?? '')
+    const phone = ext || ((dir === 'inbound' || dir === 'in') ? from : to)
+    const info = lookup.get(canonicalPhone(phone))
+    ;(it as Record<string, unknown>)['caller_kind'] = info?.kind ?? 'external'
+    if (info?.name) (it as Record<string, unknown>)['caller_name'] = info.name
+    if (info?.role) (it as Record<string, unknown>)['caller_role'] = info.role
+  }
+  return items
+}

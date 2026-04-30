@@ -4,6 +4,7 @@ import db from '../db'
 import { encryptSecret, decryptSecret, previewSecret } from '../lib/crypto'
 import { loadDialpadConfig, runStatsExport, fetchSmsRecords, DialpadError, type CsvRow } from '../lib/dialpad'
 import { attachSseStream, type DialpadEvent } from '../lib/dialpadEvents'
+import { decorateCommsItems } from '../lib/callerAttribution'
 
 const router = Router()
 
@@ -1430,6 +1431,9 @@ router.get('/events/recent', (req: Request, res: Response): void => {
      ORDER BY e.id DESC
      LIMIT ?`
   ).all(userId, userId, sinceId, limit) as Array<DialpadEvent & { is_read: number }>
+  // Tag each row with caller_kind so the live panel + Comms Hub can
+  // colour-code internal/crew vs. external (customer) interactions.
+  decorateCommsItems(rows as unknown as Array<Record<string, unknown>>)
   res.json({ rows, limit, since_id: sinceId })
 })
 

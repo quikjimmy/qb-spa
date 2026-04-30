@@ -324,11 +324,18 @@ interface PhotoEntry {
   filename: string
 }
 
+interface CancellationDetail {
+  reason: string | null
+  notes: string | null
+  customerNotes: string | null
+}
+
 interface PhotoState {
   loading: boolean
   configured: boolean
   error: string
   photos: PhotoEntry[]
+  cancellation: CancellationDetail | null
 }
 
 const expandedRid = ref<string | null>(null)
@@ -407,21 +414,27 @@ async function fetchPhotos(t: TaskItem) {
   const arrivyId = arrivyIdFromUrl(t.taskUrl)
   if (!arrivyId) return
   if (photoCache.value[t.rid]) return
-  photoCache.value = { ...photoCache.value, [t.rid]: { loading: true, configured: true, error: '', photos: [] } }
+  photoCache.value = { ...photoCache.value, [t.rid]: { loading: true, configured: true, error: '', photos: [], cancellation: null } }
   try {
     const res = await fetch(`/api/field/arrivy-task/${encodeURIComponent(arrivyId)}`, {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const json = await res.json() as { configured: boolean; photos: PhotoEntry[] }
+    const json = await res.json() as { configured: boolean; photos: PhotoEntry[]; cancellation?: CancellationDetail | null }
     photoCache.value = {
       ...photoCache.value,
-      [t.rid]: { loading: false, configured: json.configured, error: '', photos: json.photos || [] },
+      [t.rid]: {
+        loading: false,
+        configured: json.configured,
+        error: '',
+        photos: json.photos || [],
+        cancellation: json.cancellation ?? null,
+      },
     }
   } catch (e) {
     photoCache.value = {
       ...photoCache.value,
-      [t.rid]: { loading: false, configured: true, error: e instanceof Error ? e.message : String(e), photos: [] },
+      [t.rid]: { loading: false, configured: true, error: e instanceof Error ? e.message : String(e), photos: [], cancellation: null },
     }
   }
 }
@@ -653,6 +666,29 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                       </div>
                     </li>
                   </ol>
+
+                  <!-- Cancellation reason / notes pulled from Arrivy's
+                       REST API. QB's mirror doesn't carry these free-text
+                       fields, so they only appear once the env-driven
+                       /api/field/arrivy-task call resolves. Hidden when
+                       no reason/notes are set. -->
+                  <div
+                    v-if="photoCache[t.rid]?.cancellation && (photoCache[t.rid]!.cancellation!.reason || photoCache[t.rid]!.cancellation!.notes || photoCache[t.rid]!.cancellation!.customerNotes)"
+                    class="mt-2.5 rounded-md bg-rose-50 ring-1 ring-rose-100 px-2.5 py-2 space-y-1.5"
+                  >
+                    <div v-if="photoCache[t.rid]!.cancellation!.reason" class="text-[12px] text-slate-800 leading-snug">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-rose-700/80 mr-1">Reason</span>
+                      {{ photoCache[t.rid]!.cancellation!.reason }}
+                    </div>
+                    <div v-if="photoCache[t.rid]!.cancellation!.notes" class="text-[12px] text-slate-800 leading-snug">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-rose-700/80 mr-1">Notes</span>
+                      {{ photoCache[t.rid]!.cancellation!.notes }}
+                    </div>
+                    <div v-if="photoCache[t.rid]!.cancellation!.customerNotes" class="text-[12px] text-slate-800 leading-snug">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-rose-700/80 mr-1">Customer</span>
+                      {{ photoCache[t.rid]!.cancellation!.customerNotes }}
+                    </div>
+                  </div>
 
                   <!-- Inline photos pulled directly from Arrivy's REST API
                        (server-side proxy uses ARRIVY_AUTH_KEY/_TOKEN env

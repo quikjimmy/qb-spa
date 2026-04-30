@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { decorateCommsItems } from '../lib/callerAttribution'
 
 const router = Router()
 
@@ -920,6 +921,11 @@ router.get('/comms', (req: Request, res: Response): void => {
     .sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
     .slice(0, limit)
     .reverse()
+
+  // Tag each item with caller_kind ('crew' | 'internal' | 'external')
+  // by joining the non-Dialpad number against arrivy_users + qb-spa
+  // users. Decorate is idempotent and writes onto the same objects.
+  decorateCommsItems(items)
 
   res.json({
     project: project || { record_id: projectId },

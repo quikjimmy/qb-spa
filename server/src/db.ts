@@ -186,6 +186,29 @@ db.exec(`
   )
 `)
 
+// --- Arrivy users (crew + dispatchers) ---
+// Mirrored hourly from the Arrivy REST API (lib/arrivyUsersSync.ts).
+// Used for inbound-call attribution: when a Dialpad event comes in with
+// an external_number, we look it up here to tag the caller as a crew
+// member or internal user. phone_canonical is normalized E.164-ish
+// digits-only for the join. Source of truth = Arrivy; we re-sync the
+// full set on each tick (it's small).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS arrivy_users (
+    arrivy_id TEXT PRIMARY KEY,
+    name TEXT,
+    email TEXT,
+    role TEXT,
+    raw_phone TEXT,
+    phone_canonical TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    raw_json TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_arrivy_users_phone ON arrivy_users(phone_canonical)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_arrivy_users_email ON arrivy_users(email)`)
+
 // --- Notifications ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS notifications (

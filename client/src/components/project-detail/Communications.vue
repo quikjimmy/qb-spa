@@ -17,6 +17,19 @@ interface CommItem {
   user_name?: string | null
   message_status?: string | null
   voicemail_url?: string | null
+  // Server-decorated attribution: 'crew' (Arrivy field member),
+  // 'internal' (Arrivy office / qb-spa user), 'external' (likely
+  // customer). Drives the small chip rendered in the row header.
+  caller_kind?: 'crew' | 'internal' | 'external'
+  caller_name?: string | null
+  caller_role?: string | null
+}
+
+// Tone + label per attribution. External = no chip (default state).
+const callerChip: Record<string, { label: string; cls: string } | null> = {
+  crew:     { label: 'Crew',     cls: 'bg-teal-100 text-teal-800' },
+  internal: { label: 'Internal', cls: 'bg-indigo-100 text-indigo-800' },
+  external: null,
 }
 
 const props = defineProps<{ items: CommItem[] }>()
@@ -89,8 +102,16 @@ function fmtDuration(ms?: number | null): string {
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-1.5 flex-wrap">
             <span class="text-[13px] font-medium text-slate-900 truncate">
-              {{ c.contact_name || c.from_number || c.to_number || '—' }}
+              {{ c.caller_name || c.contact_name || c.from_number || c.to_number || '—' }}
             </span>
+            <!-- Attribution chip: crew vs. internal. External is implicit
+                 (no chip = the customer or unknown party). -->
+            <span
+              v-if="c.caller_kind && callerChip[c.caller_kind]"
+              class="text-[10px] font-semibold px-1.5 py-[1px] rounded-full uppercase tracking-wide"
+              :class="callerChip[c.caller_kind]!.cls"
+              :title="c.caller_role ? `${callerChip[c.caller_kind]!.label} · ${c.caller_role}` : callerChip[c.caller_kind]!.label"
+            >{{ callerChip[c.caller_kind]!.label }}</span>
             <span class="text-[11px] text-slate-500">
               {{ c.type === 'call'
                 ? (c.direction === 'inbound' || c.direction === 'in' ? 'Incoming' : 'Outgoing')
