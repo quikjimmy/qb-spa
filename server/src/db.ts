@@ -186,6 +186,30 @@ db.exec(`
   )
 `)
 
+// --- Arrivy webhook events ---
+// Public ingest — every POST hitting /api/webhooks/arrivy is recorded
+// raw here BEFORE dispatch, so we can replay or forensically inspect
+// any event Arrivy sent us. Dispatcher reads task_id / event_type from
+// the parsed payload but the source-of-truth raw_json is preserved.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS arrivy_webhook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT,
+    sub_status TEXT,
+    arrivy_task_id TEXT,
+    project_rid INTEGER,
+    customer_name TEXT,
+    raw_json TEXT NOT NULL,
+    signature_ok INTEGER,
+    dispatched_at TEXT,
+    dispatch_error TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_arrivy_wh_received ON arrivy_webhook_events(received_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_arrivy_wh_task ON arrivy_webhook_events(arrivy_task_id, received_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_arrivy_wh_type ON arrivy_webhook_events(event_type, received_at DESC)`)
+
 // --- Arrivy users (crew + dispatchers) ---
 // Mirrored hourly from the Arrivy REST API (lib/arrivyUsersSync.ts).
 // Used for inbound-call attribution: when a Dialpad event comes in with

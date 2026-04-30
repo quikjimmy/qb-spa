@@ -33,6 +33,7 @@ import { agentLabRouter } from './routes/agent-lab'
 import { agentApprovalsRouter } from './routes/agent-approvals'
 import { dialpadRouter } from './routes/dialpad'
 import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
+import { arrivyWebhookRouter, arrivyWebhookAdminRouter } from './routes/arrivy-webhooks'
 import { fieldRouter } from './routes/field'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
@@ -66,6 +67,11 @@ app.use('/api/auth', authRouter)
 // Dialpad webhook ingest — PUBLIC (signed with per-org HMAC). Mounted before
 // the authenticate middleware so Dialpad can POST without a portal JWT.
 app.use('/api/webhooks/dialpad', dialpadWebhookRouter)
+// Arrivy ingest (POST /api/webhooks/arrivy) — public, optional shared
+// secret via ARRIVY_WEBHOOK_SECRET env var. Admin GET /api/field/webhooks/recent
+// (auth-protected) lists recent ingests for forensics.
+app.use('/api/webhooks', arrivyWebhookRouter)
+app.use('/api/field/webhooks', authenticate, arrivyWebhookAdminRouter)
 
 // Protected routes — require JWT
 app.use('/api/qb', authenticate, qbRouter)
