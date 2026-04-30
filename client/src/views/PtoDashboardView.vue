@@ -12,6 +12,7 @@ import { BarChart, BoxplotChart, ScatterChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/MilestoneDecileTable.vue'
+import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
 
 use([CanvasRenderer, BarChart, BoxplotChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -117,6 +118,18 @@ async function loadData() {
 }
 
 function sf(k: string, v: string) { const val = v === '__all__' ? '' : v; if (k === 'state') fState.value = val; else if (k === 'lender') fLender.value = val; else if (k === 'epc') fEpc.value = val; else if (k === 'nem_user') fNemUser.value = val; loadData() }
+
+// Filter defs for the shared MilestoneFilterBar — order matches the
+// canonical milestone set (EPC → Lender → State → …) with PTO's
+// extra NEM User dropdown appended. Always-visible dimension labels
+// come from MilestoneFilterBar's trigger.
+const filterDefs = computed<FilterDef[]>(() => [
+  { key: 'epc',      placeholder: 'EPC',    allLabel: 'All EPCs',  options: filterOptions.value.epcs     || [], value: fEpc.value,    defaultValue: 'Kin Home' },
+  { key: 'lender',   placeholder: 'Lender',                        options: filterOptions.value.lenders  || [], value: fLender.value },
+  { key: 'state',    placeholder: 'State',                         options: filterOptions.value.states   || [], value: fState.value },
+  { key: 'nem_user', placeholder: 'User',   allLabel: 'All Users', options: filterOptions.value.nemUsers || [], value: fNemUser.value },
+])
+const filterExtraActive = computed(() => datePreset.value !== 'last_30' || useBizDays.value)
 
 const hasActiveFilters = computed(() => fState.value || fLender.value || fNemUser.value || fEpc.value !== 'Kin Home' || datePreset.value !== 'last_30' || useBizDays.value)
 
@@ -254,14 +267,15 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
       </div>
     </div>
 
-    <!-- Filters -->
-    <div class="flex gap-1.5 flex-wrap items-center">
-      <Select :model-value="fEpc || '__all__'" @update:model-value="(v: string) => sf('epc', v)"><SelectTrigger class="h-7 w-auto text-[11px]"><SelectValue placeholder="EPC" /></SelectTrigger><SelectContent><SelectItem value="__all__">All EPCs</SelectItem><SelectItem v-for="e in filterOptions.epcs" :key="e" :value="e">{{ e }}</SelectItem></SelectContent></Select>
-      <Select :model-value="fLender || '__all__'" @update:model-value="(v: string) => sf('lender', v)"><SelectTrigger class="h-7 w-auto text-[11px]"><SelectValue placeholder="Lender" /></SelectTrigger><SelectContent><SelectItem value="__all__">All</SelectItem><SelectItem v-for="l in filterOptions.lenders" :key="l" :value="l">{{ l }}</SelectItem></SelectContent></Select>
-      <Select :model-value="fState || '__all__'" @update:model-value="(v: string) => sf('state', v)"><SelectTrigger class="h-7 w-auto text-[11px]"><SelectValue placeholder="State" /></SelectTrigger><SelectContent><SelectItem value="__all__">All</SelectItem><SelectItem v-for="s in filterOptions.states" :key="s" :value="s">{{ s }}</SelectItem></SelectContent></Select>
-      <Select :model-value="fNemUser || '__all__'" @update:model-value="(v: string) => sf('nem_user', v)"><SelectTrigger class="h-7 w-auto text-[11px]"><SelectValue placeholder="User" /></SelectTrigger><SelectContent><SelectItem value="__all__">All Users</SelectItem><SelectItem v-for="n in filterOptions.nemUsers" :key="n" :value="n">{{ n }}</SelectItem></SelectContent></Select>
-      <button v-if="hasActiveFilters" class="text-[11px] text-muted-foreground hover:text-foreground shrink-0" @click="resetAll">Reset</button>
-    </div>
+    <!-- Filters — uses MilestoneFilterBar so each trigger reads as
+         "<TITLE> <Value>" (e.g. "STATE Florida"). Reset clears
+         filters + date preset + biz toggle in one click. -->
+    <MilestoneFilterBar
+      :filters="filterDefs"
+      :extra-active="filterExtraActive"
+      @update="sf"
+      @reset="resetAll"
+    />
 
     <!-- Date + biz/cal -->
     <div class="flex gap-1 items-center overflow-x-auto no-scrollbar">
