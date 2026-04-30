@@ -13,6 +13,8 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import VChart from 'vue-echarts'
 import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/MilestoneDecileTable.vue'
 import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
+import MilestoneProjectsTable, { type ColumnDef } from '@/components/milestone/MilestoneProjectsTable.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 
 use([CanvasRenderer, BarChart, BoxplotChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -140,7 +142,7 @@ async function drill(label: string, pipeline: string) {
   const p = new URLSearchParams({ limit: '200', today: lt() })
   if (fEpc.value) p.set('epc', fEpc.value); if (fState.value) p.set('state', fState.value); if (fLender.value) p.set('lender', fLender.value); p.set('pipeline', pipeline)
   try { drillProjects.value = (await (await fetch(`/api/projects?${p}`, { headers: hdrs() })).json()).projects } finally { drillLoading.value = false }
-  await nextTick(); document.getElementById('drill-list')?.scrollIntoView({ behavior: 'smooth' })
+  await nextTick(); document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
 }
 function closeDrill() { drillLabel.value = ''; drillProjects.value = [] }
 function openProject(rid: number) { window.open(`https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8na/action/dr?rid=${rid}&rl=bzuz`, '_blank') }
@@ -233,6 +235,42 @@ const decileRows      = ref<DecileRow[]>([])
 const decileTotal     = ref<DecileRow | null>(null)
 const decileLoading   = ref(false)
 
+// ── Drill (skinny projects table + lite project dialog) ──
+//
+// Per-page directive: NEED PTO, SLA MISS, STALE tiles drill the new
+// table; chart bars (PTO Submitted, PTO Approved) drill it too.
+const drillColumns: ColumnDef[] = [
+  { key: 'customer_name',     label: 'Customer' },
+  { key: 'state',             label: 'State', width: '60px' },
+  { key: 'install_completed', label: 'Inst Done',  align: 'right' },
+  { key: 'inspection_passed', label: 'Inspx Pass', align: 'right' },
+  { key: 'pto_submitted',     label: 'PTO Sub',    align: 'right' },
+  { key: 'pto_approved',      label: 'PTO Appr',   align: 'right' },
+  { key: 'coordinator',       label: 'PC' },
+]
+const selectedProject = ref<Record<string, unknown> | null>(null)
+
+// SLA Miss / Stale drills consume the analytics-supplied lists
+// (kpi.fireCount and kpi.staleCount drive whether the tiles render).
+// We hand those project arrays straight into the new table without
+// another fetch — they're already in component state from loadData().
+function drillFire() {
+  drillLabel.value = `SLA Miss · ${fireList.value.length}`
+  drillProjects.value = fireList.value as Array<Record<string, unknown>>
+  drillLoading.value = false
+  nextTick().then(() => {
+    document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+  })
+}
+function drillStale() {
+  drillLabel.value = `Stale · ${staleQueue.value.length}`
+  drillProjects.value = staleQueue.value as Array<Record<string, unknown>>
+  drillLoading.value = false
+  nextTick().then(() => {
+    document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+  })
+}
+
 async function loadDeciles() {
   decileLoading.value = true
   try {
@@ -305,12 +343,12 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
         <p class="text-lg sm:text-xl font-extrabold mt-0.5 text-red-600">{{ kpi.needPto?.count ?? 0 }}</p>
         <p class="text-[10px] text-muted-foreground">{{ (kpi.needPto?.kw||0).toLocaleString() }} kW</p>
       </button>
-      <button v-if="kpi.fireCount" class="flex-none rounded-xl px-3 py-2 w-[105px] sm:w-[115px] bg-red-50 hover:shadow-md active:scale-[0.97] text-left" @click="activeTab = 'fire'">
+      <button v-if="kpi.fireCount" class="flex-none rounded-xl px-3 py-2 w-[105px] sm:w-[115px] bg-red-50 hover:shadow-md active:scale-[0.97] text-left" @click="drillFire">
         <div class="h-[3px] rounded-full -mt-0.5 mb-1 bg-red-500" />
         <p class="text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider text-red-600">SLA Miss</p>
         <p class="text-lg sm:text-xl font-extrabold mt-0.5 text-red-600">{{ kpi.fireCount }}</p>
       </button>
-      <button v-if="kpi.staleCount" class="flex-none rounded-xl px-3 py-2 w-[105px] sm:w-[115px] bg-amber-50 hover:shadow-md active:scale-[0.97] text-left" @click="activeTab = 'stale'">
+      <button v-if="kpi.staleCount" class="flex-none rounded-xl px-3 py-2 w-[105px] sm:w-[115px] bg-amber-50 hover:shadow-md active:scale-[0.97] text-left" @click="drillStale">
         <div class="h-[3px] rounded-full -mt-0.5 mb-1 bg-amber-400" />
         <p class="text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider text-amber-600">Stale</p>
         <p class="text-lg sm:text-xl font-extrabold mt-0.5 text-amber-600">{{ kpi.staleCount }}</p>
@@ -486,18 +524,27 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
       </div>
     </template>
 
-    <!-- Drill -->
-    <div v-if="drillLabel" id="drill-list" class="rounded-xl bg-card p-3">
-      <div class="flex items-center justify-between mb-2"><h3 class="text-xs font-semibold">{{ drillLabel }} — {{ drillProjects.length }}</h3><button class="text-[11px] text-muted-foreground" @click="closeDrill">Close</button></div>
-      <div v-if="drillLoading" class="space-y-2"><div v-for="i in 3" :key="i" class="h-10 rounded bg-muted/50 animate-pulse" /></div>
-      <div v-else class="space-y-1">
-        <div v-for="p in drillProjects" :key="(p as any).record_id" class="rounded-lg border-l-[3px] border border-border bg-background px-3 py-2 cursor-pointer hover:bg-muted/30" :class="getStatusConfig((p as any).status).border" @click="openProject((p as any).record_id)">
-          <p class="text-sm font-semibold truncate">{{ (p as any).customer_name }}</p>
-          <div class="flex gap-3 mt-0.5 text-[11px] text-muted-foreground"><span v-if="(p as any).coordinator">{{ (p as any).coordinator }}</span><span v-if="(p as any).inspection_passed">Insp: {{ fmtDate((p as any).inspection_passed) }}</span><span v-if="(p as any).pto_submitted">Sub: {{ fmtDate((p as any).pto_submitted) }}</span></div>
-        </div>
-      </div>
-    </div>
+    <!-- Drill table — same shape as Inspection. Tile clicks (Need PTO,
+         SLA Miss, Stale) and chart-bar clicks (PTO Submitted, PTO
+         Approved) all populate this. Row click opens the lite
+         ProjectDetailDialog. -->
+    <MilestoneProjectsTable
+      v-if="drillLabel"
+      :title="drillLabel"
+      :columns="drillColumns"
+      :projects="drillProjects as Array<Record<string, unknown> & { record_id: number; customer_name: string }>"
+      :loading="drillLoading"
+      @select="(p) => (selectedProject = p)"
+      @close="closeDrill"
+    />
   </div>
+
+  <!-- Lite project view — slides in over the milestone page. Closing
+       returns to the table so the user keeps their cohort context. -->
+  <ProjectDetailDialog
+    :project="selectedProject"
+    @update:open="(v) => { if (!v) selectedProject = null }"
+  />
 </template>
 
 <style scoped>

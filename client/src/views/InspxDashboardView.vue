@@ -17,7 +17,8 @@ import MilestoneShell from '@/components/milestone/MilestoneShell.vue'
 import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
 import MilestoneDatePresetBar from '@/components/milestone/MilestoneDatePresetBar.vue'
 import MilestoneKpiStrip from '@/components/milestone/MilestoneKpiStrip.vue'
-import MilestoneDrillList, { type MetaField } from '@/components/milestone/MilestoneDrillList.vue'
+import MilestoneProjectsTable, { type ColumnDef } from '@/components/milestone/MilestoneProjectsTable.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/MilestoneDecileTable.vue'
 
 use([CanvasRenderer, BarChart, BoxplotChart, GridComponent, TooltipComponent, LegendComponent])
@@ -131,39 +132,62 @@ function onDateChange(payload: { preset: string; from: string; to: string; bizDa
 const dayUnit = computed(() => useBizDays.value ? 'biz days' : 'days')
 
 // ── KPI tiles binding ──
+// Per-page directive: only the NEED INSPX tile drills into the new
+// projects table. SINCE INST is informational — no drill.
 const kpiTiles = computed(() => [
   { key: 'scheduled', label: '#Scheduled', value: kpi.value.scheduled ?? 0,                         tone: 'info'    as const },
   { key: 'passed',    label: '#Passed',    value: kpi.value.passed ?? 0,    sub: `${kpi.value.pctPassed ?? 0}% pass`,    tone: 'success' as const },
   { key: 'first',     label: '1st Time',   value: kpi.value.firstTime ?? 0, sub: `${kpi.value.pctFirstTime ?? 0}% rate`, tone: 'teal'    as const },
   { key: 'median',    label: 'Median',     value: `${kpi.value.overallMedian ?? 0}d`, sub: 'inst→inspx',                  tone: 'neutral' as const },
-  { key: 'sinceInst', label: 'Since Inst', value: `${kpi.value.avgDaysSinceInst ?? 0}d`, sub: `avg ${dayUnit.value}`,     tone: 'danger'  as const, drill: true },
+  { key: 'sinceInst', label: 'Since Inst', value: `${kpi.value.avgDaysSinceInst ?? 0}d`, sub: `avg ${dayUnit.value}`,     tone: 'danger'  as const },
   { key: 'needInspx', label: 'Need INSPX', value: kpi.value.needInspx ?? 0,                         tone: 'danger'  as const, drill: true, bg: 'danger-soft' as const },
 ])
 function onKpiDrill(key: string) {
-  if (key === 'sinceInst') drill('Days Since Inst', 'needInspx')
-  else if (key === 'needInspx') drill('Need INSPX', 'needInspx')
+  if (key === 'needInspx') drill('Need INSPX', 'needInspx')
 }
 
-// ── Drill ──
-const drillMeta: MetaField[] = [
-  { field: 'install_completed',     label: 'Inst:'  },
-  { field: 'inspection_scheduled',  label: 'Sched:' },
-  { field: 'inspection_passed',     label: 'Pass:'  },
+// ── Drill (skinny projects table + lite project dialog) ──
+//
+// Inspection-specific column lineup. Customer first (sticky-left
+// on desktop), then the dates that matter for the inspection
+// milestone, ending with the actor (coordinator).
+const drillColumns: ColumnDef[] = [
+  { key: 'customer_name',          label: 'Customer' },
+  { key: 'state',                  label: 'State',     width: '60px' },
+  { key: 'install_completed',      label: 'Inst Done', align: 'right' },
+  { key: 'inspection_scheduled',   label: 'Sched',     align: 'right' },
+  { key: 'inspection_passed',      label: 'Passed',    align: 'right' },
+  { key: 'coordinator',            label: 'PC' },
 ]
+const selectedProject = ref<Record<string, unknown> | null>(null)
+
 async function drill(label: string, pipeline: string) {
   drillLabel.value = label; drillLoading.value = true; drillProjects.value = []
   const p = new URLSearchParams({ limit: '200', today: lt() })
   if (fEpc.value)    p.set('epc', fEpc.value)
   if (fState.value)  p.set('state', fState.value)
   if (fLender.value) p.set('lender', fLender.value)
+  if (fAhj.value)    p.set('ahj', fAhj.value)
+  if (fUtility.value) p.set('utility', fUtility.value)
   p.set('pipeline', pipeline)
   try {
     drillProjects.value = (await (await fetch(`/api/projects?${p}`, { headers: hdrs() })).json()).projects
   } finally { drillLoading.value = false }
   await nextTick()
-  document.getElementById('drill-list')?.scrollIntoView({ behavior: 'smooth' })
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
 }
 function closeDrill() { drillLabel.value = ''; drillProjects.value = [] }
+
+// Chart bar clicks — drill the same pipeline but with a label that
+// names the bar so the user knows which bucket they expanded. Server
+// doesn't support per-bar date-bucket precision yet, so we drill the
+// broader pipeline cohort with the bucket label as context.
+function onPassedBarClick(p: { name: string }) {
+  drill(`#Passed · ${p.name}`, 'needInspx')
+}
+function onSchedBarClick(p: { name: string }) {
+  drill(`#Scheduled · ${p.name}`, 'needInspx')
+}
 
 // ── Charts ──
 const lb = { show: true, fontSize: 9, position: 'top' as const }
@@ -295,15 +319,16 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
       </div>
 
       <template v-else>
-        <!-- Row 1: #Passed + Scheduled on a Day -->
+        <!-- Row 1: #Passed + Scheduled on a Day. Bars are clickable —
+             tap a bucket to drill its projects into the table below. -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div class="rounded-xl bg-card p-3">
             <h3 class="text-xs font-semibold mb-2">#Passed by Month</h3>
-            <VChart :option="passedChart" style="height:180px" autoresize />
+            <VChart :option="passedChart" style="height:180px" autoresize @click="onPassedBarClick" />
           </div>
           <div class="rounded-xl bg-card p-3">
             <h3 class="text-xs font-semibold mb-2">Inspections Scheduled (by booking date)</h3>
-            <VChart :option="schedChart" style="height:180px" autoresize />
+            <VChart :option="schedChart" style="height:180px" autoresize @click="onSchedBarClick" />
           </div>
         </div>
 
@@ -427,14 +452,23 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
     </template>
 
     <template #drill>
-      <MilestoneDrillList
+      <MilestoneProjectsTable
         v-if="drillLabel"
-        :label="drillLabel"
+        :title="drillLabel"
+        :columns="drillColumns"
         :projects="drillProjects"
         :loading="drillLoading"
-        :meta-fields="drillMeta"
+        @select="(p) => (selectedProject = p)"
         @close="closeDrill"
       />
     </template>
   </MilestoneShell>
+
+  <!-- Lite project view — slides in from the right. Closing returns to
+       the drill table so the user keeps their place. "Open full view"
+       on the dialog navigates to /projects/<rid>. -->
+  <ProjectDetailDialog
+    :project="selectedProject"
+    @update:open="(v) => { if (!v) selectedProject = null }"
+  />
 </template>
