@@ -31,9 +31,10 @@ const aging = ref<any[]>([])
 const agingTotal = ref(0); const activeFails = ref(0)
 const outcomesByMonth = ref<any[]>([])
 const scheduledOnDay = ref<any[]>([])
-const filterOptions = ref<{ states: string[]; lenders: string[]; epcs: string[] }>({ states: [], lenders: [], epcs: [] })
+const filterOptions = ref<{ states: string[]; lenders: string[]; epcs: string[]; ahjs: string[]; utilities: string[] }>({ states: [], lenders: [], epcs: [], ahjs: [], utilities: [] })
 
 const fState = ref(''); const fLender = ref(''); const fEpc = ref('Kin Home')
+const fAhj = ref(''); const fUtility = ref('')
 const datePreset = ref('last_30'); const dateFrom = ref(''); const dateTo = ref('')
 const useBizDays = ref(false)
 const drillLabel = ref(''); const drillProjects = ref<any[]>([]); const drillLoading = ref(false)
@@ -44,9 +45,11 @@ function lt() { const n = new Date(); return `${n.getFullYear()}-${String(n.getM
 async function loadData() {
   loading.value = true
   const p = new URLSearchParams({ today: lt() })
-  if (fState.value)  p.set('state', fState.value)
-  if (fLender.value) p.set('lender', fLender.value)
-  if (fEpc.value)    p.set('epc', fEpc.value)
+  if (fState.value)   p.set('state', fState.value)
+  if (fLender.value)  p.set('lender', fLender.value)
+  if (fEpc.value)     p.set('epc', fEpc.value)
+  if (fAhj.value)     p.set('ahj', fAhj.value)
+  if (fUtility.value) p.set('utility', fUtility.value)
   if (dateFrom.value) p.set('date_from', dateFrom.value)
   if (dateTo.value)   p.set('date_to', dateTo.value)
   if (useBizDays.value) p.set('biz_days', '1')
@@ -67,19 +70,26 @@ async function loadData() {
 }
 
 // ── Filter bar binding ──
+// Canonical milestone filter set: EPC, Lender, State, AHJ, Utility.
+// Order is intentional and the same across milestones.
 const filterDefs = computed<FilterDef[]>(() => [
-  { key: 'epc',    placeholder: 'EPC',    allLabel: 'All EPCs', options: filterOptions.value.epcs    || [], value: fEpc.value,    defaultValue: 'Kin Home' },
-  { key: 'lender', placeholder: 'Lender',                       options: filterOptions.value.lenders || [], value: fLender.value },
-  { key: 'state',  placeholder: 'State',                        options: filterOptions.value.states  || [], value: fState.value  },
+  { key: 'epc',     placeholder: 'EPC',     allLabel: 'All EPCs', options: filterOptions.value.epcs      || [], value: fEpc.value,    defaultValue: 'Kin Home' },
+  { key: 'lender',  placeholder: 'Lender',                        options: filterOptions.value.lenders   || [], value: fLender.value  },
+  { key: 'state',   placeholder: 'State',                         options: filterOptions.value.states    || [], value: fState.value   },
+  { key: 'ahj',     placeholder: 'AHJ',                           options: filterOptions.value.ahjs      || [], value: fAhj.value     },
+  { key: 'utility', placeholder: 'Utility',                       options: filterOptions.value.utilities || [], value: fUtility.value },
 ])
 function onFilter(key: string, value: string) {
-  if (key === 'epc')         fEpc.value = value
-  else if (key === 'lender') fLender.value = value
-  else if (key === 'state')  fState.value = value
+  if (key === 'epc')          fEpc.value = value
+  else if (key === 'lender')  fLender.value = value
+  else if (key === 'state')   fState.value = value
+  else if (key === 'ahj')     fAhj.value = value
+  else if (key === 'utility') fUtility.value = value
   loadData()
 }
 function onReset() {
   fState.value = ''; fLender.value = ''; fEpc.value = 'Kin Home'
+  fAhj.value = ''; fUtility.value = ''
   useBizDays.value = false
   drillLabel.value = ''; drillProjects.value = []
   // Reset preset to default range — DatePresetBar's @change wiring
@@ -185,7 +195,29 @@ const outcomesChart = computed(() => {
     ] }
 })
 
-const schedChart = computed(() => ({ tooltip: { trigger: 'axis' as const }, grid: { top: 20, bottom: 5, left: 5, right: 5, containLabel: true }, xAxis: { type: 'category' as const, data: scheduledOnDay.value.map((r: any) => fp(r.day)), axisLabel: { fontSize: 9, rotate: 45 } }, yAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } }, series: [{ type: 'bar' as const, data: scheduledOnDay.value.map((r: any) => r.count), itemStyle: { color: '#8b5cf6', borderRadius: [3,3,0,0] }, label: lb }] }))
+// Booking-date chart — server now buckets weekly when range ≤ 90d,
+// monthly otherwise (same logic as #Passed). r.period carries the
+// bucket key; fp() formats month / day labels appropriately.
+const schedChart = computed(() => ({
+  tooltip: { trigger: 'axis' as const },
+  grid: { top: 20, bottom: 5, left: 5, right: 5, containLabel: true },
+  xAxis: {
+    type: 'category' as const,
+    data: scheduledOnDay.value.map((r: any) => fp(r.period || r.day)),
+    axisLabel: { fontSize: 9, rotate: scheduledOnDay.value.length > 6 ? 45 : 0 },
+  },
+  yAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } },
+  series: [{
+    type: 'bar' as const,
+    data: scheduledOnDay.value.map((r: any) => r.count),
+    itemStyle: { color: '#8b5cf6', borderRadius: [3, 3, 0, 0] },
+    label: lb,
+  }],
+}))
+
+// Slice mirrors the box plot's last 13 months so the mean / % rows
+// underneath line up directly with the box columns.
+const boxSlice = computed(() => instToInspxBoxes.value.slice(-13))
 
 onMounted(() => applyDatePreset('last_30', false))
 </script>
@@ -233,13 +265,33 @@ onMounted(() => applyDatePreset('last_30', false))
           </div>
         </div>
 
-        <!-- Row 2: Install→Inspx box plot -->
+        <!-- Row 2: Install→Inspx box plot + mean / % passed rows -->
         <div class="rounded-xl bg-card p-3">
-          <div class="flex items-center gap-3 mb-2">
-            <h3 class="text-xs font-semibold">Install → Inspection (days)</h3>
-            <span class="text-[10px] text-muted-foreground">Median: {{ kpi.overallMedian }}d</span>
+          <div class="flex items-start justify-between gap-2 mb-2">
+            <div>
+              <h3 class="text-xs font-semibold">Install → Inspection ({{ dayUnit }})</h3>
+              <p class="text-[10px] text-muted-foreground">Median: {{ kpi.overallMedian }}{{ useBizDays ? 'b' : 'd' }} · matched on install month</p>
+            </div>
           </div>
           <VChart :option="boxChart" style="height:220px" autoresize />
+          <!-- Mean ({{ dayUnit }}) + % installs passed inspection per
+               month — matches PTO box plot's footer table. -->
+          <div v-if="boxSlice.length" class="overflow-x-auto no-scrollbar mt-1">
+            <table class="w-full text-[10px]" style="table-layout:fixed">
+              <tbody>
+                <tr>
+                  <td v-for="r in boxSlice" :key="'mean-' + r.month" class="text-center text-red-600 font-bold py-0.5">{{ r.mean ?? '—' }}</td>
+                </tr>
+                <tr>
+                  <td v-for="r in boxSlice" :key="'pct-' + r.month" class="text-center text-muted-foreground py-0.5">{{ r.pctPassed }}%</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="flex gap-4 mt-1 text-[9px] text-muted-foreground">
+              <span class="flex items-center gap-1"><span class="inline-block w-2 h-2 bg-red-500 rotate-45" /> Mean ({{ dayUnit }})</span>
+              <span>% = installs passed inspection that month</span>
+            </div>
+          </div>
         </div>
 
         <!-- Row 3: State table + Aging -->

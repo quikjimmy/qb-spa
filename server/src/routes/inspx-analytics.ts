@@ -125,6 +125,8 @@ router.get('/', (req: Request, res: Response): void => {
   const state = req.query['state'] as string | undefined
   const epc = req.query['epc'] as string | undefined
   const lender = req.query['lender'] as string | undefined
+  const ahj = req.query['ahj'] as string | undefined
+  const utility = req.query['utility'] as string | undefined
   const clientToday = req.query['today'] as string | undefined
   const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
   const dateFrom = req.query['date_from'] as string | undefined
@@ -138,9 +140,11 @@ router.get('/', (req: Request, res: Response): void => {
   // Project-based metrics
   let pBase = "WHERE (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%' OR LOWER(status) LIKE '%complete%')"
   const pP: unknown[] = []
-  if (state) { pBase += ' AND state = ?'; pP.push(state) }
-  if (epc) { pBase += ' AND epc = ?'; pP.push(epc) }
-  if (lender) { pBase += ' AND lender = ?'; pP.push(lender) }
+  if (state)   { pBase += ' AND state = ?';           pP.push(state) }
+  if (epc)     { pBase += ' AND epc = ?';             pP.push(epc) }
+  if (lender)  { pBase += ' AND lender = ?';          pP.push(lender) }
+  if (ahj)     { pBase += ' AND ahj_name = ?';        pP.push(ahj) }
+  if (utility) { pBase += ' AND utility_company = ?'; pP.push(utility) }
 
   // Date-scoped for scheduled/passed counts
   let schedW = `${pBase} AND ${has('inspection_scheduled')}`; const schedP = [...pP]
@@ -178,9 +182,34 @@ router.get('/', (req: Request, res: Response): void => {
   const monthMap = new Map<string, number[]>()
   for (const r of instToInspx) { if (r.days >= 0) { if (!monthMap.has(r.month)) monthMap.set(r.month, []); monthMap.get(r.month)!.push(r.days) } }
   function pct(a: number[], p: number) { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); const i = (p / 100) * (s.length - 1); const l = Math.floor(i); return l === Math.ceil(i) ? s[l]! : Math.round(s[l]! + (s[Math.ceil(i)]! - s[l]!) * (i - l)) }
+  function meanI(a: number[]) { return a.length ? Math.round(a.reduce((s, n) => s + n, 0) / a.length) : 0 }
+
+  // Per-install-month: how many installs in month X have an inspection
+  // passed yet? Drives the % row under the box plot ("% installs from
+  // this month that have passed inspection").
+  const installsByMonth = db.prepare(`
+    SELECT SUBSTR(install_completed,1,7) as month,
+      COUNT(*) as total,
+      SUM(CASE WHEN ${has('inspection_passed')} THEN 1 ELSE 0 END) as passed
+    FROM project_cache ${pBase} AND ${has('install_completed')}
+    GROUP BY month
+  `).all(...pP) as Array<{ month: string; total: number; passed: number }>
+  const installsMap = new Map(installsByMonth.map(r => [r.month, r]))
+
   const instToInspxBoxes = [...monthMap.entries()].map(([month, days]) => {
     const adjusted = useBizDays ? days.map(d => Math.round(d * bizFactor)) : days
-    return { month, count: days.length, p0: pct(adjusted, 0), p25: pct(adjusted, 25), p50: pct(adjusted, 50), p90: pct(adjusted, 90), p100: pct(adjusted, 100) }
+    const installs = installsMap.get(month)
+    const total = installs?.total ?? days.length
+    const passedM = installs?.passed ?? days.length
+    return {
+      month,
+      count: days.length,
+      p0: pct(adjusted, 0), p25: pct(adjusted, 25), p50: pct(adjusted, 50), p90: pct(adjusted, 90), p100: pct(adjusted, 100),
+      mean: meanI(adjusted),
+      installsTotal: total,
+      installsPassed: passedM,
+      pctPassed: total > 0 ? Math.round((passedM / total) * 100) : 0,
+    }
   }).sort((a, b) => a.month.localeCompare(b.month))
 
   const allDays = instToInspx.map(r => r.days).filter(d => d >= 0)
@@ -226,27 +255,40 @@ router.get('/', (req: Request, res: Response): void => {
     GROUP BY month ORDER BY month
   `).all(...pP)
 
-  // Chart 6: Scheduled on a day (from Arrivy)
+  // Chart 6: Scheduled by booking date (from Arrivy). Groups identically
+  // to passedByMonth — week buckets when range ≤ 90d, otherwise month —
+  // so the x-axis matches across the two charts.
   let arrivyW = "WHERE template_name LIKE '%inspect%'"
   const arrivyP: unknown[] = []
   if (dateFrom) { arrivyW += ' AND created_date >= ?'; arrivyP.push(dateFrom) }
   if (dateTo) { arrivyW += ' AND created_date <= ?'; arrivyP.push(dateTo + 'T23:59:59') }
 
+  const schedGroup = useWeeks ? mondayExpr('created_date') : "SUBSTR(created_date, 1, 7)"
   const scheduledOnDay = db.prepare(`
-    SELECT SUBSTR(created_date, 1, 10) as day, COUNT(*) as count
+    SELECT ${schedGroup} as period, COUNT(*) as count
     FROM inspx_arrivy_scheduled ${arrivyW}
-    GROUP BY day ORDER BY day
+    GROUP BY period ORDER BY period
   `).all(...arrivyP)
 
-  // Filters
-  const states = db.prepare("SELECT DISTINCT state as value FROM project_cache WHERE state != '' ORDER BY state").all() as Array<{ value: string }>
+  // Filters — canonical milestone filter set (EPC, Lender, State, AHJ,
+  // Utility). Each milestone analytics endpoint should return the same
+  // shape so MilestoneFilterBar reads consistently across pages.
+  const states  = db.prepare("SELECT DISTINCT state as value FROM project_cache WHERE state != '' ORDER BY state").all()  as Array<{ value: string }>
   const lenders = db.prepare("SELECT DISTINCT lender as value FROM project_cache WHERE lender != '' ORDER BY lender").all() as Array<{ value: string }>
-  const epcs = db.prepare("SELECT DISTINCT epc as value FROM project_cache WHERE epc != '' ORDER BY epc").all() as Array<{ value: string }>
+  const epcs    = db.prepare("SELECT DISTINCT epc as value FROM project_cache WHERE epc != '' ORDER BY epc").all() as Array<{ value: string }>
+  const ahjs    = db.prepare("SELECT DISTINCT ahj_name as value FROM project_cache WHERE ahj_name IS NOT NULL AND ahj_name != '' ORDER BY ahj_name").all() as Array<{ value: string }>
+  const utils   = db.prepare("SELECT DISTINCT utility_company as value FROM project_cache WHERE utility_company IS NOT NULL AND utility_company != '' ORDER BY utility_company").all() as Array<{ value: string }>
 
   res.json({
     kpi: { scheduled, passed, pctPassed, firstTime, pctFirstTime, needInspx, avgDaysSinceInst: Math.round((avgDaysSinceInstRaw.d || 0) * bizFactor), overallMedian },
     charts: { passedByMonth, instToInspxBoxes, byState, aging, agingTotal, activeFails, outcomesByMonth, scheduledOnDay },
-    filters: { states: states.map(s => s.value), lenders: lenders.map(l => l.value), epcs: epcs.map(e => e.value) },
+    filters: {
+      states:    states.map(s => s.value),
+      lenders:   lenders.map(l => l.value),
+      epcs:      epcs.map(e => e.value),
+      ahjs:      ahjs.map(a => a.value),
+      utilities: utils.map(u => u.value),
+    },
   })
 })
 

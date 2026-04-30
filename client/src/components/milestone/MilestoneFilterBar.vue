@@ -55,8 +55,15 @@ function onChange(key: string, raw: string) {
       :model-value="f.value || '__all__'"
       @update:model-value="(v: string) => onChange(f.key, v)"
     >
-      <SelectTrigger class="h-7 w-auto text-[11px] cursor-pointer">
-        <SelectValue :placeholder="f.placeholder" />
+      <!-- Trigger always shows "<Title>: <value>" so the user knows
+           which dimension this dropdown represents even when something
+           is selected. The label is uppercase + dim, the value is
+           foreground-toned for contrast. -->
+      <SelectTrigger class="h-7 w-auto text-[11px] cursor-pointer gap-1">
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{{ f.placeholder }}</span>
+        <span class="text-[11px] font-medium text-foreground">
+          {{ f.value || (f.allLabel ?? 'All') }}
+        </span>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="__all__">{{ f.allLabel ?? 'All' }}</SelectItem>
