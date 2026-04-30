@@ -476,7 +476,11 @@ function buildRetentionStep(p: ProjectStripFields): StripStep | null {
   return {
     id: 'retention',
     label,
-    abbrev: p.retention_is_ror ? 'ROR' : 'Ret',
+    // Strip uses three-letter milestone abbrevs throughout — CAN matches
+    // the cancellation framing for the standard retention dot. ROR keeps
+    // its own abbrev since it's already 3 letters and the more specific
+    // sub-state.
+    abbrev: p.retention_is_ror ? 'ROR' : 'CAN',
     state,
     date,
     durationDays: null,

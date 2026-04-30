@@ -137,7 +137,11 @@ function visualFor(e: LiveEvent): EventVisual {
 </script>
 
 <template>
-  <div class="rounded-xl border bg-card overflow-hidden">
+  <!-- The card fills its parent vertically so it can stretch inside the
+       Live Hub rail (where the parent is a flex column with available
+       height) while still rendering naturally when used inline on the
+       Comms Hub page. -->
+  <div class="rounded-xl border bg-card overflow-hidden flex flex-col h-full min-h-0">
     <div class="px-3 sm:px-4 py-2.5 border-b flex items-center justify-between gap-2 flex-wrap">
       <div class="flex items-center gap-2 min-w-0">
         <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Live Activity</p>
@@ -171,7 +175,10 @@ function visualFor(e: LiveEvent): EventVisual {
       <template v-else>No recent events.</template>
     </div>
 
-    <div v-else class="divide-y max-h-[360px] overflow-y-auto">
+    <!-- List grows to fill the card. Inline (non-rail) usage gets the cap so
+         the panel doesn't blow out the Comms Hub page; rail usage falls back
+         to flex-1 because the card itself is bounded by the rail's height. -->
+    <div v-else class="divide-y flex-1 min-h-0 overflow-y-auto max-h-[60vh] sm:max-h-[420px]">
       <div v-for="e in visibleEvents" :key="e.call_id || `evt-${e.id}`" class="px-3 sm:px-4 py-2">
         <!-- Row click goes straight to the SMS thread or call timeline
              dialog — the inline-expansion preview was redundant with
