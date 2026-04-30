@@ -254,6 +254,38 @@ const selectedProject = ref<Record<string, unknown> | null>(null)
 // (kpi.fireCount and kpi.staleCount drive whether the tiles render).
 // We hand those project arrays straight into the new table without
 // another fetch — they're already in component state from loadData().
+// Chart bar clicks — exact-cohort drill via /api/analytics/pto/drill.
+// ECharts dataIndex looks up the raw period from the underlying
+// series array; server expands it into a date range.
+async function drillBucket(metric: 'ptoSub' | 'ptoAppr' | 'installComplete', period: string, label: string) {
+  drillLabel.value = label
+  drillLoading.value = true
+  drillProjects.value = []
+  const p = new URLSearchParams({ metric, period, limit: '500' })
+  if (fEpc.value)     p.set('epc', fEpc.value)
+  if (fLender.value)  p.set('lender', fLender.value)
+  if (fState.value)   p.set('state', fState.value)
+  if (fNemUser.value) p.set('nem_user', fNemUser.value)
+  try {
+    const res = await fetch(`/api/analytics/pto/drill?${p}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { projects: Array<Record<string, unknown>> }
+    drillProjects.value = d.projects || []
+  } finally { drillLoading.value = false }
+  await nextTick()
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+}
+function onSubBarClick(p: { dataIndex: number; name: string }) {
+  const row = ptoSubmitted.value[p.dataIndex] as { period?: string } | undefined
+  if (!row?.period) return
+  drillBucket('ptoSub', row.period, `PTO Submitted · ${p.name}`)
+}
+function onApprBarClick(p: { dataIndex: number; name: string }) {
+  const row = ptoApproved.value[p.dataIndex] as { period?: string } | undefined
+  if (!row?.period) return
+  drillBucket('ptoAppr', row.period, `PTO Approved · ${p.name}`)
+}
+
 function drillFire() {
   drillLabel.value = `SLA Miss · ${fireList.value.length}`
   drillProjects.value = fireList.value as Array<Record<string, unknown>>
@@ -365,8 +397,8 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
     <!-- ═══ CHARTS TAB ═══ -->
     <template v-else-if="activeTab === 'charts'">
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <div class="rounded-xl bg-card p-3"><h3 class="text-xs font-semibold mb-2">PTO Submitted</h3><VChart :option="subChart" style="height:180px" autoresize @click="(p:any) => drill('Sub: '+p.name,'needPto')" /></div>
-        <div class="rounded-xl bg-card p-3"><h3 class="text-xs font-semibold mb-2">PTO Approved</h3><VChart :option="apprChart" style="height:180px" autoresize @click="(p:any) => drill('Appr: '+p.name,'needPto')" /></div>
+        <div class="rounded-xl bg-card p-3"><h3 class="text-xs font-semibold mb-2">PTO Submitted</h3><VChart :option="subChart" style="height:180px" autoresize @click="onSubBarClick" /></div>
+        <div class="rounded-xl bg-card p-3"><h3 class="text-xs font-semibold mb-2">PTO Approved</h3><VChart :option="apprChart" style="height:180px" autoresize @click="onApprBarClick" /></div>
       </div>
       <div class="rounded-xl bg-card p-3">
         <div class="flex items-start justify-between gap-2 mb-2">

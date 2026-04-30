@@ -293,6 +293,119 @@ router.get('/', (req: Request, res: Response): void => {
   })
 })
 
+// GET /api/analytics/inspx/drill?metric=passed|scheduled_for|booking
+//                               &period=YYYY-MM | YYYY-MM-DD
+//                               &state=&lender=&epc=&ahj=&utility=
+//
+// Returns the exact set of projects that contributed to the chart bar
+// the user clicked. `period` = bucket key as the chart series carries
+// it (7-char YYYY-MM for month buckets, 10-char YYYY-MM-DD for week
+// buckets — the Monday). The endpoint expands `period` into a date
+// range, picks the right column for the metric, applies the
+// dashboard's current filter context, and returns project rows.
+//
+// Metric → column:
+//   passed         → inspection_passed     (project_cache)
+//   scheduled_for  → inspection_scheduled  (project_cache; filters by
+//                    when the inspection is *scheduled to take place*)
+//   booking        → inspx_arrivy_scheduled.created_date (Arrivy log;
+//                    filters by *when the booking happened*)
+router.get('/drill', (req: Request, res: Response): void => {
+  const metric = String(req.query['metric'] || 'passed')
+  const period = String(req.query['period'] || '').trim()
+  if (!/^\d{4}-\d{2}(-\d{2})?$/.test(period)) {
+    res.status(400).json({ error: 'period must be YYYY-MM or YYYY-MM-DD' })
+    return
+  }
+
+  // Expand period → [from, to]. Month-format → calendar month range.
+  // Day-format → 7-day Monday-anchored week (matches the server's
+  // mondayExpr bucketing for charts).
+  let from: string, to: string
+  if (period.length === 7) {
+    const [y, m] = period.split('-').map(Number)
+    const last = new Date(y!, m!, 0).getDate()
+    from = `${period}-01`
+    to = `${period}-${String(last).padStart(2, '0')}`
+  } else {
+    from = period
+    const d = new Date(`${period}T12:00:00Z`)
+    d.setUTCDate(d.getUTCDate() + 6)
+    to = d.toISOString().slice(0, 10)
+  }
+
+  const state    = req.query['state'] as string | undefined
+  const epc      = req.query['epc'] as string | undefined
+  const lender   = req.query['lender'] as string | undefined
+  const ahj      = req.query['ahj'] as string | undefined
+  const utility  = req.query['utility'] as string | undefined
+  const limit    = Math.min(500, Math.max(1, parseInt(String(req.query['limit'] || '200'), 10) || 200))
+
+  const projColumns = `
+    record_id, customer_name, customer_address, status, state,
+    coordinator, closer, lender, epc, system_size_kw,
+    sales_date, intake_completed,
+    survey_scheduled, survey_submitted, survey_approved,
+    cad_submitted, design_completed,
+    permit_submitted, permit_approved, permit_rejected,
+    nem_submitted, nem_approved, nem_rejected,
+    install_scheduled, install_completed,
+    inspection_scheduled, inspection_passed,
+    pto_submitted, pto_approved
+  `
+
+  const dashFilters: string[] = []
+  const dashParams: unknown[] = []
+  if (state)   { dashFilters.push('state = ?');           dashParams.push(state) }
+  if (epc)     { dashFilters.push('epc = ?');             dashParams.push(epc) }
+  if (lender)  { dashFilters.push('lender = ?');          dashParams.push(lender) }
+  if (ahj)     { dashFilters.push('ahj_name = ?');        dashParams.push(ahj) }
+  if (utility) { dashFilters.push('utility_company = ?'); dashParams.push(utility) }
+
+  if (metric === 'booking') {
+    // Booking-date drill — join inspx_arrivy_scheduled to project_cache
+    // by project_rid. created_date is the booking timestamp.
+    const where = [
+      "template_name LIKE '%inspect%'",
+      'a.created_date >= ?',
+      'a.created_date <= ?',
+    ]
+    const params: unknown[] = [from, `${to}T23:59:59`]
+    if (dashFilters.length) {
+      for (const f of dashFilters) where.push(`p.${f}`)
+      params.push(...dashParams)
+    }
+    const rows = db.prepare(`
+      SELECT DISTINCT ${projColumns.split(',').map(c => `p.${c.trim()}`).join(', ')}
+      FROM inspx_arrivy_scheduled a
+      JOIN project_cache p ON p.record_id = a.project_rid
+      WHERE ${where.join(' AND ')}
+      ORDER BY a.created_date DESC
+      LIMIT ?
+    `).all(...params, limit)
+    res.json({ projects: rows, total: rows.length, metric, period, from, to })
+    return
+  }
+
+  // project_cache-only drills (passed, scheduled_for).
+  const dateCol = metric === 'scheduled_for' ? 'inspection_scheduled' : 'inspection_passed'
+  const where = [
+    `${dateCol} IS NOT NULL AND ${dateCol} != ''`,
+    `SUBSTR(${dateCol}, 1, 10) >= ?`,
+    `SUBSTR(${dateCol}, 1, 10) <= ?`,
+    ...dashFilters,
+  ]
+  const params: unknown[] = [from, to, ...dashParams]
+  const rows = db.prepare(`
+    SELECT ${projColumns}
+    FROM project_cache
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${dateCol} DESC
+    LIMIT ?
+  `).all(...params, limit)
+  res.json({ projects: rows, total: rows.length, metric, period, from, to })
+})
+
 // GET /api/analytics/inspx/deciles?metric=...&dimension=...&from=...&to=...&biz_days=1
 //
 // Returns the canonical decile shape ({ rows: DecileRow[], total: DecileRow })

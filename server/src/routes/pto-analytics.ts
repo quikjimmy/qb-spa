@@ -211,6 +211,73 @@ router.get('/', (req: Request, res: Response): void => {
   })
 })
 
+// GET /api/analytics/pto/drill?metric=ptoSub|ptoAppr|installComplete
+//                              &period=YYYY-MM | YYYY-MM-DD
+//                              &state=&lender=&epc=&nem_user=
+//
+// Returns the projects that contributed to the chart bar the user
+// clicked. period 7-char = month, 10-char = Monday-anchored week.
+router.get('/drill', (req: Request, res: Response): void => {
+  const metric = String(req.query['metric'] || 'ptoSub')
+  const period = String(req.query['period'] || '').trim()
+  if (!/^\d{4}-\d{2}(-\d{2})?$/.test(period)) {
+    res.status(400).json({ error: 'period must be YYYY-MM or YYYY-MM-DD' })
+    return
+  }
+
+  let from: string, to: string
+  if (period.length === 7) {
+    const [y, m] = period.split('-').map(Number)
+    const last = new Date(y!, m!, 0).getDate()
+    from = `${period}-01`
+    to = `${period}-${String(last).padStart(2, '0')}`
+  } else {
+    from = period
+    const d = new Date(`${period}T12:00:00Z`)
+    d.setUTCDate(d.getUTCDate() + 6)
+    to = d.toISOString().slice(0, 10)
+  }
+
+  const dateCol = metric === 'ptoAppr'        ? 'pto_approved'
+                : metric === 'installComplete' ? 'install_completed'
+                : /* ptoSub */                   'pto_submitted'
+
+  const state   = req.query['state']    as string | undefined
+  const lender  = req.query['lender']   as string | undefined
+  const epc     = req.query['epc']      as string | undefined
+  const nemUser = req.query['nem_user'] as string | undefined
+  const limit   = Math.min(500, Math.max(1, parseInt(String(req.query['limit'] || '200'), 10) || 200))
+
+  const where = [
+    `${dateCol} IS NOT NULL AND ${dateCol} != ''`,
+    `SUBSTR(${dateCol}, 1, 10) >= ?`,
+    `SUBSTR(${dateCol}, 1, 10) <= ?`,
+  ]
+  const params: unknown[] = [from, to]
+  if (state)   { where.push('state = ?');     params.push(state) }
+  if (lender)  { where.push('lender = ?');    params.push(lender) }
+  if (epc)     { where.push('epc = ?');       params.push(epc) }
+  if (nemUser) { where.push('nem_user = ?');  params.push(nemUser) }
+
+  const rows = db.prepare(`
+    SELECT record_id, customer_name, customer_address, status, state,
+           coordinator, closer, lender, epc, nem_user, system_size_kw,
+           sales_date, intake_completed,
+           survey_scheduled, survey_submitted, survey_approved,
+           cad_submitted, design_completed,
+           permit_submitted, permit_approved, permit_rejected,
+           nem_submitted, nem_approved, nem_rejected,
+           install_scheduled, install_completed,
+           inspection_scheduled, inspection_passed,
+           pto_submitted, pto_approved
+    FROM project_cache
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${dateCol} DESC
+    LIMIT ?
+  `).all(...params, limit)
+  res.json({ projects: rows, total: rows.length, metric, period, from, to })
+})
+
 // GET /api/analytics/pto/deciles?metric=...&dimension=...&from=...&to=...&biz_days=1
 //
 // Same shape as the Inspection deciles endpoint. Metrics:

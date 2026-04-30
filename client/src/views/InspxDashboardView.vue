@@ -178,15 +178,41 @@ async function drill(label: string, pipeline: string) {
 }
 function closeDrill() { drillLabel.value = ''; drillProjects.value = [] }
 
-// Chart bar clicks — drill the same pipeline but with a label that
-// names the bar so the user knows which bucket they expanded. Server
-// doesn't support per-bar date-bucket precision yet, so we drill the
-// broader pipeline cohort with the bucket label as context.
-function onPassedBarClick(p: { name: string }) {
-  drill(`#Passed · ${p.name}`, 'needInspx')
+// Chart bar clicks — drill the *exact* cohort that contributes to the
+// bar. ECharts gives us dataIndex; we look up the raw `period` from
+// the underlying series array (server returns "YYYY-MM" or
+// "YYYY-MM-DD" depending on smart-grouping). The drill endpoint
+// expands period into a date range + applies the dashboard filters.
+async function drillBucket(metric: 'passed' | 'scheduled_for' | 'booking', period: string, label: string) {
+  drillLabel.value = label
+  drillLoading.value = true
+  drillProjects.value = []
+  const p = new URLSearchParams({ metric, period, limit: '500' })
+  if (fEpc.value)     p.set('epc', fEpc.value)
+  if (fLender.value)  p.set('lender', fLender.value)
+  if (fState.value)   p.set('state', fState.value)
+  if (fAhj.value)     p.set('ahj', fAhj.value)
+  if (fUtility.value) p.set('utility', fUtility.value)
+  try {
+    const res = await fetch(`/api/analytics/inspx/drill?${p}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { projects: Array<Record<string, unknown>> }
+    drillProjects.value = d.projects || []
+  } finally { drillLoading.value = false }
+  await nextTick()
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
 }
-function onSchedBarClick(p: { name: string }) {
-  drill(`#Scheduled · ${p.name}`, 'needInspx')
+function onPassedBarClick(p: { dataIndex: number; name: string }) {
+  const row = passedByMonth.value[p.dataIndex] as { period?: string; month?: string } | undefined
+  const period = row?.period || row?.month
+  if (!period) return
+  drillBucket('passed', period, `#Passed · ${p.name}`)
+}
+function onSchedBarClick(p: { dataIndex: number; name: string }) {
+  const row = scheduledOnDay.value[p.dataIndex] as { period?: string; day?: string } | undefined
+  const period = row?.period || row?.day
+  if (!period) return
+  drillBucket('booking', period, `Booked · ${p.name}`)
 }
 
 // ── Charts ──
