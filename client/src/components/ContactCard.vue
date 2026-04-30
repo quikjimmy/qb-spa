@@ -287,16 +287,6 @@ function openProject() {
               <component :is="DtIconBriefcase" class="w-3.5 h-3.5" />
               Open project #{{ contact.project_id }}
             </button>
-            <button
-              v-if="contact.call"
-              type="button"
-              class="w-full inline-flex items-center gap-2 h-9 px-2 rounded-lg cursor-pointer text-[12.5px] text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors"
-              @click="emit('view-call')"
-            >
-              <component :is="DtIconPhone" class="w-3.5 h-3.5" />
-              View call timeline
-            </button>
-
             <!-- Save to Dialpad — collapsed link until clicked, then expands
                  to an inline first/last form. Success state stays visible
                  so the user knows it worked. -->

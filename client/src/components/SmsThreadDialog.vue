@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { formatPhone } from '@/lib/callBuckets'
-import { useSmsThread, type ThreadMessage } from '@/composables/useSmsThread'
+import { formatPhone, fmtTalkSec, BUCKET_META, type CallBucket } from '@/lib/callBuckets'
+import { useSmsThread, type ThreadSms, type ThreadCall, type ThreadItem } from '@/composables/useSmsThread'
 import { useAuthStore } from '@/stores/auth'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 
@@ -37,28 +37,47 @@ const SENDER_PREF_KEY = 'comms.preferredSenderId'
 
 const externalNumberRef = computed(() => props.externalNumber)
 const {
-  messages, hasMore, loading, loadingOlder, error,
+  items, messages, hasMore, loading, loadingOlder, error,
   isEmpty, isStatusOnly, textCount,
   agents, primaryAgent,
   loadInitial, loadOlder,
 } = useSmsThread(externalNumberRef)
 
+// ─── Filter pills (ALL / SMS / CALL) ───────────────────────
+// Client-side filter on the unified item stream. Composer + sender stay
+// available regardless of the active filter — sending always emits SMS.
+type KindFilter = 'all' | 'sms' | 'call'
+const kindFilter = ref<KindFilter>('all')
+const filteredItems = computed(() => {
+  if (kindFilter.value === 'all') return items.value
+  return items.value.filter(i => i.kind === kindFilter.value)
+})
+
 // ─── Virtualized list ──────────────────────────────────────
-// We render every message + day separator + status pill as a discrete
-// virtual row. tanstack-virtual measures actual heights via measureElement
-// so 1000+ messages stays smooth.
+// Rows are heterogeneous: day separators, SMS bubbles, and call cards. The
+// virtualizer measures real heights via measureElement so a long history
+// stays smooth even when call cards are taller than message bubbles.
 type Row =
   | { kind: 'day'; key: string; label: string }
-  | { kind: 'msg'; key: string; msg: ThreadMessage; showTime: boolean; groupTop: boolean; groupBottom: boolean }
+  | { kind: 'sms'; key: string; msg: ThreadSms; showTime: boolean; groupTop: boolean; groupBottom: boolean }
+  | { kind: 'call'; key: string; call: ThreadCall }
+
+// Track per-call expand state. A call card collapses to one line by
+// default; tap to reveal the full event timing + recording controls.
+const expandedCalls = ref<Record<string, boolean>>({})
+function toggleCall(callId: string) {
+  expandedCalls.value = { ...expandedCalls.value, [callId]: !expandedCalls.value[callId] }
+}
 
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
   let lastDay = ''
   let lastTs = 0
   let lastDirection = ''
-  for (let i = 0; i < messages.value.length; i++) {
-    const m = messages.value[i]!
-    const d = parseTs(m.received_at)
+  let lastKind: 'sms' | 'call' | '' = ''
+  for (let i = 0; i < filteredItems.value.length; i++) {
+    const item = filteredItems.value[i]!
+    const d = parseTs(item.at)
     if (!d) continue
     const ymd = d.toISOString().slice(0, 10)
     if (ymd !== lastDay) {
@@ -66,24 +85,47 @@ const rows = computed<Row[]>(() => {
       lastDay = ymd
       lastTs = 0
       lastDirection = ''
+      lastKind = ''
     }
-    const showTime = d.getTime() - lastTs > 5 * 60_000
-    const next = messages.value[i + 1]
-    const sameNextAuthor = !!next && next.direction === m.direction
-    const samePrevAuthor = lastDirection === m.direction
-    out.push({
-      kind: 'msg',
-      key: `m-${m.id}`,
-      msg: m,
-      showTime,
-      groupTop: !samePrevAuthor,
-      groupBottom: !sameNextAuthor,
-    })
+    if (item.kind === 'sms') {
+      const showTime = d.getTime() - lastTs > 5 * 60_000 || lastKind !== 'sms'
+      const next = filteredItems.value[i + 1] as ThreadItem | undefined
+      const sameNextAuthor = !!next && next.kind === 'sms' && next.direction === item.direction
+      const samePrevAuthor = lastKind === 'sms' && lastDirection === item.direction
+      out.push({
+        kind: 'sms',
+        key: `sms-${item.id}`,
+        msg: item,
+        showTime,
+        groupTop: !samePrevAuthor,
+        groupBottom: !sameNextAuthor,
+      })
+      lastDirection = item.direction
+    } else {
+      out.push({ kind: 'call', key: `call-${item.call_id}`, call: item })
+      lastDirection = ''
+    }
     lastTs = d.getTime()
-    lastDirection = m.direction
+    lastKind = item.kind
   }
   return out
 })
+
+// Counts for the pill labels — pulled from the loaded window. They reflect
+// what the user actually sees ("CALL 11" not "CALL 487 across all time").
+const smsCount = computed(() => items.value.filter(i => i.kind === 'sms').length)
+const callCount = computed(() => items.value.filter(i => i.kind === 'call').length)
+
+// Derived call status label + icon-tone for the card. Reuses the bucket
+// metadata table so the label stays consistent with Comms Hub drill-down.
+function callMeta(call: ThreadCall) {
+  const bucket = (call.bucket || 'other') as CallBucket
+  const meta = BUCKET_META[bucket] || BUCKET_META['other']
+  return { label: meta.label, color: meta.colorClass, bg: meta.bgClass, icon: meta.icon }
+}
+
+const recordingHref = (call: ThreadCall) =>
+  `/api/dialpad/call/${encodeURIComponent(call.call_id)}/audio?token=${encodeURIComponent(auth.token || '')}`
 
 const scrollEl = ref<HTMLElement | null>(null)
 
@@ -370,6 +412,31 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
               <span v-if="agents.length > 1" class="ml-auto text-[10px] text-muted-foreground shrink-0">+{{ agents.length - 1 }} other agent{{ agents.length === 2 ? '' : 's' }}</span>
             </div>
 
+            <!-- Filter pills — switch the timeline between ALL / SMS / CALL.
+                 Counts reflect the loaded window so the user knows when more
+                 history is available behind the scroll. -->
+            <div class="px-3 pt-2 flex items-center gap-1.5">
+              <button
+                type="button"
+                class="px-2.5 py-0.5 rounded-full border text-[11px] font-medium transition-colors cursor-pointer"
+                :class="kindFilter === 'all' ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+                @click="kindFilter = 'all'"
+              >All<span class="ml-1 tabular-nums opacity-70">{{ items.length }}</span></button>
+              <button
+                type="button"
+                class="px-2.5 py-0.5 rounded-full border text-[11px] font-medium transition-colors cursor-pointer"
+                :class="kindFilter === 'sms' ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+                @click="kindFilter = 'sms'"
+              >SMS<span class="ml-1 tabular-nums opacity-70">{{ smsCount }}</span></button>
+              <button
+                type="button"
+                class="px-2.5 py-0.5 rounded-full border text-[11px] font-medium transition-colors cursor-pointer"
+                :class="kindFilter === 'call' ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+                @click="kindFilter = 'call'"
+              >Calls<span class="ml-1 tabular-nums opacity-70">{{ callCount }}</span></button>
+              <span v-if="hasMore" class="ml-auto text-[10px] text-muted-foreground">scroll up for more</span>
+            </div>
+
             <!-- Diagnostic banner: events received but no readable text -->
             <div
               v-if="!loading && isStatusOnly"
@@ -393,7 +460,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
               <div ref="topSentinel" v-if="hasMore" class="h-px" />
 
               <!-- Top-of-conversation marker -->
-              <p v-if="!hasMore && messages.length > 0" class="text-center text-[10px] uppercase tracking-[0.18em] text-muted-foreground/60 py-3">
+              <p v-if="!hasMore && items.length > 0" class="text-center text-[10px] uppercase tracking-[0.18em] text-muted-foreground/60 py-3">
                 Beginning of conversation
               </p>
 
@@ -405,7 +472,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
               <!-- States -->
               <p v-if="loading" class="text-center text-[11px] text-muted-foreground py-10">Loading thread…</p>
               <p v-else-if="error" class="text-center text-[11px] text-rose-600 py-10">{{ error }}</p>
-              <p v-else-if="isEmpty" class="text-center text-[11px] text-muted-foreground py-10">No SMS recorded for this contact yet.</p>
+              <p v-else-if="isEmpty" class="text-center text-[11px] text-muted-foreground py-10">No conversation history yet — start one below.</p>
 
               <!-- Virtualized rows -->
               <div
@@ -430,29 +497,29 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                     </template>
 
                     <!-- Message -->
-                    <template v-else-if="rows[vrow.index]?.kind === 'msg'">
-                      <div :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupTop ? 'mt-2.5' : 'mt-0.5'">
+                    <template v-else-if="rows[vrow.index]?.kind === 'sms'">
+                      <div :class="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).groupTop ? 'mt-2.5' : 'mt-0.5'">
                         <p
-                          v-if="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).showTime"
+                          v-if="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).showTime"
                           class="text-center text-[10px] text-muted-foreground/70 pt-1.5 pb-1 tabular-nums"
-                        >{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.received_at) }}</p>
+                        >{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.received_at) }}</p>
 
                         <!-- Real message: chat bubble. Body is parsed into
                              text/image/link parts so MMS image URLs
                              (content.dialpad.com/s/img/...) render inline
                              instead of dumping raw URLs into the bubble. -->
-                        <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body">
-                          <div class="flex" :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
+                        <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body">
+                          <div class="flex" :class="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction === 'outgoing' ? 'justify-end' : 'justify-start'">
                             <div
                               class="px-3.5 py-2 text-[15px] leading-[1.35] tracking-[-0.01em] break-words"
                               :class="[
-                                bodyHasImage((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body) ? 'max-w-[88%]' : 'max-w-[78%]',
-                                (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing'
-                                  ? `text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-br-md' : 'rounded-[18px]'}`
-                                  : `text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] ${(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).groupBottom ? 'rounded-[18px] rounded-bl-md' : 'rounded-[18px]'}`,
+                                bodyHasImage((rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body) ? 'max-w-[88%]' : 'max-w-[78%]',
+                                (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction === 'outgoing'
+                                  ? `text-white bg-gradient-to-br from-sky-500 to-blue-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(2,132,199,0.25)] ${(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).groupBottom ? 'rounded-[18px] rounded-br-md' : 'rounded-[18px]'}`
+                                  : `text-foreground bg-foreground/[0.07] dark:bg-foreground/[0.10] ${(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).groupBottom ? 'rounded-[18px] rounded-bl-md' : 'rounded-[18px]'}`,
                               ]"
                             >
-                              <template v-for="(part, pi) in parseMessageBody((rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.body)" :key="pi">
+                              <template v-for="(part, pi) in parseMessageBody((rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.body)" :key="pi">
                                 <span v-if="part.kind === 'text'" class="whitespace-pre-wrap">{{ part.value }}</span>
                                 <a
                                   v-else-if="part.kind === 'image'"
@@ -470,7 +537,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                                   v-else
                                   :href="part.url" target="_blank" rel="noopener"
                                   class="underline underline-offset-2 break-all hover:opacity-80"
-                                  :class="(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction === 'outgoing' ? 'text-white' : 'text-sky-600 dark:text-sky-400'"
+                                  :class="(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction === 'outgoing' ? 'text-white' : 'text-sky-600 dark:text-sky-400'"
                                   @click.stop
                                 >{{ part.url }}</a>
                               </template>
@@ -487,27 +554,120 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                             <button
                               type="button"
                               class="text-[10px] font-medium tracking-wider uppercase text-muted-foreground/80 px-2.5 py-0.5 rounded-full bg-foreground/[0.05] transition-colors"
-                              :class="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview ? 'hover:bg-foreground/10 cursor-pointer' : 'cursor-default'"
-                              :disabled="!auth.isAdmin || !(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview"
-                              @click="(auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview) && (expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] = !expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id])"
+                              :class="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview ? 'hover:bg-foreground/10 cursor-pointer' : 'cursor-default'"
+                              :disabled="!auth.isAdmin || !(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview"
+                              @click="(auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview) && (expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.id] = !expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.id])"
                             >
-                              {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.status || 'status' }}
+                              {{ (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.status || 'status' }}
                               ·
-                              {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.direction || 'sms' }}
-                              <span v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview" class="ml-1 normal-case tracking-normal opacity-70">{{ expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] ? '▾' : '▸' }} raw</span>
+                              {{ (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.direction || 'sms' }}
+                              <span v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview" class="ml-1 normal-case tracking-normal opacity-70">{{ expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.id] ? '▾' : '▸' }} raw</span>
                             </button>
                             <!-- Always-visible backfill diagnostic for admins. -->
                             <p
-                              v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error"
+                              v-if="auth.isAdmin && (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.lookup_error"
                               class="w-full max-w-[92%] text-[10px] text-rose-700 bg-rose-50 dark:bg-rose-500/10 dark:text-rose-300 rounded-md px-2 py-1.5 font-mono break-all leading-snug"
-                            >API: {{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.lookup_error }}</p>
+                            >API: {{ (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.lookup_error }}</p>
                             <!-- Raw payload, expand on click. -->
                             <pre
-                              v-if="auth.isAdmin && expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.id] && (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview"
+                              v-if="auth.isAdmin && expandedRaw[(rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.id] && (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview"
                               class="w-full max-w-[92%] text-[10px] leading-snug bg-foreground/[0.04] rounded-md p-2 whitespace-pre-wrap break-all font-mono text-muted-foreground/90"
-                            >{{ (rows[vrow.index] as Extract<Row, { kind: 'msg' }>).msg.raw_preview }}</pre>
+                            >{{ (rows[vrow.index] as Extract<Row, { kind: 'sms' }>).msg.raw_preview }}</pre>
                           </div>
                         </template>
+                      </div>
+                    </template>
+
+                    <!-- Call card — collapsible. One row per call_id; tap to
+                         reveal duration breakdown + recording playback. -->
+                    <template v-else-if="rows[vrow.index]?.kind === 'call'">
+                      <div class="my-1.5">
+                        <button
+                          type="button"
+                          class="w-full px-3 py-2 rounded-2xl bg-foreground/[0.04] hover:bg-foreground/[0.07] transition-colors flex items-start gap-2.5 text-left cursor-pointer"
+                          @click="toggleCall((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.call_id)"
+                        >
+                          <span
+                            class="size-7 shrink-0 rounded-full inline-flex items-center justify-center"
+                            :class="callMeta((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call).bg"
+                          >
+                            <component
+                              :is="callMeta((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call).icon"
+                              class="w-3.5 h-3.5"
+                              :class="callMeta((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call).color"
+                            />
+                          </span>
+                          <div class="flex-1 min-w-0">
+                            <div class="flex items-baseline gap-2 min-w-0">
+                              <p class="text-[13px] font-semibold truncate">
+                                {{ callMeta((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call).label }}
+                              </p>
+                              <span class="text-[11px] text-muted-foreground tabular-nums shrink-0 ml-auto">
+                                {{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.started_at) }}
+                              </span>
+                            </div>
+                            <p class="text-[11px] text-muted-foreground tabular-nums mt-0.5">
+                              <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.talk_time_sec > 0">
+                                {{ fmtTalkSec((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.talk_time_sec) }} talk
+                              </template>
+                              <template v-else-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.was_voicemail">
+                                voicemail left
+                              </template>
+                              <template v-else>
+                                no answer
+                              </template>
+                              <span v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.user_name">
+                                · {{ (rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.user_name }}
+                              </span>
+                              <span v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.was_recorded" class="ml-1 inline-flex items-center gap-0.5 text-rose-600 dark:text-rose-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>
+                                rec
+                              </span>
+                            </p>
+                          </div>
+                          <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground shrink-0 mt-1.5 transition-transform" :class="expandedCalls[(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.call_id] ? 'rotate-180' : ''">
+                            <polyline points="6 9 12 15 18 9"/>
+                          </svg>
+                        </button>
+
+                        <!-- Expanded detail — duration breakdown + recording -->
+                        <div
+                          v-if="expandedCalls[(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.call_id]"
+                          class="mt-1 ml-9 mr-3 px-3 py-2.5 rounded-xl bg-foreground/[0.025] space-y-2"
+                        >
+                          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] tabular-nums">
+                            <span class="text-muted-foreground">Direction</span>
+                            <span class="capitalize">{{ (rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.direction }}</span>
+                            <span class="text-muted-foreground">Started</span>
+                            <span>{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.started_at) }}</span>
+                            <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.connected_at">
+                              <span class="text-muted-foreground">Connected</span>
+                              <span>{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.connected_at!) }}</span>
+                            </template>
+                            <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.ended_at">
+                              <span class="text-muted-foreground">Ended</span>
+                              <span>{{ fmtTime((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.ended_at!) }}</span>
+                            </template>
+                            <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.ring_time_sec > 0">
+                              <span class="text-muted-foreground">Ring time</span>
+                              <span>{{ fmtTalkSec((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.ring_time_sec) }}</span>
+                            </template>
+                            <template v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.talk_time_sec > 0">
+                              <span class="text-muted-foreground">Talk time</span>
+                              <span>{{ fmtTalkSec((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.talk_time_sec) }}</span>
+                            </template>
+                          </div>
+                          <!-- Inline recording playback. Only rendered after
+                               expand so we don't preload audio for every
+                               call in the list. -->
+                          <audio
+                            v-if="(rows[vrow.index] as Extract<Row, { kind: 'call' }>).call.was_recorded"
+                            :src="recordingHref((rows[vrow.index] as Extract<Row, { kind: 'call' }>).call)"
+                            controls
+                            preload="none"
+                            class="w-full h-8"
+                          />
+                        </div>
                       </div>
                     </template>
                   </div>

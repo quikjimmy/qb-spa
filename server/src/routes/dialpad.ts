@@ -1743,6 +1743,221 @@ router.get('/sms/thread', async (req: Request, res: Response): Promise<void> => 
   })
 })
 
+// Unified contact timeline — calls (one row per call_id) + SMS events for
+// the same external_number, merged and cursor-paginated by timestamp DESC.
+// Mirrors the /sms/thread response shape so the SmsThreadDialog composer +
+// sender picker keep working unchanged. Each item carries a `kind` field so
+// the UI can render bubble vs. call-card.
+router.get('/contact-timeline', (req: Request, res: Response): void => {
+  if (!req.user) { res.status(401).end(); return }
+  const externalNumber = String(req.query['external_number'] || '').trim()
+  if (!externalNumber) { res.status(400).json({ error: 'external_number required' }); return }
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '30'), 10) || 30, 1), 100)
+  // Cursor — both kinds share an "at" timestamp; load older means
+  // received_at < before_at for SMS, started_at < before_at for calls.
+  // First page passes nothing.
+  const beforeAtRaw = req.query['before_at']
+  const beforeAt = typeof beforeAtRaw === 'string' && beforeAtRaw ? beforeAtRaw : null
+
+  const digits = externalNumber.replace(/\D/g, '')
+  const last10 = digits.slice(-10)
+  if (last10.length < 7) { res.status(400).json({ error: 'invalid external_number' }); return }
+
+  const NORM = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')`
+
+  // ── SMS rows ─────────────────────────────────────────────
+  const smsParams: unknown[] = [req.user.userId, last10]
+  let smsClause = `e.event_kind = 'sms' AND ${NORM.replace(/external_number/g, 'e.external_number')} LIKE '%' || ?`
+  if (beforeAt) { smsClause += ` AND e.received_at < ?`; smsParams.push(beforeAt) }
+  smsParams.push(limit + 1)
+  const smsRaw = db.prepare(
+    `SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
+            e.received_at, e.raw_json, e.text_body, e.text_body_fetched_at, e.call_id,
+            CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
+     FROM dialpad_events e
+     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
+     WHERE ${smsClause}
+     ORDER BY e.received_at DESC
+     LIMIT ?`
+  ).all(...smsParams) as Array<Record<string, unknown>>
+
+  // ── Call rows ────────────────────────────────────────────
+  const callParams: unknown[] = [last10]
+  let callClause = `${NORM} LIKE '%' || ?`
+  if (beforeAt) { callClause += ` AND started_at < ?`; callParams.push(beforeAt) }
+  callParams.push(limit + 1)
+  const callRows = db.prepare(
+    `SELECT call_id, user_email, user_name, external_number, direction, bucket,
+            started_at, connected_at, ended_at, talk_time_sec, ring_time_sec,
+            was_voicemail, was_recorded, was_transfer, entry_point_target_kind
+     FROM dialpad_call_records
+     WHERE ${callClause}
+     ORDER BY started_at DESC
+     LIMIT ?`
+  ).all(...callParams) as Array<{
+    call_id: string; user_email: string; user_name: string | null; external_number: string;
+    direction: string; bucket: string;
+    started_at: string; connected_at: string | null; ended_at: string | null;
+    talk_time_sec: number; ring_time_sec: number;
+    was_voicemail: number; was_recorded: number; was_transfer: number;
+    entry_point_target_kind: string | null;
+  }>
+
+  // Same body extraction + agent attribution as /sms/thread.
+  function extractBody(payload: Record<string, unknown>): string | null {
+    const direct = payload['text'] || payload['message'] || payload['body'] || payload['message_body'] || payload['content']
+    if (typeof direct === 'string' && direct.trim()) return direct
+    for (const key of ['data', 'sms', 'message_object', 'event']) {
+      const nested = payload[key]
+      if (nested && typeof nested === 'object') {
+        const inner = extractBody(nested as Record<string, unknown>)
+        if (inner) return inner
+      }
+    }
+    return null
+  }
+  function classifyStatus(payload: Record<string, unknown>): string {
+    for (const f of ['event_type', 'type', 'state', 'event_state', 'status']) {
+      const v = payload[f]
+      if (typeof v === 'string' && v) return v
+    }
+    return 'status'
+  }
+  function pickAgentInfo(payload: Record<string, unknown>): {
+    agent_email: string | null; agent_name: string | null; agent_number: string | null; dialpad_user_id: string | null;
+  } {
+    const target = payload['target'] as Record<string, unknown> | undefined
+    const fromNumber = typeof payload['from_number'] === 'string' ? payload['from_number'] : null
+    const toRaw = payload['to_number']
+    const toNumber = Array.isArray(toRaw) && toRaw.length > 0 ? String(toRaw[0])
+      : (typeof toRaw === 'string' ? toRaw : null)
+    const dir = String(payload['direction'] || '').toLowerCase()
+    const agentNumber = (dir === 'outbound' ? fromNumber : toNumber)
+      || (target ? String(target['phone'] ?? '') : '') || null
+    return {
+      agent_email: target ? (String(target['email'] ?? '') || null) : null,
+      agent_name: target ? (String(target['name'] ?? '') || null) : null,
+      agent_number: agentNumber || null,
+      dialpad_user_id: target && target['id'] != null ? String(target['id']) : null,
+    }
+  }
+  const isAdmin = req.user.roles.includes('admin')
+
+  // SMS items (same shape as /sms/thread for client compatibility)
+  const smsItems = smsRaw.map(r => {
+    let body: string | null = (typeof r['text_body'] === 'string' && r['text_body']) ? r['text_body'] as string : null
+    let status: string | null = null
+    let rawPreview: string | null = null
+    let agent: ReturnType<typeof pickAgentInfo> = { agent_email: null, agent_name: null, agent_number: null, dialpad_user_id: null }
+    try {
+      const p = JSON.parse(String(r['raw_json'] || '{}')) as Record<string, unknown>
+      if (!body) body = extractBody(p)
+      agent = pickAgentInfo(p)
+      if (!body) status = classifyStatus(p)
+    } catch { /* leave defaults */ }
+    if (!body && isAdmin) {
+      const raw = String(r['raw_json'] || '')
+      rawPreview = raw.length > 1500 ? raw.slice(0, 1500) + '…' : raw
+    }
+    return {
+      kind: 'sms' as const,
+      id: r['id'],
+      direction: r['direction'],
+      body,
+      status,
+      user_email: r['user_email'],
+      user_name: r['user_name'],
+      agent_email: agent.agent_email,
+      agent_name: agent.agent_name,
+      agent_number: agent.agent_number,
+      dialpad_user_id: agent.dialpad_user_id,
+      external_number: r['external_number'],
+      received_at: r['received_at'],
+      at: r['received_at'],
+      is_read: r['is_read'],
+      raw_preview: rawPreview,
+    }
+  })
+
+  const callItems = callRows.map(c => ({
+    kind: 'call' as const,
+    call_id: c.call_id,
+    direction: c.direction,
+    bucket: c.bucket,
+    started_at: c.started_at,
+    connected_at: c.connected_at,
+    ended_at: c.ended_at,
+    at: c.started_at,
+    talk_time_sec: c.talk_time_sec,
+    ring_time_sec: c.ring_time_sec,
+    was_voicemail: !!c.was_voicemail,
+    was_recorded: !!c.was_recorded,
+    was_transfer: !!c.was_transfer,
+    user_email: c.user_email,
+    user_name: c.user_name,
+    external_number: c.external_number,
+    entry_point_target_kind: c.entry_point_target_kind,
+  }))
+
+  // Merge → DESC by `at`. Trim to limit; the +1 lets us know if there's
+  // more older data beyond what we returned.
+  type Item = (typeof smsItems)[0] | (typeof callItems)[0]
+  const merged: Item[] = [...smsItems, ...callItems].sort((a, b) =>
+    String(b.at).localeCompare(String(a.at))
+  )
+  const hasMore = merged.length > limit
+  const trimmed = merged.slice(0, limit)
+  // Reverse to ASC (oldest first) so the UI appends naturally.
+  const itemsAsc = [...trimmed].reverse()
+  const oldestAt = itemsAsc.length > 0 ? String(itemsAsc[0]!.at) : null
+
+  // Agents — derived from SMS items only (calls don't carry dialpad_user_id
+  // directly). Same shape as /sms/thread's agents for picker compatibility.
+  interface AgentSummary {
+    email: string | null; name: string | null; number: string | null;
+    dialpad_user_id: string | null; message_count: number; last_used_at: string | null;
+  }
+  const agentMap = new Map<string, AgentSummary>()
+  for (const m of smsItems) {
+    if (!m.agent_email && !m.agent_number) continue
+    const key = (String(m.agent_email || m.agent_number || '')).toLowerCase()
+    let entry = agentMap.get(key)
+    if (!entry) {
+      entry = {
+        email: m.agent_email, name: m.agent_name, number: m.agent_number,
+        dialpad_user_id: m.dialpad_user_id, message_count: 0, last_used_at: null,
+      }
+      agentMap.set(key, entry)
+    }
+    entry.message_count += 1
+    const at = String(m.received_at)
+    if (!entry.last_used_at || at > entry.last_used_at) entry.last_used_at = at
+  }
+  const agents = [...agentMap.values()].sort((a, b) =>
+    String(b.last_used_at || '').localeCompare(String(a.last_used_at || ''))
+  )
+  const primaryAgent = agents[0] || null
+
+  // Counts so the UI can show "23 events · 12 texts · 11 calls" even before
+  // every page is loaded.
+  const smsCount = smsItems.length
+  const callCount = callItems.length
+  const textCount = smsItems.filter(m => m.body).length
+
+  res.json({
+    external_number: externalNumber,
+    items: itemsAsc,
+    count: itemsAsc.length,
+    has_more: hasMore,
+    oldest_at: oldestAt,
+    text_count: textCount,
+    sms_count: smsCount,
+    call_count: callCount,
+    agents,
+    primary_agent: primaryAgent,
+  })
+})
+
 // ── Call timeline (state journey for one call_id) ───────
 // Returns every webhook event we received for this call_id, in order,
 // with derived per-step duration so the UI can render a vertical

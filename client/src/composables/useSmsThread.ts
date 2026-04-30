@@ -1,12 +1,12 @@
-// Cursor-paginated SMS thread state. Owns the message window, "load older"
-// fetch, scroll-anchor restoration after prepend, and the diagnostic
-// counts. Designed to be reused when send-from-app lands: the same
-// composable will gain optimistic insert + delivery state without the
-// list component needing to know.
+// Cursor-paginated contact timeline state. Owns the unified message + call
+// window, "load older" fetch, and scroll-anchor restoration after prepend.
+// Items come tagged with `kind: 'sms' | 'call'` so the dialog can render
+// chat bubbles for SMS and collapsible cards for calls.
 import { ref, computed, type Ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
-export interface ThreadMessage {
+export interface ThreadSms {
+  kind: 'sms'
   id: number
   direction: 'incoming' | 'outgoing' | string
   body: string | null
@@ -15,6 +15,7 @@ export interface ThreadMessage {
   user_name: string | null
   external_number: string | null
   received_at: string
+  at: string
   is_read: number
   agent_email?: string | null
   agent_name?: string | null
@@ -23,6 +24,31 @@ export interface ThreadMessage {
   raw_preview?: string | null
   lookup_error?: string | null
 }
+
+export interface ThreadCall {
+  kind: 'call'
+  call_id: string
+  direction: 'inbound' | 'outbound' | string
+  bucket: string
+  started_at: string
+  connected_at: string | null
+  ended_at: string | null
+  at: string
+  talk_time_sec: number
+  ring_time_sec: number
+  was_voicemail: boolean
+  was_recorded: boolean
+  was_transfer: boolean
+  user_email: string | null
+  user_name: string | null
+  external_number: string | null
+  entry_point_target_kind: string | null
+}
+
+export type ThreadItem = ThreadSms | ThreadCall
+
+// Backwards-compat alias — older code paths refer to ThreadMessage.
+export type ThreadMessage = ThreadSms
 
 export interface ThreadAgent {
   email: string | null
@@ -33,12 +59,15 @@ export interface ThreadAgent {
   last_used_at: string | null
 }
 
-interface ThreadResponse {
-  messages: ThreadMessage[]
+interface TimelineResponse {
+  external_number: string
+  items: ThreadItem[]
+  count: number
   has_more: boolean
-  oldest_id: number | null
-  newest_id: number | null
+  oldest_at: string | null
   text_count: number
+  sms_count: number
+  call_count: number
   agents?: ThreadAgent[]
   primary_agent?: ThreadAgent | null
 }
@@ -47,9 +76,9 @@ const PAGE_SIZE = 30
 
 export function useSmsThread(externalNumber: Ref<string>) {
   const auth = useAuthStore()
-  const messages = ref<ThreadMessage[]>([])
+  const items = ref<ThreadItem[]>([])
   const hasMore = ref(false)
-  const oldestId = ref<number | null>(null)
+  const oldestAt = ref<string | null>(null)
   const textCount = ref(0)
   const agents = ref<ThreadAgent[]>([])
   const primaryAgent = ref<ThreadAgent | null>(null)
@@ -57,37 +86,51 @@ export function useSmsThread(externalNumber: Ref<string>) {
   const loadingOlder = ref(false)
   const error = ref('')
 
-  const isEmpty = computed(() => !loading.value && messages.value.length === 0)
-  const isStatusOnly = computed(() => !loading.value && messages.value.length > 0 && textCount.value === 0)
+  // SMS-only / call-only views derived from the unified list. Keeps the
+  // composable's surface friendly to call sites that only want one kind
+  // (the SMS thread search results, or a future calls-only summary view).
+  const messages = computed<ThreadSms[]>(() =>
+    items.value.filter((i): i is ThreadSms => i.kind === 'sms')
+  )
+  const calls = computed<ThreadCall[]>(() =>
+    items.value.filter((i): i is ThreadCall => i.kind === 'call')
+  )
+
+  const isEmpty = computed(() => !loading.value && items.value.length === 0)
+  const isStatusOnly = computed(() =>
+    !loading.value
+    && messages.value.length > 0
+    && textCount.value === 0
+  )
 
   function hdrs() {
     return { Authorization: `Bearer ${auth.token}` }
   }
 
-  async function fetchPage(beforeId: number | null): Promise<ThreadResponse | null> {
+  async function fetchPage(beforeAt: string | null): Promise<TimelineResponse | null> {
     const num = externalNumber.value
     if (!num) return null
     const params = new URLSearchParams()
     params.set('external_number', num)
     params.set('limit', String(PAGE_SIZE))
-    if (beforeId) params.set('before_id', String(beforeId))
-    const res = await fetch(`/api/dialpad/sms/thread?${params}`, { headers: hdrs() })
+    if (beforeAt) params.set('before_at', beforeAt)
+    const res = await fetch(`/api/dialpad/contact-timeline?${params}`, { headers: hdrs() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return await res.json() as ThreadResponse
+    return await res.json() as TimelineResponse
   }
 
   async function loadInitial() {
     loading.value = true
     error.value = ''
-    messages.value = []
+    items.value = []
     hasMore.value = false
-    oldestId.value = null
+    oldestAt.value = null
     try {
       const data = await fetchPage(null)
       if (!data) return
-      messages.value = data.messages
+      items.value = data.items
       hasMore.value = data.has_more
-      oldestId.value = data.oldest_id
+      oldestAt.value = data.oldest_at
       textCount.value = data.text_count
       agents.value = data.agents || []
       primaryAgent.value = data.primary_agent ?? null
@@ -98,24 +141,21 @@ export function useSmsThread(externalNumber: Ref<string>) {
     }
   }
 
-  // Prepend older messages without disturbing the scroll position. The
-  // caller is responsible for capturing scrollHeight before invoking and
-  // restoring scrollTop after — the composable doesn't know about the DOM.
+  // Prepend older items without disturbing the scroll position. The caller
+  // captures scrollHeight/scrollTop before invoking and restores after — the
+  // composable doesn't touch the DOM. Dedupes by composite key (kind + id)
+  // so a ringing-then-connected race doesn't double-render a call.
   async function loadOlder(): Promise<{ added: number }> {
-    if (!hasMore.value || loadingOlder.value || !oldestId.value) return { added: 0 }
+    if (!hasMore.value || loadingOlder.value || !oldestAt.value) return { added: 0 }
     loadingOlder.value = true
     try {
-      const data = await fetchPage(oldestId.value)
+      const data = await fetchPage(oldestAt.value)
       if (!data) return { added: 0 }
-      // Filter out any messages we already have (defensive against
-      // duplicate live appends racing the load-older fetch).
-      const seen = new Set(messages.value.map(m => m.id))
-      const fresh = data.messages.filter(m => !seen.has(m.id))
-      messages.value = [...fresh, ...messages.value]
+      const seen = new Set(items.value.map(itemKey))
+      const fresh = data.items.filter(i => !seen.has(itemKey(i)))
+      items.value = [...fresh, ...items.value]
       hasMore.value = data.has_more
-      if (data.oldest_id) oldestId.value = data.oldest_id
-      // text_count is for the whole conversation — recount client-side
-      // now that we have more rows.
+      if (data.oldest_at) oldestAt.value = data.oldest_at
       textCount.value = messages.value.filter(m => !!m.body).length
       return { added: fresh.length }
     } catch (e) {
@@ -126,10 +166,16 @@ export function useSmsThread(externalNumber: Ref<string>) {
     }
   }
 
+  function itemKey(i: ThreadItem): string {
+    return i.kind === 'sms' ? `sms-${i.id}` : `call-${i.call_id}`
+  }
+
   return {
+    items,
     messages,
+    calls,
     hasMore,
-    oldestId,
+    oldestAt,
     textCount,
     agents,
     primaryAgent,
