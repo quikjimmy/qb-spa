@@ -171,7 +171,37 @@ router.get('/', (req: Request, res: Response): void => {
   const mondayExpr = (col: string) => `DATE(${col}, '-' || ((CAST(STRFTIME('%w', ${col}) AS INTEGER) + 6) % 7) || ' days')`
   const passGroup = useWeeks ? mondayExpr('inspection_passed') : "SUBSTR(inspection_passed, 1, 7)"
 
-  const passedByMonth = db.prepare(`SELECT ${passGroup} as period, COUNT(*) as count FROM project_cache ${passW} GROUP BY period ORDER BY period`).all(...passP)
+  // Bucket-aware upper bound: the chart's last bucket should be the
+  // one *containing dateTo* — fully — not truncate at dateTo. So when
+  // grouping weekly we extend to Sunday of dateTo's week; monthly we
+  // extend to the last day of dateTo's month. Future buckets entirely
+  // after dateTo's bucket are NOT included unless the user's filter
+  // already extends to those dates.
+  function bucketEnd(date: string | undefined, weekly: boolean): string | null {
+    if (!date) return null
+    if (weekly) {
+      const d = new Date(`${date}T00:00:00`)
+      const dow = d.getDay()                        // 0=Sun … 6=Sat
+      const daysUntilSun = (7 - dow) % 7
+      d.setDate(d.getDate() + daysUntilSun)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    const [y, m] = date.split('-').map(Number)
+    if (!y || !m) return null
+    const lastDay = new Date(y, m, 0).getDate()
+    return `${date.slice(0, 7)}-${String(lastDay).padStart(2, '0')}`
+  }
+  const chartUpper = bucketEnd(dateTo, !!useWeeks)
+
+  // Chart aggregations use a wider right bound (chartUpper) so the
+  // bucket containing dateTo is always fully shown. KPIs (passed,
+  // scheduled count, etc.) keep the literal dateTo bound.
+  let passChartW = `${pBase} AND ${has('inspection_passed')}`
+  const passChartP = [...pP]
+  if (dateFrom)   { passChartW += ' AND inspection_passed >= ?'; passChartP.push(dateFrom) }
+  if (chartUpper) { passChartW += ' AND inspection_passed <= ?'; passChartP.push(chartUpper + 'T23:59:59') }
+
+  const passedByMonth = db.prepare(`SELECT ${passGroup} as period, COUNT(*) as count FROM project_cache ${passChartW} GROUP BY period ORDER BY period`).all(...passChartP)
 
   // Chart 2: Install→Inspection days (box plot data)
   const instToInspx = db.prepare(`
@@ -264,17 +294,15 @@ router.get('/', (req: Request, res: Response): void => {
   //   past_pending   (purple)     — scheduled <= today, no decision yet
   //   future_pending (blue)       — scheduled  > today, no decision yet
   //
-  // The right side of the date filter is INTENTIONALLY DROPPED for
-  // this chart — `inspection_scheduled <= dateTo` would hide future
-  // scheduled inspections (the future_pending segment we want to
-  // see). dateFrom still bounds the left edge.
-  //
-  // Same smart-grouping as #Passed so the two charts share an x-axis.
+  // Right side uses chartUpper (bucket-end of dateTo) so the bucket
+  // containing dateTo is fully included — Mon→Sun for the current
+  // week even when today is mid-week. Future weeks beyond that
+  // bucket are EXCLUDED unless the user's filter explicitly extends
+  // to those dates.
   let schedForW = `${pBase} AND ${has('inspection_scheduled')}`
   const schedForP = [...pP]
-  if (dateFrom) { schedForW += ' AND inspection_scheduled >= ?'; schedForP.push(dateFrom) }
-  // No upper bound on inspection_scheduled — future weeks land on the
-  // x-axis so future_pending is visible.
+  if (dateFrom)   { schedForW += ' AND inspection_scheduled >= ?'; schedForP.push(dateFrom) }
+  if (chartUpper) { schedForW += ' AND inspection_scheduled <= ?'; schedForP.push(chartUpper + 'T23:59:59') }
   const schedForGroup = useWeeks ? mondayExpr('inspection_scheduled') : "SUBSTR(inspection_scheduled, 1, 7)"
   const scheduledFor = db.prepare(`
     SELECT ${schedForGroup} as period,
