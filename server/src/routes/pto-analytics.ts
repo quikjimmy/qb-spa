@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { computeDeciles } from '../lib/deciles'
 
 const router = Router()
 
@@ -208,6 +209,59 @@ router.get('/', (req: Request, res: Response): void => {
     lists: { fire: fireList, stale: staleQueue },
     filters: { states: (states as Array<{ value: string }>).map(s => s.value), lenders: (lenders as Array<{ value: string }>).map(l => l.value), epcs: (epcs as Array<{ value: string }>).map(e => e.value), nemUsers: (nemUsers as Array<{ value: string }>).map(n => n.value) },
   })
+})
+
+// GET /api/analytics/pto/deciles?metric=...&dimension=...&from=...&to=...&biz_days=1
+//
+// Same shape as the Inspection deciles endpoint. Metrics:
+//   install_to_pto_appr — install_completed → pto_approved
+//   sale_to_pto_appr    — sales_date         → pto_approved
+//   pass_to_sub         — inspection_passed  → pto_submitted
+//   sub_to_appr         — pto_submitted      → pto_approved
+router.get('/deciles', (req: Request, res: Response): void => {
+  const metric = String(req.query['metric'] || 'install_to_pto_appr')
+  const dimension = String(req.query['dimension'] || 'state')
+  const dateFrom = req.query['from'] as string | undefined
+  const dateTo = req.query['to'] as string | undefined
+  const useBizDays = req.query['biz_days'] === '1'
+  const bizFactor = useBizDays ? 5 / 7 : 1
+
+  const DIM_COLS: Record<string, string> = {
+    state: 'state',
+    lender: 'lender',
+    epc: 'epc',
+    ahj: 'ahj_name',
+    utility: 'utility_company',
+  }
+  const dimCol = DIM_COLS[dimension] || 'state'
+
+  let startCol: string, endCol: string
+  if (metric === 'sale_to_pto_appr')        { startCol = 'sales_date';        endCol = 'pto_approved' }
+  else if (metric === 'pass_to_sub')        { startCol = 'inspection_passed'; endCol = 'pto_submitted' }
+  else if (metric === 'sub_to_appr')        { startCol = 'pto_submitted';     endCol = 'pto_approved' }
+  else /* install_to_pto_appr */            { startCol = 'install_completed'; endCol = 'pto_approved' }
+
+  const wParts = [
+    `${startCol} IS NOT NULL AND ${startCol} != ''`,
+    `${endCol} IS NOT NULL AND ${endCol} != ''`,
+    `JULIANDAY(${endCol}) - JULIANDAY(${startCol}) >= 0`,
+    `${dimCol} IS NOT NULL AND ${dimCol} != ''`,
+  ]
+  const params: unknown[] = []
+  if (dateFrom) { wParts.push(`SUBSTR(${endCol},1,10) >= ?`); params.push(dateFrom) }
+  if (dateTo)   { wParts.push(`SUBSTR(${endCol},1,10) <= ?`); params.push(dateTo) }
+
+  interface Row { dim: string; days: number; kw: number }
+  const rows = db.prepare(`
+    SELECT ${dimCol} as dim,
+           CAST(JULIANDAY(${endCol}) - JULIANDAY(${startCol}) AS REAL) as days,
+           COALESCE(system_size_kw, 0) as kw
+    FROM project_cache
+    WHERE ${wParts.join(' AND ')}
+  `).all(...params) as Row[]
+
+  const out = computeDeciles(rows, bizFactor)
+  res.json({ metric, dimension, day_unit: useBizDays ? 'biz' : 'cal', ...out })
 })
 
 export { router as ptoAnalyticsRouter }

@@ -5,7 +5,7 @@
 // shell, filter bar, date preset bar, KPI strip, and drill list are
 // the reusable building blocks.
 
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -18,6 +18,7 @@ import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/Miles
 import MilestoneDatePresetBar from '@/components/milestone/MilestoneDatePresetBar.vue'
 import MilestoneKpiStrip from '@/components/milestone/MilestoneKpiStrip.vue'
 import MilestoneDrillList, { type MetaField } from '@/components/milestone/MilestoneDrillList.vue'
+import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/MilestoneDecileTable.vue'
 
 use([CanvasRenderer, BarChart, BoxplotChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -219,7 +220,48 @@ const schedChart = computed(() => ({
 // underneath line up directly with the box columns.
 const boxSlice = computed(() => instToInspxBoxes.value.slice(-13))
 
-onMounted(() => applyDatePreset('last_30', false))
+// ── Decile table ──
+// Two metrics, configurable dimension + cal/biz pass-through.
+const decileMetrics = [
+  { key: 'install_to_pass',        label: 'Install → Inspection Passed' },
+  { key: 'install_to_first_sched', label: 'Install → First Inspection Scheduled' },
+]
+const decileDimensions = [
+  { key: 'state',   label: 'State' },
+  { key: 'lender',  label: 'Lender' },
+  { key: 'epc',     label: 'EPC' },
+  { key: 'ahj',     label: 'AHJ' },
+  { key: 'utility', label: 'Utility' },
+]
+const decileMetric    = ref('install_to_pass')
+const decileDimension = ref<'state' | 'lender' | 'epc' | 'ahj' | 'utility'>('state')
+const decileRows      = ref<DecileRow[]>([])
+const decileTotal     = ref<DecileRow | null>(null)
+const decileLoading   = ref(false)
+
+async function loadDeciles() {
+  decileLoading.value = true
+  try {
+    const p = new URLSearchParams({ today: lt() })
+    p.set('metric', decileMetric.value)
+    p.set('dimension', decileDimension.value)
+    if (dateFrom.value) p.set('from', dateFrom.value)
+    if (dateTo.value)   p.set('to', dateTo.value)
+    if (useBizDays.value) p.set('biz_days', '1')
+    const res = await fetch(`/api/analytics/inspx/deciles?${p}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { rows: DecileRow[]; total: DecileRow }
+    decileRows.value = d.rows || []
+    decileTotal.value = d.total || null
+  } finally { decileLoading.value = false }
+}
+
+// Re-fetch deciles whenever any of the dimensions that affect them
+// change. Filters affect headline analytics only — deciles operate on
+// the global pool — so we deliberately don't watch state/lender/etc.
+watch([decileMetric, decileDimension, dateFrom, dateTo, useBizDays], loadDeciles)
+
+onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
 </script>
 
 <template>
@@ -366,6 +408,21 @@ onMounted(() => applyDatePreset('last_30', false))
           <h3 class="text-xs font-semibold mb-2">Inspection Outcomes by Install Month</h3>
           <VChart :option="outcomesChart" style="height:280px" autoresize />
         </div>
+
+        <!-- Row 5: Decile table — selectable KPI metric × dimension. -->
+        <MilestoneDecileTable
+          title="Inspection deciles"
+          :metric="decileMetric"
+          :metrics="decileMetrics"
+          :dimension="decileDimension"
+          :dimensions="decileDimensions"
+          :day-unit="useBizDays ? 'biz' : 'cal'"
+          :rows="decileRows"
+          :total="decileTotal"
+          :loading="decileLoading"
+          @update:metric="(k: string) => (decileMetric = k)"
+          @update:dimension="(k: string) => (decileDimension = k as typeof decileDimension)"
+        />
       </template>
     </template>
 

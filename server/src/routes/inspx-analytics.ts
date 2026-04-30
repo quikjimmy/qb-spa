@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { computeDeciles } from '../lib/deciles'
 
 const router = Router()
 
@@ -290,6 +291,67 @@ router.get('/', (req: Request, res: Response): void => {
       utilities: utils.map(u => u.value),
     },
   })
+})
+
+// GET /api/analytics/inspx/deciles?metric=...&dimension=...&from=...&to=...&biz_days=1
+//
+// Returns the canonical decile shape ({ rows: DecileRow[], total: DecileRow })
+// for the chosen Inspection metric, grouped by the chosen dimension. The
+// shared MilestoneDecileTable client component renders this directly.
+//
+// Metrics:
+//   install_to_pass        — install_completed → inspection_passed
+//   install_to_first_sched — install_completed → inspection_scheduled (first)
+router.get('/deciles', (req: Request, res: Response): void => {
+  const metric = String(req.query['metric'] || 'install_to_pass')
+  const dimension = String(req.query['dimension'] || 'state')
+  const dateFrom = req.query['from'] as string | undefined
+  const dateTo = req.query['to'] as string | undefined
+  const useBizDays = req.query['biz_days'] === '1'
+  const bizFactor = useBizDays ? 5 / 7 : 1
+
+  // Allowed dimension columns — keep in sync with the milestone-wide
+  // canonical filter set.
+  const DIM_COLS: Record<string, string> = {
+    state: 'state',
+    lender: 'lender',
+    epc: 'epc',
+    ahj: 'ahj_name',
+    utility: 'utility_company',
+  }
+  const dimCol = DIM_COLS[dimension] || 'state'
+
+  // Map metric → (start_col, end_col, where_filter). Date-window filter
+  // always applies to the *end* column so the chosen range bounds when
+  // the milestone landed.
+  let startCol: string, endCol: string
+  if (metric === 'install_to_first_sched') {
+    startCol = 'install_completed'; endCol = 'inspection_scheduled'
+  } else { // install_to_pass (default)
+    startCol = 'install_completed'; endCol = 'inspection_passed'
+  }
+
+  const wParts = [
+    `${startCol} IS NOT NULL AND ${startCol} != ''`,
+    `${endCol} IS NOT NULL AND ${endCol} != ''`,
+    `JULIANDAY(${endCol}) - JULIANDAY(${startCol}) >= 0`,
+    `${dimCol} IS NOT NULL AND ${dimCol} != ''`,
+  ]
+  const params: unknown[] = []
+  if (dateFrom) { wParts.push(`SUBSTR(${endCol},1,10) >= ?`); params.push(dateFrom) }
+  if (dateTo)   { wParts.push(`SUBSTR(${endCol},1,10) <= ?`); params.push(dateTo) }
+
+  interface Row { dim: string; days: number; kw: number }
+  const rows = db.prepare(`
+    SELECT ${dimCol} as dim,
+           CAST(JULIANDAY(${endCol}) - JULIANDAY(${startCol}) AS REAL) as days,
+           COALESCE(system_size_kw, 0) as kw
+    FROM project_cache
+    WHERE ${wParts.join(' AND ')}
+  `).all(...params) as Row[]
+
+  const out = computeDeciles(rows, bizFactor)
+  res.json({ metric, dimension, day_unit: useBizDays ? 'biz' : 'cal', ...out })
 })
 
 export { router as inspxAnalyticsRouter }

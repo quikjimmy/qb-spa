@@ -11,6 +11,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart, BoxplotChart, ScatterChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
+import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/MilestoneDecileTable.vue'
 
 use([CanvasRenderer, BarChart, BoxplotChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -199,7 +200,45 @@ function reloadPtoCacheIfNeeded() {
   else loadPtoCache()
 }
 
-onMounted(() => { applyPreset('last_30'); loadPtoCache() })
+// ── Decile table — selectable PTO metric × dimension. ──
+const decileMetrics = [
+  { key: 'install_to_pto_appr', label: 'Install → PTO Approved' },
+  { key: 'sale_to_pto_appr',    label: 'Sale → PTO Approved' },
+  { key: 'pass_to_sub',         label: 'Inspection Pass → PTO Submitted' },
+  { key: 'sub_to_appr',         label: 'PTO Submitted → PTO Approved' },
+]
+const decileDimensions = [
+  { key: 'state',   label: 'State' },
+  { key: 'lender',  label: 'Lender' },
+  { key: 'epc',     label: 'EPC' },
+  { key: 'ahj',     label: 'AHJ' },
+  { key: 'utility', label: 'Utility' },
+]
+const decileMetric    = ref('install_to_pto_appr')
+const decileDimension = ref<'state' | 'lender' | 'epc' | 'ahj' | 'utility'>('state')
+const decileRows      = ref<DecileRow[]>([])
+const decileTotal     = ref<DecileRow | null>(null)
+const decileLoading   = ref(false)
+
+async function loadDeciles() {
+  decileLoading.value = true
+  try {
+    const p = new URLSearchParams()
+    p.set('metric', decileMetric.value)
+    p.set('dimension', decileDimension.value)
+    if (dateFrom.value) p.set('from', dateFrom.value)
+    if (dateTo.value)   p.set('to', dateTo.value)
+    if (useBizDays.value) p.set('biz_days', '1')
+    const res = await fetch(`/api/analytics/pto/deciles?${p}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { rows: DecileRow[]; total: DecileRow }
+    decileRows.value = d.rows || []
+    decileTotal.value = d.total || null
+  } finally { decileLoading.value = false }
+}
+watch([decileMetric, decileDimension, dateFrom, dateTo, useBizDays], loadDeciles)
+
+onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
 </script>
 
 <template>
@@ -315,6 +354,21 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache() })
         </div>
         <div class="rounded-xl bg-card p-3"><h3 class="text-xs font-semibold mb-2">Installed Accounts</h3><VChart :option="instChart" style="height:260px" autoresize /></div>
       </div>
+
+      <!-- Decile table — selectable PTO duration metric × dimension. -->
+      <MilestoneDecileTable
+        title="PTO deciles"
+        :metric="decileMetric"
+        :metrics="decileMetrics"
+        :dimension="decileDimension"
+        :dimensions="decileDimensions"
+        :day-unit="useBizDays ? 'biz' : 'cal'"
+        :rows="decileRows"
+        :total="decileTotal"
+        :loading="decileLoading"
+        @update:metric="(k: string) => (decileMetric = k)"
+        @update:dimension="(k: string) => (decileDimension = k as typeof decileDimension)"
+      />
     </template>
 
     <!-- ═══ FIRE LIST (SLA Miss) ═══ -->
