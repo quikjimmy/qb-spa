@@ -376,16 +376,25 @@ interface TierInputs {
   nem_rejected?: string | null
 }
 
+// Date math anchored to Kin HQ's local calendar (America/Denver). The server
+// runs UTC on Railway, so a naive `toISOString().slice(0, 10)` returns the
+// UTC date — which after 6pm Denver flips to "tomorrow" and shifts every
+// tier classification + KPI date filter. Intl.DateTimeFormat with
+// timeZone: 'America/Denver' gives the local YYYY-MM-DD regardless of
+// where the server runs. en-CA formats as YYYY-MM-DD natively.
+const DENVER_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Denver',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+})
+function denverDateOf(d: Date): string { return DENVER_DATE_FMT.format(d) }
 function daysAgo(n: number): string {
-  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - n)
-  return d.toISOString().slice(0, 10)
+  return denverDateOf(new Date(Date.now() - n * 86400_000))
 }
 function daysFromNow(n: number): string {
-  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  return denverDateOf(new Date(Date.now() + n * 86400_000))
 }
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10)
+  return denverDateOf(new Date())
 }
 function isSet(v: string | null | undefined): boolean {
   return !!(v && v.trim() !== '' && v !== '0')
@@ -780,9 +789,12 @@ router.get('/', (req: Request, res: Response): void => {
   if (installFrom) { where += " AND install_scheduled >= ?"; params.push(installFrom) }
   if (installTo) { where += " AND install_scheduled <= ?"; params.push(installTo) }
 
-  // Pipeline KPI filter — use client's local date if provided, fall back to server UTC
+  // Pipeline KPI filter — use client's local date if provided, fall back to
+  // server-computed Denver date. Server fallback used to be UTC, which
+  // flipped to "tomorrow" after ~6pm Denver and made today's installs
+  // disappear from Future Install for the rest of the night.
   const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : todayIso()
   const hasV = (col: string) => `(${col} IS NOT NULL AND ${col} != '' AND ${col} != '0')`
   const noV = (col: string) => `(${col} IS NULL OR ${col} = '' OR ${col} = '0')`
   if (pipeline === 'preInstall') {
@@ -792,7 +804,9 @@ router.get('/', (req: Request, res: Response): void => {
   } else if (pipeline === 'futureInstall') {
     where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled >= '${today}' AND ${noV('install_completed')}`
   } else if (pipeline === 'wip') {
-    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled <= '${today}T23:59:59' AND ${noV('install_completed')}`
+    // Match the KPI semantics in strictlyPast() above — install_scheduled
+    // strictly before today, not yet install_completed.
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled < '${today}' AND ${noV('install_completed')}`
   } else if (pipeline === 'needInspx') {
     where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_completed')} AND ${noV('inspection_passed')}`
   } else if (pipeline === 'needPto') {
@@ -868,7 +882,10 @@ router.get('/', (req: Request, res: Response): void => {
 
   const activeHoldBase = `${kpiWhere} AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%')`
   const futureOrToday = (col: string) => `${hasV(col)} AND ${col} >= '${today}'`
-  const pastOrToday = (col: string) => `${hasV(col)} AND ${col} <= '${today}T23:59:59'`
+  // WIP semantics — "install start date in the past" means strictly before
+  // today. Today's installs are still in the future-install bucket; once
+  // they start they fall into WIP tomorrow.
+  const strictlyPast = (col: string) => `${hasV(col)} AND ${col} < '${today}'`
 
   function kpiCount(extraWhere: string): { count: number; kw: number } {
     const row = db.prepare(`SELECT COUNT(*) as c, COALESCE(SUM(system_size_kw),0) as kw FROM project_cache ${extraWhere}`).get(...kpiParams) as { c: number; kw: number }
@@ -888,8 +905,10 @@ router.get('/', (req: Request, res: Response): void => {
   // Future Install: install_scheduled in the future
   const futureInstall = kpiCount(`${activeHoldBase} AND ${futureOrToday('install_scheduled')} AND ${noV('install_completed')}`)
 
-  // In Progress (WIP): install date today or past, not install completed
-  const wip = kpiCount(`${activeHoldBase} AND ${pastOrToday('install_scheduled')} AND ${noV('install_completed')}`)
+  // In Progress (WIP): install start date strictly in the past, not yet
+  // marked install_completed. Excludes today (those still count as future
+  // installs until the day rolls over).
+  const wip = kpiCount(`${activeHoldBase} AND ${strictlyPast('install_scheduled')} AND ${noV('install_completed')}`)
 
   // Need Inspection: install completed, no inspection passed
   const needInspx = kpiCount(`${activeHoldBase} AND ${hasV('install_completed')} AND ${noV('inspection_passed')}`)

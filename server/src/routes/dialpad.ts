@@ -353,7 +353,11 @@ async function refreshCallStats(daysBack: number): Promise<{ rowsFetched: number
       days_ago_start: 1,
       days_ago_end: daysBack,
       office_id: cfg.officeId ?? null,
-      timezone: 'America/Los_Angeles',
+      // Kin HQ is in Denver — explicit tz so Dialpad's day-boundary
+      // bucketing aligns with the user's local calendar. Was 'America/
+      // Los_Angeles' which shifted same-day calls into the prior day's
+      // bucket whenever the call landed between midnight Denver and 1am.
+      timezone: 'America/Denver',
     })
     const agg = aggregateCalls(rows)
     const records = aggregateCallRecords(rows)
@@ -420,7 +424,11 @@ async function refreshSmsStats(daysBack: number): Promise<{ rowsFetched: number;
       days_ago_start: 1,
       days_ago_end: daysBack,
       office_id: cfg.officeId ?? null,
-      timezone: 'America/Los_Angeles',
+      // Kin HQ is in Denver — explicit tz so Dialpad's day-boundary
+      // bucketing aligns with the user's local calendar. Was 'America/
+      // Los_Angeles' which shifted same-day calls into the prior day's
+      // bucket whenever the call landed between midnight Denver and 1am.
+      timezone: 'America/Denver',
     })
 
     const agg = aggregateSms(rows)
@@ -2661,11 +2669,17 @@ router.get('/heatmap', (req: Request, res: Response): void => {
   // winter (MST) both land in the right cell.
   const tz = String(req.query['tz'] || 'America/Denver').trim() || 'America/Denver'
 
-  // Default window: trailing 30 days.
+  // Default window: trailing 30 days. Anchored to the requested timezone
+  // (`tz` param, defaults to America/Denver) so the "today" boundary
+  // matches the user's calendar — UTC slicing flipped to "tomorrow" after
+  // ~6pm Denver and dropped today's data from the heatmap.
+  const tzDateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  })
   const today = new Date()
-  const todayIso = today.toISOString().slice(0, 10)
-  const defaultFrom = new Date(today); defaultFrom.setDate(defaultFrom.getDate() - 30)
-  const from = fromStr || defaultFrom.toISOString().slice(0, 10)
+  const todayIso = tzDateFmt.format(today)
+  const defaultFrom = new Date(today.getTime() - 30 * 86400_000)
+  const from = fromStr || tzDateFmt.format(defaultFrom)
   const to = toStr || todayIso
 
   // Pre-build a tz-aware bucketer. Caller passes a UTC ISO string;
