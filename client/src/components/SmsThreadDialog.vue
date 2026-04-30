@@ -240,15 +240,12 @@ watch(() => live.events.value, (evs) => {
   liveDebounce = setTimeout(async () => {
     const { added } = await refreshLatest()
     if (added <= 0) return
-    // Auto-scroll to bottom only if the user was already near the end.
-    // Reading older history shouldn't get yanked back down on every reply.
+    // Always scroll the new arrival into view — the user expects iMessage
+    // behavior where the bottom always tracks the latest exchange.
+    await nextTick()
+    await nextTick()
     const el = scrollEl.value
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
-    const wasAtBottom = distanceFromBottom < 120
-    await nextTick()
-    await nextTick()
-    if (wasAtBottom) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = el.scrollHeight
   }, 500)
 }, { deep: false })
 
@@ -754,7 +751,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                  activity. -->
             <footer
               class="
-                relative shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]
+                relative shrink-0 px-3 pt-2 pb-[max(1.25rem,calc(env(safe-area-inset-bottom)+0.75rem))] sm:pb-[max(0.75rem,env(safe-area-inset-bottom))]
                 bg-background/70 supports-[backdrop-filter]:bg-background/55 backdrop-blur-xl
                 before:absolute before:inset-x-3 before:top-0 before:h-px
                 before:bg-gradient-to-r before:from-transparent before:via-foreground/10 before:to-transparent

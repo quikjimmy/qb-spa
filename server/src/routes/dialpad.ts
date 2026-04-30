@@ -1766,18 +1766,37 @@ router.get('/contact-timeline', (req: Request, res: Response): void => {
   const NORM = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(external_number, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '+', '')`
 
   // ── SMS rows ─────────────────────────────────────────────
+  // SMS dedup — Dialpad delivers an outbound webhook AFTER our /sms/send
+  // pre-cache lands, so the same message_id ends up in two rows. Window
+  // function picks one per call_id, preferring the row with text_body
+  // (so we keep the bubble, not the empty status copy). Rows with NULL
+  // call_id stay distinct via the COALESCE fallback. Cursor + limit are
+  // applied OUTSIDE the partition so paging stays consistent.
   const smsParams: unknown[] = [req.user.userId, last10]
   let smsClause = `e.event_kind = 'sms' AND ${NORM.replace(/external_number/g, 'e.external_number')} LIKE '%' || ?`
   if (beforeAt) { smsClause += ` AND e.received_at < ?`; smsParams.push(beforeAt) }
   smsParams.push(limit + 1)
   const smsRaw = db.prepare(
-    `SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
-            e.received_at, e.raw_json, e.text_body, e.text_body_fetched_at, e.call_id,
-            CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
-     FROM dialpad_events e
-     LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
-     WHERE ${smsClause}
-     ORDER BY e.received_at DESC
+    `WITH ranked AS (
+       SELECT e.id, e.user_email, e.user_name, e.direction, e.external_number,
+              e.received_at, e.raw_json, e.text_body, e.text_body_fetched_at, e.call_id,
+              CASE WHEN sr.event_id IS NOT NULL THEN 1 ELSE 0 END AS is_read,
+              ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(NULLIF(e.call_id, ''), 'noid_' || e.id)
+                ORDER BY
+                  CASE WHEN e.text_body IS NOT NULL AND e.text_body != '' THEN 0 ELSE 1 END,
+                  e.received_at DESC,
+                  e.id DESC
+              ) AS rn
+       FROM dialpad_events e
+       LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
+       WHERE ${smsClause}
+     )
+     SELECT id, user_email, user_name, direction, external_number,
+            received_at, raw_json, text_body, text_body_fetched_at, call_id, is_read
+     FROM ranked
+     WHERE rn = 1
+     ORDER BY received_at DESC
      LIMIT ?`
   ).all(...smsParams) as Array<Record<string, unknown>>
 
