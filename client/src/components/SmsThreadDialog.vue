@@ -18,6 +18,23 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const auth = useAuthStore()
 const expandedRaw = ref<Record<number, boolean>>({})
 
+// Sender state — picked by the user from a dropdown that lists every Dialpad
+// identity (cached on /senders). Default resolves to the most-recent agent
+// on the thread (primaryAgent), then to the current user, so a fresh thread
+// can still send. The picker stays visible so the user can override.
+interface Sender {
+  dialpad_user_id: string
+  name: string | null
+  email: string | null
+  number: string | null
+  is_me?: boolean
+}
+const senders = ref<Sender[]>([])
+const sendersLoaded = ref(false)
+const sendersDefaultId = ref<string>('')
+const senderId = ref<string>('')
+const SENDER_PREF_KEY = 'comms.preferredSenderId'
+
 const externalNumberRef = computed(() => props.externalNumber)
 const {
   messages, hasMore, loading, loadingOlder, error,
@@ -80,15 +97,67 @@ const virtualizer = computed(() =>
   }),
 )
 
+async function loadSenders() {
+  if (sendersLoaded.value) return
+  try {
+    const res = await fetch('/api/dialpad/senders', {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    if (!res.ok) return
+    const data = await res.json() as { senders: Sender[]; default_sender_id: string | null }
+    senders.value = data.senders
+    sendersDefaultId.value = data.default_sender_id || ''
+    sendersLoaded.value = true
+  } catch { /* leave empty — composer falls back to primaryAgent */ }
+}
+
+// Resolve which sender to default to when the thread opens. Priority:
+//   1. The most-recent agent on this thread (carbon-copy iMessage feel —
+//      stay in the same conversation thread)
+//   2. The user's stored preference from a previous compose session
+//   3. The server-marked current-user sender (is_me)
+//   4. First available sender
+function resolveDefaultSender() {
+  if (!senders.value.length) { senderId.value = ''; return }
+  const known = (id: string) => senders.value.some(s => s.dialpad_user_id === id)
+  const fromThread = primaryAgent.value?.dialpad_user_id
+  if (fromThread && known(fromThread)) { senderId.value = fromThread; return }
+  const stored = localStorage.getItem(SENDER_PREF_KEY)
+  if (stored && known(stored)) { senderId.value = stored; return }
+  if (sendersDefaultId.value && known(sendersDefaultId.value)) { senderId.value = sendersDefaultId.value; return }
+  senderId.value = senders.value[0]!.dialpad_user_id
+}
+
+watch(senderId, (v) => {
+  // Persist explicit user-driven overrides so cross-thread compose flows
+  // remember the choice. Empty values aren't saved.
+  if (v) localStorage.setItem(SENDER_PREF_KEY, v)
+})
+
 // ─── Initial load + open/close ─────────────────────────────
 watch(() => [props.open, props.externalNumber], async ([open]) => {
   if (!open) return
-  await loadInitial()
+  // Run senders fetch + thread load in parallel so the picker is ready by
+  // the time the messages render.
+  await Promise.all([loadInitial(), loadSenders()])
+  resolveDefaultSender()
   await nextTick()
   // Wait one more tick so the virtualizer has measured before we jump.
   await nextTick()
   if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
+  // Auto-focus the composer — iMessage-style, the user can start typing
+  // without an extra tap. Skipped for the no-sender edge case so a typed
+  // message doesn't fail to send.
+  if (senderId.value && taRef.value) {
+    taRef.value.focus({ preventScroll: true })
+  }
 }, { immediate: true })
+
+// Re-resolve the sender when primaryAgent loads after the senders list does
+// (network race). Without this, a fresh thread could land on the wrong line.
+watch(primaryAgent, () => {
+  if (props.open && sendersLoaded.value) resolveDefaultSender()
+})
 
 // ─── Load older when the user scrolls near the top ─────────
 let topObserver: IntersectionObserver | null = null
@@ -130,11 +199,11 @@ const segments = computed(() => {
   const hasUnicode = /[^\x00-\x7F]/.test(draft.value)
   return Math.ceil(len / (hasUnicode ? 70 : 160))
 })
-const canSend = computed(() => !!draft.value.trim() && !!primaryAgent.value?.dialpad_user_id && !sending.value)
+const canSend = computed(() => !!draft.value.trim() && !!senderId.value && !sending.value)
 async function trySend() {
   if (!canSend.value) return
   const text = draft.value.trim()
-  const userId = primaryAgent.value?.dialpad_user_id
+  const userId = senderId.value
   if (!text || !userId) return
   sending.value = true
   sendError.value = ''
@@ -446,8 +515,11 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
               </div>
             </div>
 
-            <!-- Composer — disabled this iteration; layout matches the
-                 future send-from-app flow (textarea + attach + send). -->
+            <!-- Composer with sender picker. The picker stays visible so the
+                 user can switch identity mid-thread (e.g., handing off to a
+                 specialist). Pre-selected to the most-recent agent on this
+                 thread, then to the current user when there's no prior
+                 activity. -->
             <footer
               class="
                 relative shrink-0 px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]
@@ -456,6 +528,21 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 before:bg-gradient-to-r before:from-transparent before:via-foreground/10 before:to-transparent
               "
             >
+              <!-- From: row — small pill above the textarea. Hidden when no
+                   senders are available (cold cache + no fetch yet). -->
+              <div v-if="senders.length > 0" class="flex items-center gap-1.5 mb-2 px-1 text-[11px]">
+                <span class="text-muted-foreground">From</span>
+                <select
+                  v-model="senderId"
+                  :disabled="sending"
+                  class="h-6 max-w-[260px] truncate rounded-md border bg-background/60 px-1.5 text-[11px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option v-for="s in senders" :key="s.dialpad_user_id" :value="s.dialpad_user_id">
+                    {{ s.name || s.email || `User ${s.dialpad_user_id}` }}{{ s.is_me ? ' (you)' : '' }}{{ s.number ? ` · ${formatPhone(s.number)}` : '' }}
+                  </option>
+                </select>
+              </div>
+
               <div class="flex items-end gap-2">
                 <button
                   disabled
@@ -475,7 +562,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                     rows="1"
                     :maxlength="1600"
                     :disabled="sending"
-                    :placeholder="primaryAgent?.dialpad_user_id ? 'Reply…' : 'No sending identity yet'"
+                    :placeholder="senderId ? 'iMessage' : 'Pick a sender to start typing'"
                     class="block w-full resize-none bg-transparent text-[16px] leading-[1.35] placeholder:text-muted-foreground/70 focus:outline-none max-h-[140px] overflow-y-auto disabled:opacity-50"
                     @input="autoGrow"
                     @keydown.enter.exact.prevent="trySend"
@@ -491,7 +578,7 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 <button
                   :disabled="!canSend"
                   class="shrink-0 size-9 rounded-full grid place-items-center bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-[0_1px_2px_rgba(2,132,199,0.35)] disabled:from-foreground/15 disabled:to-foreground/15 disabled:text-muted-foreground disabled:shadow-none disabled:cursor-not-allowed transition-all"
-                  :title="sending ? 'Sending…' : (primaryAgent?.dialpad_user_id ? 'Send' : 'No sender identity for this thread')"
+                  :title="sending ? 'Sending…' : (senderId ? 'Send' : 'Pick a sender first')"
                   aria-label="Send message"
                   @click="trySend"
                 >
@@ -500,8 +587,8 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 </button>
               </div>
               <p v-if="sendError" class="text-[10px] text-rose-600 mt-1 px-1">{{ sendError }}</p>
-              <p v-else-if="!primaryAgent?.dialpad_user_id" class="text-[10px] text-muted-foreground/60 mt-1 px-1">
-                Sending needs a Dialpad agent on this thread — open from a thread that has prior activity.
+              <p v-else-if="!senderId && sendersLoaded && senders.length === 0" class="text-[10px] text-muted-foreground/60 mt-1 px-1">
+                No Dialpad senders cached yet — open Compose to refresh the directory.
               </p>
             </footer>
           </div>

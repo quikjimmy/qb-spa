@@ -134,14 +134,16 @@ function onRowClick(r: SearchRow) {
 }
 
 function onContactMessage() {
-  // Route through the compose dialog so the user picks a sender. They can
-  // still drop into the existing SMS thread afterwards if they want history;
-  // we open the thread on successful send via onComposeSent.
+  // Open the SMS thread directly — iMessage feel. The thread now owns its
+  // own sender picker (defaulting to the most-recent agent on the thread or
+  // the current user) and auto-focuses the composer on open. The dedicated
+  // ComposeDialog stays reserved for the "+ New" button where the recipient
+  // hasn't been picked yet.
   const c = contactCard.value.data
   if (!c) return
   const name = c.customer_name || formatPhone(c.phone)
   contactCard.value.open = false
-  compose.value = { open: true, prefillNumber: c.phone, prefillName: name }
+  smsThread.value = { open: true, number: c.phone, name }
 }
 
 function onContactViewCall() {
