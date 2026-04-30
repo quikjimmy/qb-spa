@@ -45,6 +45,11 @@ const props = defineProps<{
   columns: ColumnDef[]
   projects: ProjectRow[]
   loading?: boolean
+  /** Optional per-row accent — returns a Tailwind border-l-* class
+   *  used to colour-code the row's left border by some category
+   *  (e.g. inspection-segment: passed=green, failed=red, etc.). When
+   *  null/undefined, falls back to the project's status border. */
+  rowAccent?: (p: ProjectRow) => string | null
 }>()
 
 const emit = defineEmits<{
@@ -117,7 +122,7 @@ const count = computed(() => props.projects.length)
               v-for="p in projects"
               :key="p.record_id"
               class="hover:bg-muted/30 cursor-pointer border-l-[3px] transition-colors"
-              :class="getStatusConfig(p.status || '').border"
+              :class="rowAccent ? (rowAccent(p) || getStatusConfig(p.status || '').border) : getStatusConfig(p.status || '').border"
               @click="emit('select', p)"
             >
               <td
@@ -144,7 +149,7 @@ const count = computed(() => props.projects.length)
           :key="p.record_id"
           type="button"
           class="w-full text-left px-3 py-2 hover:bg-muted/30 cursor-pointer border-l-[3px]"
-          :class="getStatusConfig(p.status || '').border"
+          :class="rowAccent ? (rowAccent(p) || getStatusConfig(p.status || '').border) : getStatusConfig(p.status || '').border"
           @click="emit('select', p)"
         >
           <p class="font-semibold text-[13px] truncate">{{ p.customer_name }}</p>

@@ -212,24 +212,25 @@ function onPassedBarClick(p: { dataIndex: number; name: string }) {
   if (!period) return
   drillBucket('passed', period, `#Passed · ${p.name}`)
 }
-// Stacked-bar click: seriesName picks the segment (Passed / Failed /
-// Past Pending / Future Pending), dataIndex looks up the period from
-// scheduledFor[]. Server filters project_cache by inspection_scheduled
-// in that bucket + the matching segment WHERE.
+// Stacked-bar click handler — dual-purpose:
+//   • Click on a bar segment → drill that single segment.
+//   • Click on the total label sitting atop the bar → drill ALL four
+//     segments combined (server tags each row with _segment for
+//     colour-coded display).
+// We distinguish the two by inspecting the event target type:
+// ECharts renders labels as 'text' shapes and bars as 'rect' shapes.
 const SCHED_SERIES_MAP: Record<string, { key: string; label: string }> = {
   'Passed':         { key: 'passed',         label: 'Passed' },
   'Failed':         { key: 'failed',         label: 'Failed' },
   'Past Pending':   { key: 'past_pending',   label: 'Past Pending' },
   'Future Pending': { key: 'future_pending', label: 'Future Pending' },
 }
-async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName: string }) {
-  const row = scheduledFor.value[p.dataIndex]
-  const seg = SCHED_SERIES_MAP[p.seriesName]
-  if (!row || !seg) return
-  drillLabel.value = `Inspx Scheduled · ${seg.label} · ${p.name}`
+async function fetchSchedDrill(period: string, label: string, segment?: string) {
+  drillLabel.value = label
   drillLoading.value = true
   drillProjects.value = []
-  const q = new URLSearchParams({ metric: 'scheduled_for', period: row.period, segment: seg.key, today: lt(), limit: '500' })
+  const q = new URLSearchParams({ metric: 'scheduled_for', period, today: lt(), limit: '500' })
+  if (segment) q.set('segment', segment)
   if (fEpc.value)     q.set('epc', fEpc.value)
   if (fLender.value)  q.set('lender', fLender.value)
   if (fState.value)   q.set('state', fState.value)
@@ -243,6 +244,34 @@ async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName:
   } finally { drillLoading.value = false }
   await nextTick()
   document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+}
+async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName: string; event?: { target?: { type?: string } } }) {
+  const row = scheduledFor.value[p.dataIndex]
+  if (!row) return
+  // Total-label clicks land on a 'text' graphic; segment clicks land
+  // on 'rect'. ECharts wraps the underlying ZRender shape in p.event.
+  const targetType = p.event?.target?.type
+  if (targetType === 'text') {
+    fetchSchedDrill(row.period, `Inspx Scheduled · All · ${p.name}`)
+    return
+  }
+  const seg = SCHED_SERIES_MAP[p.seriesName]
+  if (!seg) return
+  fetchSchedDrill(row.period, `Inspx Scheduled · ${seg.label} · ${p.name}`, seg.key)
+}
+
+// Row accent for the projects table — colour-codes by inspection
+// segment when the drill carried `_segment` on each project.
+const SCHED_SEG_BORDER: Record<string, string> = {
+  passed:         'border-l-emerald-500',
+  failed:         'border-l-rose-500',
+  past_pending:   'border-l-violet-500',
+  future_pending: 'border-l-blue-500',
+}
+function schedRowAccent(p: Record<string, unknown>): string | null {
+  const s = p['_segment']
+  if (typeof s !== 'string') return null
+  return SCHED_SEG_BORDER[s] ?? null
 }
 
 // Aging chart — bar key is the bucket label ("0-5", "6-30", …).
@@ -343,6 +372,12 @@ const outcomesChart = computed(() => {
 //   • Failed         → red
 //   • Past Pending   → purple  (scheduled date passed, no decision)
 //   • Future Pending → blue    (scheduled date upcoming, no decision)
+//
+// Total label sits above each stack — formatter sums the row across
+// all 4 series. Click handling is dual: clicking a bar segment drills
+// just that segment; clicking the total label drills all four
+// segments combined (server tags each project with _segment so the
+// table colour-codes rows).
 const schedChart = computed(() => ({
   tooltip: {
     trigger: 'axis' as const,
@@ -361,7 +396,7 @@ const schedChart = computed(() => ({
     },
   },
   legend: { data: ['Passed', 'Failed', 'Past Pending', 'Future Pending'], top: 0, textStyle: { fontSize: 9 } },
-  grid: { top: 22, bottom: 5, left: 5, right: 5, containLabel: true },
+  grid: { top: 22, bottom: 5, left: 5, right: 14, containLabel: true },
   xAxis: {
     type: 'category' as const,
     data: scheduledFor.value.map(r => fp(r.period)),
@@ -372,7 +407,30 @@ const schedChart = computed(() => ({
     { name: 'Passed',         type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.passed),         itemStyle: { color: '#10b981' } },
     { name: 'Failed',         type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.failed),         itemStyle: { color: '#ef4444' } },
     { name: 'Past Pending',   type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.past_pending),   itemStyle: { color: '#8b5cf6' } },
-    { name: 'Future Pending', type: 'bar' as const, stack: 'a', data: scheduledFor.value.map(r => r.future_pending), itemStyle: { color: '#3b82f6' } },
+    {
+      name: 'Future Pending',
+      type: 'bar' as const,
+      stack: 'a',
+      data: scheduledFor.value.map(r => r.future_pending),
+      itemStyle: { color: '#3b82f6' },
+      // Total label sits on top of the *last* stacked series so it
+      // floats above the whole bar. The label data carries the per-
+      // bucket sum; we'll detect label-vs-segment clicks by the
+      // event target type and route accordingly.
+      label: {
+        show: true,
+        position: 'top' as const,
+        fontSize: 10,
+        fontWeight: 'bold' as const,
+        color: '#0f172a',
+        formatter: (p: { dataIndex: number }) => {
+          const r = scheduledFor.value[p.dataIndex]
+          if (!r) return ''
+          const total = (r.passed || 0) + (r.failed || 0) + (r.past_pending || 0) + (r.future_pending || 0)
+          return total > 0 ? String(total) : ''
+        },
+      },
+    },
   ],
 }))
 
@@ -600,6 +658,7 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
         :columns="drillColumns"
         :projects="drillProjects"
         :loading="drillLoading"
+        :row-accent="schedRowAccent"
         @select="(p) => (selectedProject = p)"
         @close="closeDrill"
       />

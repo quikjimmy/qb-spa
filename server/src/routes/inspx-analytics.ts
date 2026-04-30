@@ -264,9 +264,17 @@ router.get('/', (req: Request, res: Response): void => {
   //   past_pending   (purple)     — scheduled <= today, no decision yet
   //   future_pending (blue)       — scheduled  > today, no decision yet
   //
-  // Uses schedW (not pBase) so the dashboard's date range filters the
-  // x-axis to inspection_scheduled within [from, to]. Same smart-
-  // grouping as #Passed so the two charts share an x-axis.
+  // The right side of the date filter is INTENTIONALLY DROPPED for
+  // this chart — `inspection_scheduled <= dateTo` would hide future
+  // scheduled inspections (the future_pending segment we want to
+  // see). dateFrom still bounds the left edge.
+  //
+  // Same smart-grouping as #Passed so the two charts share an x-axis.
+  let schedForW = `${pBase} AND ${has('inspection_scheduled')}`
+  const schedForP = [...pP]
+  if (dateFrom) { schedForW += ' AND inspection_scheduled >= ?'; schedForP.push(dateFrom) }
+  // No upper bound on inspection_scheduled — future weeks land on the
+  // x-axis so future_pending is visible.
   const schedForGroup = useWeeks ? mondayExpr('inspection_scheduled') : "SUBSTR(inspection_scheduled, 1, 7)"
   const scheduledFor = db.prepare(`
     SELECT ${schedForGroup} as period,
@@ -279,9 +287,9 @@ router.get('/', (req: Request, res: Response): void => {
                 AND SUBSTR(inspection_scheduled, 1, 10) >  '${today}'
                THEN 1 ELSE 0 END) as future_pending,
       COUNT(*) as total
-    FROM project_cache ${schedW}
+    FROM project_cache ${schedForW}
     GROUP BY period ORDER BY period
-  `).all(...schedP)
+  `).all(...schedForP)
 
   // Filters — canonical milestone filter set (EPC, Lender, State, AHJ,
   // Utility). Each milestone analytics endpoint should return the same
@@ -482,25 +490,38 @@ router.get('/drill', (req: Request, res: Response): void => {
   ]
   const params: unknown[] = [from, to, ...dashParams]
 
+  const todayClient = req.query['today'] as string | undefined
+  const todayStr = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
+    ? todayClient : new Date().toISOString().slice(0, 10)
+
   // Optional segment filter for the new scheduled-for chart's stacked
   // bar (passed / failed / past_pending / future_pending). Mirrors the
   // CASE expressions in the chart aggregation so the click count
   // matches the bar segment count.
   const segment = String(req.query['segment'] || '').trim()
   if (metric === 'scheduled_for' && segment) {
-    const todayClient = req.query['today'] as string | undefined
-    const today = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
-      ? todayClient : new Date().toISOString().slice(0, 10)
     const has2 = (c: string) => `(${c} IS NOT NULL AND ${c} != '' AND ${c} != '0')`
     const noV2 = (c: string) => `(${c} IS NULL OR ${c} = '' OR ${c} = '0')`
     if (segment === 'passed')              where.push(has2('inspection_passed'))
     else if (segment === 'failed')         where.push(`${has2('inspx_fail_date')} AND ${noV2('inspection_passed')}`)
-    else if (segment === 'past_pending')   where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) <= '${today}'`)
-    else if (segment === 'future_pending') where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) >  '${today}'`)
+    else if (segment === 'past_pending')   where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) <= '${todayStr}'`)
+    else if (segment === 'future_pending') where.push(`${noV2('inspection_passed')} AND ${noV2('inspx_fail_date')} AND SUBSTR(inspection_scheduled, 1, 10) >  '${todayStr}'`)
   }
 
+  // For scheduled_for drills, classify each project into one of the 4
+  // segments so the client can colour-code the rows even when the user
+  // drilled the whole bucket (no segment filter). The CASE expression
+  // mirrors the chart's aggregation buckets one-for-one.
+  const segmentSelect = metric === 'scheduled_for' ? `,
+    CASE
+      WHEN inspection_passed IS NOT NULL AND inspection_passed != '' AND inspection_passed != '0' THEN 'passed'
+      WHEN inspx_fail_date  IS NOT NULL AND inspx_fail_date  != '' AND inspx_fail_date  != '0' THEN 'failed'
+      WHEN SUBSTR(inspection_scheduled, 1, 10) <= '${todayStr}' THEN 'past_pending'
+      ELSE 'future_pending'
+    END as _segment` : ''
+
   const rows = db.prepare(`
-    SELECT ${projColumns}
+    SELECT ${projColumns}${segmentSelect}
     FROM project_cache
     WHERE ${where.join(' AND ')}
     ORDER BY ${dateCol} DESC
