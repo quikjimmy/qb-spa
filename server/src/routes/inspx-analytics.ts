@@ -313,25 +313,31 @@ router.get('/', (req: Request, res: Response): void => {
 router.get('/drill', (req: Request, res: Response): void => {
   const metric = String(req.query['metric'] || 'passed')
   const period = String(req.query['period'] || '').trim()
-  if (!/^\d{4}-\d{2}(-\d{2})?$/.test(period)) {
+
+  // Period is required for date-bucket metrics; aging uses ?bucket
+  // instead, outcome uses ?period (month) + ?outcome.
+  const needsPeriod = metric !== 'aging'
+  if (needsPeriod && !/^\d{4}-\d{2}(-\d{2})?$/.test(period)) {
     res.status(400).json({ error: 'period must be YYYY-MM or YYYY-MM-DD' })
     return
   }
 
   // Expand period → [from, to]. Month-format → calendar month range.
   // Day-format → 7-day Monday-anchored week (matches the server's
-  // mondayExpr bucketing for charts).
+  // mondayExpr bucketing for charts). For aging this is unused.
   let from: string, to: string
   if (period.length === 7) {
     const [y, m] = period.split('-').map(Number)
     const last = new Date(y!, m!, 0).getDate()
     from = `${period}-01`
     to = `${period}-${String(last).padStart(2, '0')}`
-  } else {
+  } else if (period.length === 10) {
     from = period
     const d = new Date(`${period}T12:00:00Z`)
     d.setUTCDate(d.getUTCDate() + 6)
     to = d.toISOString().slice(0, 10)
+  } else {
+    from = ''; to = ''
   }
 
   const state    = req.query['state'] as string | undefined
@@ -361,6 +367,73 @@ router.get('/drill', (req: Request, res: Response): void => {
   if (lender)  { dashFilters.push('lender = ?');          dashParams.push(lender) }
   if (ahj)     { dashFilters.push('ahj_name = ?');        dashParams.push(ahj) }
   if (utility) { dashFilters.push('utility_company = ?'); dashParams.push(utility) }
+
+  // Aging bucket drill — projects whose install_completed is N days old
+  // and inspection isn't passed yet. Bucket comes off the chart label.
+  if (metric === 'aging') {
+    const bucket = String(req.query['bucket'] || '').trim()
+    const ranges: Record<string, [number, number]> = {
+      '0-5': [0, 5], '6-30': [6, 30], '31-60': [31, 60], '61-90': [61, 90], '90+': [91, 99999],
+    }
+    const r = ranges[bucket]
+    if (!r) { res.status(400).json({ error: 'unknown aging bucket' }); return }
+    const todayClient = req.query['today'] as string | undefined
+    const today = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
+      ? todayClient : new Date().toISOString().slice(0, 10)
+    const where = [
+      `install_completed IS NOT NULL AND install_completed != ''`,
+      `(inspection_passed IS NULL OR inspection_passed = '')`,
+      `CAST(JULIANDAY('${today}') - JULIANDAY(install_completed) AS INTEGER) BETWEEN ? AND ?`,
+      ...dashFilters,
+    ]
+    const params: unknown[] = [r[0], r[1], ...dashParams]
+    const rows = db.prepare(`
+      SELECT ${projColumns}
+      FROM project_cache
+      WHERE ${where.join(' AND ')}
+      ORDER BY install_completed ASC
+      LIMIT ?
+    `).all(...params, limit)
+    res.json({ projects: rows, total: rows.length, metric, bucket, from: null, to: null })
+    return
+  }
+
+  // Outcomes-by-install-month drill — pick projects whose
+  // install_completed lives in `period`, additionally filtered to the
+  // chosen outcome segment of the stacked bar (pass_first, fail_pass,
+  // scheduled, fail, na). Mirrors the WHERE clauses used in the
+  // outcomesByMonth aggregation so a `15` bar returns 15 projects.
+  if (metric === 'outcome') {
+    const outcome = String(req.query['outcome'] || '').trim()
+    const has  = (c: string) => `(${c} IS NOT NULL AND ${c} != '' AND ${c} != '0')`
+    const noV  = (c: string) => `(${c} IS NULL OR ${c} = '' OR ${c} = '0')`
+    const seg: Record<string, string> = {
+      pass_first: `${has('inspection_passed')} AND inspx_count <= 1`,
+      fail_pass:  `${has('inspection_passed')} AND inspx_count > 1`,
+      scheduled:  `${has('inspection_scheduled')} AND ${noV('inspection_passed')} AND ${noV('inspx_fail_date')}`,
+      fail:       `${has('inspx_fail_date')} AND ${noV('inspection_passed')}`,
+      na:         `${noV('inspection_scheduled')} AND ${noV('inspection_passed')}`,
+    }
+    const segWhere = seg[outcome]
+    if (!segWhere) { res.status(400).json({ error: 'unknown outcome' }); return }
+    const where = [
+      has('install_completed'),
+      `SUBSTR(install_completed, 1, 7) = ?`,
+      segWhere,
+      ...dashFilters,
+    ]
+    const monthKey = period.length === 7 ? period : period.slice(0, 7)
+    const params: unknown[] = [monthKey, ...dashParams]
+    const rows = db.prepare(`
+      SELECT ${projColumns}
+      FROM project_cache
+      WHERE ${where.join(' AND ')}
+      ORDER BY install_completed DESC
+      LIMIT ?
+    `).all(...params, limit)
+    res.json({ projects: rows, total: rows.length, metric, period: monthKey, outcome, from: `${monthKey}-01`, to: `${monthKey}-31` })
+    return
+  }
 
   if (metric === 'booking') {
     // Booking-date drill — join inspx_arrivy_scheduled to project_cache

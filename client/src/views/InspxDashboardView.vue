@@ -215,6 +215,61 @@ function onSchedBarClick(p: { dataIndex: number; name: string }) {
   drillBucket('booking', period, `Booked · ${p.name}`)
 }
 
+// Aging chart — bar key is the bucket label ("0-5", "6-30", …).
+async function onAgingBarClick(p: { dataIndex: number; name: string }) {
+  const bucket = String(p.name || '')
+  if (!/^\d+(-\d+|\+)$/.test(bucket)) return
+  drillLabel.value = `Need INSPX · Age ${bucket}d`
+  drillLoading.value = true
+  drillProjects.value = []
+  const q = new URLSearchParams({ metric: 'aging', bucket, today: lt(), limit: '500' })
+  if (fEpc.value)     q.set('epc', fEpc.value)
+  if (fLender.value)  q.set('lender', fLender.value)
+  if (fState.value)   q.set('state', fState.value)
+  if (fAhj.value)     q.set('ahj', fAhj.value)
+  if (fUtility.value) q.set('utility', fUtility.value)
+  try {
+    const res = await fetch(`/api/analytics/inspx/drill?${q}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { projects: Array<Record<string, unknown>> }
+    drillProjects.value = d.projects || []
+  } finally { drillLoading.value = false }
+  await nextTick()
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+}
+
+// Outcomes stacked-bar — seriesName picks the segment, dataIndex looks
+// up the install-month from the same slice the chart rendered.
+const OUTCOME_SERIES_MAP: Record<string, { key: string; label: string }> = {
+  'Pass':      { key: 'pass_first', label: 'Pass (1st time)' },
+  'Fail-Pass': { key: 'fail_pass',  label: 'Failed → Passed' },
+  'Sched':     { key: 'scheduled',  label: 'Scheduled, no outcome' },
+  'Fail':      { key: 'fail',       label: 'Failed, not yet passed' },
+  'N/A':       { key: 'na',         label: 'No inspection scheduled' },
+}
+async function onOutcomesBarClick(p: { dataIndex: number; name: string; seriesName: string }) {
+  const seg = OUTCOME_SERIES_MAP[p.seriesName]
+  const row = outcomesSlice.value[p.dataIndex] as { month?: string } | undefined
+  if (!seg || !row?.month) return
+  drillLabel.value = `${seg.label} · ${p.name}`
+  drillLoading.value = true
+  drillProjects.value = []
+  const q = new URLSearchParams({ metric: 'outcome', period: row.month, outcome: seg.key, limit: '500' })
+  if (fEpc.value)     q.set('epc', fEpc.value)
+  if (fLender.value)  q.set('lender', fLender.value)
+  if (fState.value)   q.set('state', fState.value)
+  if (fAhj.value)     q.set('ahj', fAhj.value)
+  if (fUtility.value) q.set('utility', fUtility.value)
+  try {
+    const res = await fetch(`/api/analytics/inspx/drill?${q}`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { projects: Array<Record<string, unknown>> }
+    drillProjects.value = d.projects || []
+  } finally { drillLoading.value = false }
+  await nextTick()
+  document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
+}
+
 // ── Charts ──
 const lb = { show: true, fontSize: 9, position: 'top' as const }
 function fp(p: string) { if (p.length === 10) return new Date(p+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}); if (p.length === 7) { const [y,m] = p.split('-'); return new Date(parseInt(y!),parseInt(m!)-1).toLocaleDateString('en-US',{month:'short'})+" '"+y!.slice(2) }; return p }
@@ -232,8 +287,14 @@ const boxChart = computed(() => {
 
 const agingChart = computed(() => ({ tooltip: { trigger: 'axis' as const }, grid: { top: 15, bottom: 5, left: 5, right: 5, containLabel: true }, xAxis: { type: 'category' as const, data: aging.value.map((b: any) => b.label), axisLabel: { fontSize: 9 } }, yAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } }, series: [{ type: 'bar' as const, data: aging.value.map((b: any) => b.count), itemStyle: { color: '#ef4444', borderRadius: [3,3,0,0] }, label: lb }] }))
 
+// Outcomes slice — last 12 install months, oldest→newest. Shared by
+// the chart series AND the click handler so seriesName + dataIndex
+// resolve back to the same row.
+const outcomesSlice = computed(() => {
+  return [...outcomesByMonth.value].reverse().slice(0, 12).reverse()
+})
 const outcomesChart = computed(() => {
-  const d = [...outcomesByMonth.value].reverse().slice(0, 12).reverse()
+  const d = outcomesSlice.value
   return { tooltip: { trigger: 'axis' as const, formatter: (p: any) => { const t = p.reduce((s: number, i: any) => s + i.value, 0); return `<b>${p[0].name}</b><br/>`+p.map((i: any) => `<span style="color:${i.color}">●</span> ${i.seriesName}: ${i.value} (${t?Math.round(i.value/t*100):0}%)`).join('<br/>') } },
     legend: { data: ['Pass','Fail-Pass','Sched','Fail','N/A'], top: 0, textStyle: { fontSize: 9 } }, grid: { top: 22, bottom: 5, left: 5, right: 5, containLabel: true },
     xAxis: { type: 'value' as const, axisLabel: { fontSize: 9 } }, yAxis: { type: 'category' as const, data: d.map((r: any) => fp(r.month)), axisLabel: { fontSize: 9 } },
@@ -417,7 +478,7 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
 
           <div class="rounded-xl bg-card p-3">
             <h3 class="text-xs font-semibold mb-2">Need Inspection — Aging</h3>
-            <VChart :option="agingChart" style="height:150px" autoresize />
+            <VChart :option="agingChart" style="height:150px" autoresize @click="onAgingBarClick" />
             <table class="w-full mt-2 text-[11px]" style="table-layout:fixed">
               <thead>
                 <tr class="text-muted-foreground">
@@ -454,10 +515,13 @@ onMounted(() => { applyDatePreset('last_30', false); loadDeciles() })
           </div>
         </div>
 
-        <!-- Row 4: Outcomes by install month -->
+        <!-- Row 4: Outcomes by install month — stacked horizontal bars.
+             Each segment is clickable: tap the red Fail slice to drill
+             that month's failures, the green Pass slice for that
+             month's first-time passes, etc. -->
         <div class="rounded-xl bg-card p-3">
           <h3 class="text-xs font-semibold mb-2">Inspection Outcomes by Install Month</h3>
-          <VChart :option="outcomesChart" style="height:280px" autoresize />
+          <VChart :option="outcomesChart" style="height:280px" autoresize @click="onOutcomesBarClick" />
         </div>
 
         <!-- Row 5: Decile table — selectable KPI metric × dimension. -->

@@ -68,31 +68,41 @@ function toggleBiz(v: boolean) {
 </script>
 
 <template>
-  <div class="flex gap-1 items-center overflow-x-auto no-scrollbar">
-    <div v-if="showBiz" class="flex gap-0.5 p-0.5 bg-muted rounded-lg shrink-0 mr-1">
-      <button
-        type="button"
-        class="px-1.5 py-0.5 text-[9px] font-medium rounded cursor-pointer"
-        :class="!bizDays ? 'bg-card shadow-sm' : 'text-muted-foreground'"
-        @click="toggleBiz(false)"
-      >Cal</button>
-      <button
-        type="button"
-        class="px-1.5 py-0.5 text-[9px] font-medium rounded cursor-pointer"
-        :class="bizDays ? 'bg-card shadow-sm' : 'text-muted-foreground'"
-        @click="toggleBiz(true)"
-      >Biz</button>
+  <!-- Two rows so neither the day-unit toggle nor the preset chips
+       crowd the other off-screen on narrow viewports. The Cal/Biz
+       toggle is its own labelled segmented-control above the date
+       chips so it's never hidden behind horizontal overflow. -->
+  <div class="flex flex-col gap-1.5 min-w-0">
+    <div v-if="showBiz" class="flex items-center gap-2 min-w-0">
+      <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground shrink-0">Days</span>
+      <div class="inline-flex rounded-md border overflow-hidden shrink-0">
+        <button
+          type="button"
+          class="px-2.5 py-1 text-[11px] font-medium cursor-pointer transition-colors"
+          :class="!bizDays ? 'bg-primary text-primary-foreground' : 'bg-card hover:bg-muted'"
+          @click="toggleBiz(false)"
+        >Cal days</button>
+        <button
+          type="button"
+          class="px-2.5 py-1 text-[11px] font-medium cursor-pointer transition-colors border-l"
+          :class="bizDays ? 'bg-primary text-primary-foreground' : 'bg-card hover:bg-muted'"
+          @click="toggleBiz(true)"
+        >Biz days</button>
+      </div>
     </div>
-    <button
-      v-for="p in presets"
-      :key="p.key"
-      type="button"
-      class="px-2 py-0.5 rounded-full text-[9px] font-semibold border whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-      :class="preset === p.key
-        ? 'bg-foreground text-background border-foreground'
-        : 'bg-card border-border text-muted-foreground hover:text-foreground'"
-      @click="selectPreset(p.key)"
-    >{{ p.label }}</button>
+
+    <div class="flex gap-1 items-center overflow-x-auto no-scrollbar min-w-0">
+      <button
+        v-for="p in presets"
+        :key="p.key"
+        type="button"
+        class="px-2 py-0.5 rounded-full text-[9px] font-semibold border whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+        :class="preset === p.key
+          ? 'bg-foreground text-background border-foreground'
+          : 'bg-card border-border text-muted-foreground hover:text-foreground'"
+        @click="selectPreset(p.key)"
+      >{{ p.label }}</button>
+    </div>
   </div>
 </template>
 
