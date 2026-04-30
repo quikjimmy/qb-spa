@@ -194,6 +194,17 @@ interface NoteRow {
   notify_rep: number
 }
 const notes = ref<NoteRow[]>([])
+// Most recent retention row (used by the milestone strip — the full list
+// lives in RetentionCard fetched separately when the user opens the step).
+interface RetentionSummary {
+  record_id: number
+  cancel_request_at: string | null
+  resolved_at: string | null
+  resolution_type: string | null
+  request_status: string | null
+  is_ror: number
+}
+const retentionSummary = ref<RetentionSummary | null>(null)
 const starred = ref(false)
 
 const isDesktop = ref(false)
@@ -345,6 +356,19 @@ async function loadNotes() {
   } catch { /* ignore */ }
 }
 
+// Retention summary — first row in /api/retention is the most recent
+// (server orders by cancel_request_at DESC). When non-null, the milestone
+// strip appends a disconnected "Retention" step at the end.
+async function loadRetention() {
+  try {
+    const res = await fetch(`/api/retention?project_id=${recordId.value}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    const items = (data.items as RetentionSummary[]) ?? []
+    retentionSummary.value = items[0] ?? null
+  } catch { /* ignore — retention is optional context */ }
+}
+
 async function loadFeed() {
   try {
     const res = await fetch(`/api/feed?project_id=${recordId.value}&limit=200`, { headers: hdrs() })
@@ -468,7 +492,7 @@ async function loadArrivy() {
 }
 
 async function loadAll() {
-  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed(), loadNotes(), loadArrivy()])
+  await Promise.all([loadProject(), loadComms(), loadTickets(), loadFeed(), loadNotes(), loadArrivy(), loadRetention()])
 }
 
 async function toggleStar() {
@@ -642,6 +666,7 @@ const customerForCard = computed(() => {
 
 const stripSteps = computed<StripStep[]>(() => {
   if (!project.value) return []
+  const r = retentionSummary.value
   return computeStripSteps({
     ...project.value,
     arrivy_survey_status: arrivySurveyTask.value?.status ?? null,
@@ -650,6 +675,11 @@ const stripSteps = computed<StripStep[]>(() => {
     arrivy_survey_cancelled_at:     arrivySurveyTask.value?.cancelledAt     ?? null,
     arrivy_install_cancelled_at:    arrivyInstallTask.value?.cancelledAt    ?? null,
     arrivy_inspection_cancelled_at: arrivyInspectionTask.value?.cancelledAt ?? null,
+    retention_request_at:      r?.cancel_request_at ?? null,
+    retention_resolved_at:     r?.resolved_at ?? null,
+    retention_resolution_type: r?.resolution_type ?? null,
+    retention_request_status:  r?.request_status ?? null,
+    retention_is_ror:          !!r?.is_ror,
   })
 })
 const transits = computed(() => project.value ? computeTransits(project.value) : [])

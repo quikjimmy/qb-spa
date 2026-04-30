@@ -57,15 +57,17 @@ function transitFor(toId: StripStep['id']): TransitDays | undefined {
 
       <!-- Dot row + connectors + transit pill -->
       <div class="relative w-full flex items-center justify-center mt-1.5 mb-1 h-4">
-        <!-- Left half-connector -->
+        <!-- Left half-connector — skipped when this step is `disconnected`
+             (Retention) or when the previous neighbor is. -->
         <div
-          v-if="i > 0"
+          v-if="i > 0 && !s.disconnected && !(steps[i - 1] && steps[i - 1]!.disconnected)"
           class="absolute left-0 right-1/2 h-px"
           :class="steps[i - 1] && steps[i - 1]!.state === 'done' ? 'bg-emerald-300' : 'bg-slate-200'"
         />
-        <!-- Right half-connector -->
+        <!-- Right half-connector — skipped when this step is `disconnected`
+             or when the next neighbor is. -->
         <div
-          v-if="i < steps.length - 1"
+          v-if="i < steps.length - 1 && !s.disconnected && !(steps[i + 1] && steps[i + 1]!.disconnected)"
           class="absolute left-1/2 right-0 h-px"
           :class="s.state === 'done' ? 'bg-emerald-300' : 'bg-slate-200'"
         />

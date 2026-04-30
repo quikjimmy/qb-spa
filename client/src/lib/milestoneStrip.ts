@@ -38,7 +38,7 @@ export interface InfoFlag {
 }
 
 export interface StripStep {
-  id: 'sale' | 'intake' | 'survey' | 'design' | 'permit' | 'nem' | 'install' | 'inspection' | 'pto'
+  id: 'sale' | 'intake' | 'survey' | 'design' | 'permit' | 'nem' | 'install' | 'inspection' | 'pto' | 'retention'
   label: string
   abbrev: string
   state: StepState
@@ -54,6 +54,10 @@ export interface StripStep {
   feedKeywords: string[]
   /** Top-right red-dot indicator. */
   infoFlag: InfoFlag
+  /** When true, MilestoneStrip skips the half-connectors that would link
+   *  this step to its left/right neighbors. Used by the Retention step so
+   *  it floats off the end of the flow rather than appearing in-line. */
+  disconnected?: boolean
 }
 
 export interface TransitDays {
@@ -108,6 +112,14 @@ export interface ProjectStripFields {
   permit_missing_items?: string | null
   nem_missing_items?: string | null
   pto_missing_items?: string | null
+  // Retention summary — when present, append a "Retention" step to the end
+  // of the strip (disconnected from the rest of the flow). Drawn from the
+  // most recent retention_cache row for this project.
+  retention_request_at?: string | null
+  retention_resolution_type?: string | null   // "Cancel" | "Saved" | "Saved by Rep" | …
+  retention_resolved_at?: string | null
+  retention_request_status?: string | null    // "New Request" | "Working" | …
+  retention_is_ror?: boolean | null
 }
 
 // Split a `;`-joined multi-select into a clean string array. Tolerates
@@ -422,7 +434,58 @@ export function computeStripSteps(p: ProjectStripFields): StripStep[] {
     }
   })()
 
-  return [sale, intake, survey, design, permit, nem, install, inspection, pto]
+  // Retention — only appears when the project has any retention activity
+  // (request_at set, or a resolution recorded). Floats off the end of the
+  // strip via `disconnected: true` so it doesn't visually chain to PTO.
+  const steps: StripStep[] = [sale, intake, survey, design, permit, nem, install, inspection, pto]
+  const retention = buildRetentionStep(p)
+  if (retention) steps.push(retention)
+  return steps
+}
+
+function buildRetentionStep(p: ProjectStripFields): StripStep | null {
+  if (!has(p.retention_request_at) && !has(p.retention_resolved_at)) return null
+
+  const resolution = (p.retention_resolution_type ?? '').toLowerCase()
+  const requestStatus = (p.retention_request_status ?? '').toLowerCase()
+  let state: StepState = 'active'
+  let label = 'Retention'
+  if (has(p.retention_resolved_at)) {
+    if (resolution === 'cancel') state = 'cancelled'
+    else if (resolution === 'saved' || resolution === 'saved by rep') state = 'done'
+    else state = 'done' // any other resolved outcome (Pushed back to active, etc.)
+  } else if (requestStatus === 'cancelled') {
+    state = 'cancelled'
+  } else if (requestStatus === 'working' || requestStatus === 'new request') {
+    state = 'active'
+  }
+
+  // Show the cancel-request timestamp under the dot — that's what the user
+  // wants visible: "when the Request to Cancel was made".
+  const date = pickDate(p.retention_request_at, p.retention_resolved_at)
+
+  // Sub-step list mirrors the request → resolution arc.
+  const subSteps: SubStep[] = [
+    { label: 'Cancel requested', date: pickDate(p.retention_request_at), state: has(p.retention_request_at) ? 'done' : 'pending' },
+    { label: 'Resolved', date: pickDate(p.retention_resolved_at), state: has(p.retention_resolved_at) ? (state === 'cancelled' ? 'rejected' : 'done') : 'pending' },
+  ]
+
+  // Tag ROR cases in the abbreviation so the strip reads at a glance.
+  if (p.retention_is_ror) label = 'Retention · ROR'
+
+  return {
+    id: 'retention',
+    label,
+    abbrev: p.retention_is_ror ? 'ROR' : 'Ret',
+    state,
+    date,
+    durationDays: null,
+    durationLabel: null,
+    subSteps,
+    feedKeywords: ['retention', 'cancel', 'pending cancel', 'ror'],
+    infoFlag: { show: false, reason: '' },
+    disconnected: true,
+  }
 }
 
 // SLA thresholds matching the QB formula. The "from" date is the

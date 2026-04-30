@@ -4,6 +4,7 @@ import type { StripStep } from '@/lib/milestoneStrip'
 import { fmtFull } from '@/lib/milestoneStrip'
 import { STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 import IntakeChecklist from './IntakeChecklist.vue'
+import RetentionCard from './RetentionCard.vue'
 
 interface FeedRow {
   id: string | number
@@ -200,7 +201,17 @@ function fmtTime(s: string): string {
       <IntakeChecklist :project-rid="projectRid" :status="intakeStatus" />
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">
+    <!-- Retention sub-view — replaces the standard sub-step grid for the
+         Retention milestone. Renders one card per retention record, ported
+         from the QB Retention Dashboard "Formatted Card" formula. -->
+    <div v-if="step.id === 'retention' && projectRid" class="px-4 pb-4">
+      <RetentionCard :project-rid="projectRid" />
+    </div>
+
+    <!-- The standard sub-step + related-events grid is suppressed for the
+         Retention milestone — the RetentionCard above already carries that
+         information in the QB-card layout the user asked for. -->
+    <div v-if="step.id !== 'retention'" class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 px-4 pb-4">
       <!-- Sub-checklist -->
       <div>
         <div class="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-2">Sub-steps</div>
