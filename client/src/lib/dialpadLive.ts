@@ -22,6 +22,12 @@ export interface LiveEvent {
   // on rows where is_read=0 AND scope=me. Mark-as-read fires when the
   // user opens the thread / timeline dialog.
   is_read?: number
+  // Caller attribution from the Arrivy + portal-users join (server-side
+  // in callerAttribution.ts). 'crew' = Arrivy field role, 'internal' =
+  // Arrivy office or qb-spa user, 'external' = likely customer (no chip).
+  caller_kind?: 'crew' | 'internal' | 'external' | null
+  caller_name?: string | null
+  caller_role?: string | null
 }
 
 const MAX_EVENTS = 50

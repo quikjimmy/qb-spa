@@ -23,6 +23,16 @@ const {
   toggleSound,
 } = useDialpadLive()
 
+// Caller attribution chip — server stamps each event as crew / internal /
+// external (Arrivy + portal-user join). External is the default state for
+// likely-customer rows so it gets no chip; only the visible categories are
+// keyed here. Tones match Communications.vue on the project detail page so
+// the same vocabulary reads consistently across views.
+const callerChip: Record<string, { label: string; cls: string }> = {
+  crew:     { label: 'Crew',     cls: 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300' },
+  internal: { label: 'Internal', cls: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-300' },
+}
+
 // Phone → customer name lookup. Batched in one HTTP call across all
 // visible events; results cached across the inbox + live panel.
 const { matches: phoneMatches, primeMany } = usePhoneMatches()
@@ -205,11 +215,25 @@ function visualFor(e: LiveEvent): EventVisual {
             />
           </div>
           <div class="flex-1 min-w-0">
-            <!-- Caller line: matched customer name when we have one; otherwise
-                 the formatted phone. The phone gets a secondary line below
-                 the name so it stays visible for callbacks. -->
-            <p v-if="customerName(e)" class="font-semibold text-[12px] truncate">{{ customerName(e) }}</p>
-            <p v-else class="font-mono text-[12px] truncate">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
+            <!-- Caller line: server-side caller_name (Arrivy roster / portal
+                 user) wins over the phone-cache customer match, since it's
+                 the more authoritative attribution. Falls back to the
+                 customer match, then to the formatted phone.
+                 A small Crew/Internal chip sits next to the name so the
+                 viewer can tell at a glance whether an inbound call is
+                 from a field tech vs an unknown caller. External (likely
+                 customer) gets no chip — implicit default. -->
+            <div class="flex items-center gap-1.5 min-w-0">
+              <p v-if="e.caller_name" class="font-semibold text-[12px] truncate min-w-0">{{ e.caller_name }}</p>
+              <p v-else-if="customerName(e)" class="font-semibold text-[12px] truncate min-w-0">{{ customerName(e) }}</p>
+              <p v-else class="font-mono text-[12px] truncate min-w-0">{{ formatPhone(e.external_number) || e.user_name || e.user_email || 'Event' }}</p>
+              <span
+                v-if="e.caller_kind && callerChip[e.caller_kind]"
+                class="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider leading-none"
+                :class="callerChip[e.caller_kind]!.cls"
+                :title="e.caller_role ? `${callerChip[e.caller_kind]!.label} · ${e.caller_role}` : callerChip[e.caller_kind]!.label"
+              >{{ callerChip[e.caller_kind]!.label }}</span>
+            </div>
             <!-- For SMS rows, show the actual message body as the secondary
                  line when the row is collapsed. Calls keep the state arc. -->
             <p v-if="e.event_kind === 'sms' && smsBody(e)" class="text-[11px] truncate" :class="e.direction === 'outgoing' ? 'text-emerald-700' : 'text-foreground'">
