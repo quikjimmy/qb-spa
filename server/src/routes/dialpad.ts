@@ -1426,15 +1426,27 @@ router.get('/events/stream', (req: Request, res: Response): void => {
   })
 })
 
-// REST fallback — recent N events. Useful for reconnect/backfill.
+// REST fallback — recent N events. Used both for initial backfill (no
+// cursor) and for "load older" pagination from the live panel (before_id).
 router.get('/events/recent', (req: Request, res: Response): void => {
-  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 1), 500)
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] ?? '100'), 10) || 100, 1), 500)
   const sinceId = parseInt(String(req.query['since_id'] ?? '0'), 10) || 0
+  // before_id lets the client paginate backwards. Used by the live panel's
+  // "Load older" button so users can scroll back through history without
+  // bumping the singleton cap.
+  const beforeIdRaw = req.query['before_id']
+  const beforeId = beforeIdRaw ? parseInt(String(beforeIdRaw), 10) : 0
   // Per-user is_read flag: SMS rows resolve via dialpad_sms_reads
   // (event_id), call rows via dialpad_inbox_reads (call_id). Anonymous
   // callers (no JWT) get is_read=0 — the live panel only surfaces unread
   // visuals when scope=me anyway.
   const userId = req.user?.userId ?? -1
+  const where: string[] = []
+  const params: unknown[] = [userId, userId]
+  if (sinceId > 0) { where.push('e.id > ?'); params.push(sinceId) }
+  if (beforeId > 0) { where.push('e.id < ?'); params.push(beforeId) }
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  params.push(limit)
   const rows = db.prepare(
     `SELECT e.id, e.event_kind, e.event_state, e.call_id, e.user_email, e.user_name,
             e.external_number, e.direction, e.raw_json, e.received_at,
@@ -1446,10 +1458,10 @@ router.get('/events/recent', (req: Request, res: Response): void => {
      FROM dialpad_events e
      LEFT JOIN dialpad_sms_reads sr ON sr.user_id = ? AND sr.event_id = e.id
      LEFT JOIN dialpad_inbox_reads ir ON ir.user_id = ? AND ir.call_id = e.call_id
-     WHERE e.id > ?
+     ${whereSql}
      ORDER BY e.id DESC
      LIMIT ?`
-  ).all(userId, userId, sinceId, limit) as Array<DialpadEvent & { is_read: number }>
+  ).all(...params) as Array<DialpadEvent & { is_read: number }>
   // Tag each row with caller_kind so the live panel + Comms Hub can
   // colour-code internal/crew vs. external (customer) interactions.
   decorateCommsItems(rows as unknown as Array<Record<string, unknown>>)
@@ -1472,7 +1484,18 @@ router.get('/events/recent', (req: Request, res: Response): void => {
     r['is_mine'] = email && myEmails.has(email) ? 1 : 0
   }
 
-  res.json({ rows, limit, since_id: sinceId })
+  // oldest_id lets the client paginate further back (use as before_id on
+  // the next request). has_more is a coarse signal — true means we hit
+  // the limit, so older history likely exists.
+  const oldestId = rows.length > 0 ? Number(rows[rows.length - 1]!.id) : null
+  res.json({
+    rows,
+    limit,
+    since_id: sinceId,
+    before_id: beforeId || null,
+    oldest_id: oldestId,
+    has_more: rows.length === limit,
+  })
 })
 
 // Mark a single live event as read for the current user. Used by

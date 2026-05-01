@@ -21,6 +21,9 @@ const {
   setScope,
   soundEnabled,
   toggleSound,
+  loadingOlder,
+  hasMoreOlder,
+  loadOlderEvents,
 } = useDialpadLive()
 
 // Caller attribution chip — server stamps each event as crew / internal /
@@ -258,6 +261,24 @@ function visualFor(e: LiveEvent): EventVisual {
         </div>
 
       </div>
+
+      <!-- Load older — paginates beyond the in-memory cap. Disabled when
+           a request is in flight or we've already walked off the end. -->
+      <div v-if="hasMoreOlder" class="px-3 sm:px-4 py-2 border-t bg-muted/10">
+        <button
+          type="button"
+          class="w-full inline-flex items-center justify-center gap-1.5 h-7 text-[11px] font-medium rounded-md hover:bg-muted/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="loadingOlder"
+          @click="loadOlderEvents"
+        >
+          <svg v-if="loadingOlder" class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          {{ loadingOlder ? 'Loading…' : 'Load older history' }}
+        </button>
+      </div>
+      <p v-else class="px-3 py-1.5 text-[10px] text-center text-muted-foreground/60 border-t bg-muted/10">
+        Beginning of recorded history
+      </p>
     </div>
 
     <!-- Unified contact thread — both SMS and call rows open here. -->

@@ -34,13 +34,20 @@ export interface LiveEvent {
   is_mine?: number
 }
 
-const MAX_EVENTS = 50
+// Cap on the in-memory ring buffer. Bumped from 50 → 200 so refresh
+// surfaces a real chunk of history rather than just the last hour. The
+// "Load older" action paginates beyond this via the before_id cursor.
+const MAX_EVENTS = 200
 
 const events = ref<LiveEvent[]>([])
 const stateHistory = ref<Record<string, string[]>>({})
 const connected = ref(false)
 const reconnectAttempt = ref(0)
 const lastId = ref(0)
+// Loading-older state — exposed so the UI can show a spinner while a
+// pagination request is in flight.
+const loadingOlder = ref(false)
+const hasMoreOlder = ref(true)
 
 let es: EventSource | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -251,6 +258,42 @@ function ingest(ev: LiveEvent): void {
   else if (isNewCall) playTone('call')
 }
 
+// Pulls older events than what's currently in the buffer. Cursor uses the
+// minimum id we have, so we walk straight back without re-fetching the
+// existing window. Skips when the previous load returned no more rows.
+export async function loadOlderEvents(): Promise<{ added: number }> {
+  if (!auth?.token) return { added: 0 }
+  if (loadingOlder.value || !hasMoreOlder.value) return { added: 0 }
+  if (events.value.length === 0) return { added: 0 }
+  loadingOlder.value = true
+  try {
+    const oldestLoaded = events.value.reduce((min, e) => Math.min(min, e.id), Number.MAX_SAFE_INTEGER)
+    if (!Number.isFinite(oldestLoaded)) return { added: 0 }
+    const res = await fetch(`/api/dialpad/events/recent?limit=100&before_id=${oldestLoaded}`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    if (!res.ok) return { added: 0 }
+    const data = await res.json() as { rows: LiveEvent[]; has_more: boolean; oldest_id: number | null }
+    if (!data.has_more) hasMoreOlder.value = false
+    // Dedupe against current set (defensive — paginated walk shouldn't
+    // overlap, but a concurrent SSE arrival could land on the boundary).
+    const have = new Set(events.value.map(e => e.id))
+    const fresh = data.rows.filter(r => !have.has(r.id))
+    if (fresh.length === 0) {
+      hasMoreOlder.value = false
+      return { added: 0 }
+    }
+    // Append (older events go to the bottom of the list — the panel
+    // renders newest-first).
+    events.value = [...events.value, ...fresh]
+    return { added: fresh.length }
+  } catch {
+    return { added: 0 }
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
 async function backfill(): Promise<void> {
   if (!auth?.token) return
   try {
@@ -310,6 +353,9 @@ export function useDialpadLive() {
     stateHistory,
     connected,
     reconnectAttempt,
+    loadingOlder,
+    hasMoreOlder,
+    loadOlderEvents,
     scope,
     setScope,
     soundEnabled,
