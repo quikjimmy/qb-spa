@@ -51,30 +51,59 @@ export function lookupCallers(rawPhones: Array<string | null | undefined>): Map<
     })
   }
 
-  // qb-spa users — fill in any phones Arrivy didn't claim.
+  // qb-spa users — fill in any phones Arrivy didn't claim. The users table
+  // does NOT currently carry primary_phone or full_name columns; this branch
+  // is wrapped in a runtime guard so a future additive migration lights it
+  // up automatically without breaking comms in the meantime. Without the
+  // guard, every /events/recent + every SSE-decorated event threw
+  // SqliteError: no such column: full_name and the live feed silently died.
   const remaining = canonicals.filter(c => !out.has(c))
-  if (remaining.length > 0) {
-    // The users table stores primary_phone in raw human format; we
-    // normalize on read with a small helper since SQLite lacks a
-    // built-in regex-replace. Pull all candidate users with non-null
-    // primary_phone and filter in JS — the user count is small.
-    const candidatePhs = remaining
-    const userRows = db.prepare(
-      `SELECT id, full_name, primary_phone FROM users WHERE primary_phone IS NOT NULL AND primary_phone != ''`
-    ).all() as Array<{ id: number; full_name: string | null; primary_phone: string | null }>
-    const userByPhone = new Map<string, { name: string | null }>()
-    for (const u of userRows) {
-      const c = canonicalPhone(u.primary_phone)
-      if (c) userByPhone.set(c, { name: u.full_name })
-    }
-    for (const c of candidatePhs) {
-      const u = userByPhone.get(c)
-      if (!u) continue
-      out.set(c, { kind: 'internal', name: u.name, role: 'app user', source: 'app_user' })
+  if (remaining.length > 0 && hasUsersPhoneColumns()) {
+    try {
+      const userRows = db.prepare(
+        `SELECT id, name AS full_name, primary_phone FROM users
+         WHERE primary_phone IS NOT NULL AND primary_phone != ''`
+      ).all() as Array<{ id: number; full_name: string | null; primary_phone: string | null }>
+      const userByPhone = new Map<string, { name: string | null }>()
+      for (const u of userRows) {
+        const c = canonicalPhone(u.primary_phone)
+        if (c) userByPhone.set(c, { name: u.full_name })
+      }
+      for (const c of remaining) {
+        const u = userByPhone.get(c)
+        if (!u) continue
+        out.set(c, { kind: 'internal', name: u.name, role: 'app user', source: 'app_user' })
+      }
+    } catch (e) {
+      // Cache the failure so we don't spam logs on every comms request.
+      logUsersFallbackError(e)
     }
   }
 
   return out
+}
+
+// Checked once per process — re-evaluating PRAGMA on every comms event is
+// pointless when the schema can't change at runtime without a restart.
+let _usersPhoneColumnsChecked = false
+let _usersPhoneColumnsExist = false
+function hasUsersPhoneColumns(): boolean {
+  if (_usersPhoneColumnsChecked) return _usersPhoneColumnsExist
+  _usersPhoneColumnsChecked = true
+  try {
+    const cols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
+    const names = new Set(cols.map(c => c.name))
+    _usersPhoneColumnsExist = names.has('primary_phone')
+  } catch { _usersPhoneColumnsExist = false }
+  return _usersPhoneColumnsExist
+}
+
+let _loggedUsersFallbackError = false
+function logUsersFallbackError(e: unknown): void {
+  if (_loggedUsersFallbackError) return
+  _loggedUsersFallbackError = true
+  console.warn('[caller-attribution] users-fallback query failed (suppressing further):',
+    e instanceof Error ? e.message : String(e))
 }
 
 /** Single-shot convenience wrapper. Returns null when no match found

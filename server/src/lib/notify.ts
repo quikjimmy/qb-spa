@@ -32,14 +32,15 @@ export function insertIfNew(a: NotifyArgs): number | null {
 
 /** Resolve the project coordinator for a given QB project record id by
  *  cross-referencing project_cache.coordinator (a name string) against
- *  users.full_name. Returns the user.id or null when no match. */
+ *  users.name. (Schema column is `name`, not `full_name` — earlier
+ *  `full_name` reference threw `no such column` at every call site.) */
 export function pcUserIdForProject(projectRid: number): number | null {
   const row = db.prepare(
     'SELECT coordinator FROM project_cache WHERE record_id = ? LIMIT 1'
   ).get(projectRid) as ProjectCacheRow | undefined
   if (!row?.coordinator) return null
   const u = db.prepare(
-    'SELECT id FROM users WHERE LOWER(TRIM(full_name)) = LOWER(TRIM(?)) AND is_active = 1 LIMIT 1'
+    'SELECT id FROM users WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND is_active = 1 LIMIT 1'
   ).get(row.coordinator) as UserRow | undefined
   return u?.id ?? null
 }
