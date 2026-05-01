@@ -33,9 +33,15 @@ function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
 const rows = ref<Thread[]>([])
 const totalUnread = ref(0)
 const loading = ref(false)
-const collapsed = ref(false)
+// Tri-state: explicit user choice (post-v2) wins. Otherwise we expand by
+// default when there's something needing a reply, collapse when there
+// isn't. v1 storage key is read-then-deleted on first load so yesterday's
+// "I collapsed it" choice doesn't override today's needs-reply expansion.
+const collapsed = ref(true)
+const userExplicitlyToggled = ref(false)
 
-const COLLAPSE_KEY = 'comms.recent.collapsed'
+const COLLAPSE_KEY = 'comms.recent.collapsed.v2'
+const COLLAPSE_KEY_V1 = 'comms.recent.collapsed'
 
 const smsThread = ref<{ open: boolean; number: string; name: string }>({ open: false, number: '', name: '' })
 
@@ -55,14 +61,29 @@ async function load() {
 // is open since marking a message read while we're polling would race.
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
-  collapsed.value = localStorage.getItem(COLLAPSE_KEY) === '1'
+  // One-shot v1 -> v2 migration. v1 was always-respected; the spec calls
+  // for treating v1 as "no explicit choice" so the needs-reply default
+  // can fire on first post-deploy load. Read-then-delete the old key.
+  if (localStorage.getItem(COLLAPSE_KEY_V1) !== null) {
+    localStorage.removeItem(COLLAPSE_KEY_V1)
+  }
+  const v2 = localStorage.getItem(COLLAPSE_KEY)
+  if (v2 === '1') { collapsed.value = true; userExplicitlyToggled.value = true }
+  else if (v2 === '0') { collapsed.value = false; userExplicitlyToggled.value = true }
   await load()
+  // Apply needs-reply default once data lands, only if the user hasn't
+  // made an explicit post-v2 choice yet.
+  if (!userExplicitlyToggled.value) {
+    collapsed.value = needsReplyCount.value === 0
+  }
   refreshTimer = setInterval(() => { if (!smsThread.value.open) void load() }, 60_000)
 })
 onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
+  // Explicit toggle pins the choice — subsequent loads won't auto-flip.
+  userExplicitlyToggled.value = true
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? '1' : '0')
 }
 

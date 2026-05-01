@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
 import CommsHeatmap from '@/components/CommsHeatmap.vue'
-import DialpadLivePanel from '@/components/DialpadLivePanel.vue'
+import DialpadLiveStrip from '@/components/DialpadLiveStrip.vue'
 import CommsInbox from '@/components/CommsInbox.vue'
 import CommsSearch from '@/components/CommsSearch.vue'
 import RecentThreads from '@/components/RecentThreads.vue'
@@ -340,9 +340,12 @@ function setMainTab(t: CommsTab) {
          when there are no threads. -->
     <RecentThreads />
 
-    <!-- Live events panel (SSE). Hidden when the persistent Live Hub rail
-         is open so we don't render the same feed twice. -->
-    <DialpadLivePanel v-if="!railOpen" />
+    <!-- One-line live feed indicator. The full DialpadLivePanel is still
+         reachable — desktop click opens the Live Hub rail, mobile click
+         expands the panel inline. Hidden when the rail is already open
+         (the rail mounts the panel directly). Replaces the ~220 px
+         inline panel that used to push the inbox below the fold. -->
+    <DialpadLiveStrip v-if="!railOpen" />
 
     <!-- Top-level tabs: Inbox vs Reporting -->
     <div class="flex rounded-lg border overflow-hidden bg-muted/20 w-full sm:w-auto sm:self-start">
