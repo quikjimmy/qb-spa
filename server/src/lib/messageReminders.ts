@@ -64,7 +64,9 @@ function fireDueReminders(): void {
         : 'You asked to be reminded about this conversation.'
       // Link routes back to the comms hub with the contact pre-selected so
       // a click drops the user straight into the thread drawer.
-      const link = `/comms-hub?open_thread=${encodeURIComponent(r.external_number)}`
+      // Route is /comms (not /comms-hub) — see client/src/router/index.ts.
+      // Wrong path quietly fails router.push and the user lands nowhere.
+      const link = `/comms?open_thread=${encodeURIComponent(r.external_number)}`
 
       insertNotification.run(r.user_id, 'comms_reminder', title, bodyText, link)
       markFired.run(r.id)

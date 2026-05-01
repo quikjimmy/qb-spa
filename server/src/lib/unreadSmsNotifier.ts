@@ -109,7 +109,9 @@ function fireUnreadNotifications(): void {
       const bodyText = body
         ? trim(body.trim(), 240)
         : 'Tap to open the conversation.'
-      const link = `/comms-hub?open_thread=${encodeURIComponent(r.external_number)}`
+      // Route is /comms (not /comms-hub) — see client/src/router/index.ts.
+      // Wrong path quietly fails router.push and the user lands nowhere.
+      const link = `/comms?open_thread=${encodeURIComponent(r.external_number)}`
 
       insertNotification.run(r.user_id, 'comms_unread_sms', title, bodyText, link)
       markNotified.run(r.user_id, r.event_id)

@@ -889,6 +889,19 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_due ON dialpad_message_reminders(fired_at, remind_at)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_user ON dialpad_message_reminders(user_id, remind_at)`)
 
+// Retag any in-flight comms notifications that were created with the
+// wrong `/comms-hub?...` path (the comms route is mounted at `/comms`).
+// Old rows pointed at a non-existent route so the bell click went
+// nowhere; rewriting in place lets a previously-stuck reminder land on
+// the right thread once the user clicks it. Idempotent — once the
+// strings are repointed the WHERE clause matches nothing.
+db.exec(`
+  UPDATE notifications
+  SET link = REPLACE(link, '/comms-hub?', '/comms?')
+  WHERE type IN ('comms_reminder', 'comms_unread_sms')
+    AND link LIKE '/comms-hub?%'
+`)
+
 // One-shot tracking for the "unread direct SMS" notifier worker so the
 // same incoming SMS doesn't generate a notification on every 5-min sweep.
 // Composite PK on (user_id, event_id) mirrors dialpad_sms_reads.
