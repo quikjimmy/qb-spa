@@ -1,0 +1,41 @@
+# CODEOWNERS — pulls a review request automatically on any PR that touches
+# the listed paths. Adjust the GitHub handle once a comms-owner team exists.
+# Until a real team is set up, the @quikjimmy fallback at least surfaces every
+# comms-touching PR for review rather than letting it merge silently.
+
+# ---- Comms / contact-center surface (owned by contact-center-architect) ----
+# Server
+server/src/routes/dialpad.ts                  @quikjimmy
+server/src/routes/dialpad-webhooks.ts         @quikjimmy
+server/src/lib/dialpadEvents.ts               @quikjimmy
+server/src/lib/dialpadEventMirror.ts          @quikjimmy
+server/src/lib/messageReminders.ts            @quikjimmy
+server/src/lib/unreadSmsNotifier.ts           @quikjimmy
+server/src/lib/callerAttribution.ts           @quikjimmy
+server/src/lib/phone.ts                       @quikjimmy
+
+# Client
+client/src/views/CommsHubView.vue             @quikjimmy
+client/src/components/CommsSearch.vue         @quikjimmy
+client/src/components/CommsInbox.vue          @quikjimmy
+client/src/components/CommsHeatmap.vue        @quikjimmy
+client/src/components/CommsLiveRail.vue       @quikjimmy
+client/src/components/RecentThreads.vue       @quikjimmy
+client/src/components/SmsThreadDialog.vue     @quikjimmy
+client/src/components/CallTimelineDialog.vue  @quikjimmy
+client/src/components/ContactCard.vue         @quikjimmy
+client/src/components/ComposeDialog.vue       @quikjimmy
+client/src/components/DialpadLivePanel.vue    @quikjimmy
+client/src/composables/useSmsThread.ts        @quikjimmy
+client/src/composables/useCommsRail.ts        @quikjimmy
+client/src/lib/dialpadLive.ts                 @quikjimmy
+client/src/lib/callBuckets.ts                 @quikjimmy
+client/src/lib/smsBody.ts                     @quikjimmy
+
+# Notification routing tied to /comms — touched by the bell + comms reminders
+client/src/components/NotificationBell.vue    @quikjimmy
+server/src/routes/notifications.ts            @quikjimmy
+
+# Comms-specific workflow + deployment docs
+docs/comms-deployment-strategy.md             @quikjimmy
+.claude/agents/contact-center-architect.md    @quikjimmy
