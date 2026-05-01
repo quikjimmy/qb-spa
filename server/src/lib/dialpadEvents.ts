@@ -32,8 +32,14 @@ export function publish(event: DialpadEvent): void {
 }
 
 // SSE helper: writes event stream headers, pipes published events to the
-// response, and cleans up the subscriber on disconnect.
-export function attachSseStream(res: Response): void {
+// response, and cleans up the subscriber on disconnect. Optional `decorate`
+// runs per-subscriber before serialization so per-user fields (is_mine,
+// caller_kind, ...) can be stamped without contaminating the shared
+// publish queue.
+export function attachSseStream(
+  res: Response,
+  decorate?: (event: DialpadEvent) => Record<string, unknown>,
+): void {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('Connection', 'keep-alive')
@@ -45,8 +51,9 @@ export function attachSseStream(res: Response): void {
   res.write(`: connected\n\n`)
 
   const send = (event: DialpadEvent) => {
+    const payload = decorate ? decorate(event) : event
     res.write(`event: dialpad\n`)
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    res.write(`data: ${JSON.stringify(payload)}\n\n`)
   }
   const unsub = subscribe(send)
 

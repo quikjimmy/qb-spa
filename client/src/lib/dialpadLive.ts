@@ -28,6 +28,10 @@ export interface LiveEvent {
   caller_kind?: 'crew' | 'internal' | 'external' | null
   caller_name?: string | null
   caller_role?: string | null
+  // Server-stamped flag — does the event's user_email belong to the
+  // requesting portal user (matched through user_email_lookup so
+  // primary + Dialpad email aliases both resolve)? Drives the Me filter.
+  is_mine?: number
 }
 
 const MAX_EVENTS = 50
@@ -130,10 +134,19 @@ export function playTone(kind: 'call' | 'sms' | 'ringing'): void {
 }
 
 // ── Scope-aware visible events ──
+// Me filter trusts the server-stamped `is_mine` flag — the server has
+// access to user_email_lookup and resolves portal + Dialpad email aliases
+// in one place. Falls back to the old client-side email match for events
+// from older webhook rows that haven't been re-fetched (paranoia — should
+// be rare since /events/recent re-stamps everything on each backfill).
 export const visibleEvents = computed<LiveEvent[]>(() => {
   if (scope.value === 'all') return events.value
-  if (!myEmail.value) return events.value
-  return events.value.filter(e => (e.user_email || '').toLowerCase() === myEmail.value)
+  return events.value.filter(e => {
+    if (e.is_mine === 1) return true
+    if (e.is_mine === 0) return false
+    if (!myEmail.value) return true
+    return (e.user_email || '').toLowerCase() === myEmail.value
+  })
 })
 
 // ── Ringing tracker ──

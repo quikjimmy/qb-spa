@@ -889,6 +889,18 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_due ON dialpad_message_reminders(fired_at, remind_at)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_reminders_user ON dialpad_message_reminders(user_id, remind_at)`)
 
+// One-shot tracking for the "unread direct SMS" notifier worker so the
+// same incoming SMS doesn't generate a notification on every 5-min sweep.
+// Composite PK on (user_id, event_id) mirrors dialpad_sms_reads.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_sms_unread_notifications (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL,
+    notified_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, event_id)
+  )
+`)
+
 // Per-user per-day SMS aggregates. Directions kept tight: 'incoming' | 'outgoing'.
 // SMS may not be supported on every Dialpad plan — refresh gracefully skips if
 // the stat_type is rejected.

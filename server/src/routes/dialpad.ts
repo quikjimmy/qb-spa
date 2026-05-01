@@ -1404,7 +1404,26 @@ router.get('/events/stream', (req: Request, res: Response): void => {
   // `req.user` is populated by the authenticate middleware once it reads
   // either the Authorization header OR a ?token= query param. Confirm below.
   if (!req.user) { res.status(401).end(); return }
-  attachSseStream(res)
+
+  // Build the email-alias set once per connection so the per-event
+  // decorator is just a Set lookup. user_email_lookup unifies primary +
+  // secondary emails so a Dialpad-side address resolves to the portal
+  // user's identity.
+  const myEmails = new Set<string>([req.user.email.toLowerCase()])
+  const aliasRows = db.prepare(
+    `SELECT email FROM user_email_lookup WHERE user_id = ?`
+  ).all(req.user.userId) as Array<{ email: string }>
+  for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+
+  attachSseStream(res, (event) => {
+    const email = String(event.user_email || '').toLowerCase().trim()
+    const decorated: Record<string, unknown> = { ...event }
+    decorated['is_mine'] = email && myEmails.has(email) ? 1 : 0
+    // Reuse the same caller-attribution decorator the /events/recent
+    // endpoint uses so live arrivals carry the same chips as backfill.
+    decorateCommsItems([decorated])
+    return decorated
+  })
 })
 
 // REST fallback — recent N events. Useful for reconnect/backfill.
@@ -1434,6 +1453,25 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   // Tag each row with caller_kind so the live panel + Comms Hub can
   // colour-code internal/crew vs. external (customer) interactions.
   decorateCommsItems(rows as unknown as Array<Record<string, unknown>>)
+
+  // is_mine — does this row belong to the requesting user (so the Me
+  // filter shows it)? Match through user_email_lookup so portal + Dialpad
+  // email aliases both resolve. Without this, an event with
+  // user_email='james@dialpad.com' was filtered out of Me when the portal
+  // login was 'james@kinhome.com'. Anonymous (no JWT) requests get is_mine=0.
+  const myEmails = new Set<string>()
+  if (req.user) {
+    myEmails.add(req.user.email.toLowerCase())
+    const aliasRows = db.prepare(
+      `SELECT email FROM user_email_lookup WHERE user_id = ?`
+    ).all(req.user.userId) as Array<{ email: string }>
+    for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+  }
+  for (const r of rows as unknown as Array<Record<string, unknown>>) {
+    const email = String(r['user_email'] || '').toLowerCase().trim()
+    r['is_mine'] = email && myEmails.has(email) ? 1 : 0
+  }
+
   res.json({ rows, limit, since_id: sinceId })
 })
 

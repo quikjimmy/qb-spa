@@ -38,6 +38,7 @@ import { fieldRouter } from './routes/field'
 import { authenticate, requireRole } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
+import { startUnreadSmsNotifier } from './lib/unreadSmsNotifier'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
@@ -129,5 +130,6 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
   try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
+  try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
   try { startArrivyUsersScheduler() } catch (e) { console.error('[startup] arrivy users scheduler failed:', e) }
 })
