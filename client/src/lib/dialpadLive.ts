@@ -55,11 +55,20 @@ let initialized = false
 let auth: ReturnType<typeof useAuthStore> | null = null
 
 // ── Filter (Me / All) ──
-const scope = ref<'me' | 'all'>((typeof localStorage !== 'undefined' ? (localStorage.getItem('comms.live.scope') as 'me' | 'all' | null) : null) || 'me')
+// Default scope was 'me', which silently hid every event whose user_email
+// didn't exactly match the requesting portal user — many users only saw
+// "their" events when their portal + Dialpad emails matched. Defaulted
+// to 'all' so the panel shows the full webhook stream out of the box.
+// Bumped the localStorage key (.v2) so anyone whose old 'me' choice was
+// stuck flips to the new default; explicit picks after the bump persist.
+const SCOPE_KEY = 'comms.live.scope.v2'
+const scope = ref<'me' | 'all'>(
+  (typeof localStorage !== 'undefined' ? (localStorage.getItem(SCOPE_KEY) as 'me' | 'all' | null) : null) || 'all'
+)
 const myEmail = computed(() => (auth?.user?.email || '').toLowerCase().trim())
 export function setScope(s: 'me' | 'all') {
   scope.value = s
-  try { localStorage.setItem('comms.live.scope', s) } catch { /* ignore */ }
+  try { localStorage.setItem(SCOPE_KEY, s) } catch { /* ignore */ }
 }
 
 // ── Sound ──
