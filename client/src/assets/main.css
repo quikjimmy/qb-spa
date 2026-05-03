@@ -122,3 +122,21 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* New row arrival: ProjectsView (and any list view that polls for fresh
+   cache data) marks a row with this class when the record_id wasn't in
+   the previous load. Subtle drop-and-settle plus a fading emerald ring
+   so it reads as "this just landed" without yanking attention. */
+@keyframes row-pop-in {
+  0%   { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-row-pop-in {
+  animation: row-pop-in 480ms cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 0 2px rgb(16 185 129 / 0.22);
+  transition: box-shadow 1.8s ease-out 0.5s;
+}
+.animate-row-pop-in.row-pop-fade {
+  box-shadow: 0 0 0 2px rgb(16 185 129 / 0);
+}

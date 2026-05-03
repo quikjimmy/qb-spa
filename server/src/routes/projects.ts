@@ -727,12 +727,26 @@ router.get('/', (req: Request, res: Response): void => {
   const closer = req.query['closer'] as string | undefined
   const epc = req.query['epc'] as string | undefined
   const lender = req.query['lender'] as string | undefined
+  // sales_date is stored as a UTC ISO timestamp (e.g. "2026-05-01T18:36:00Z"),
+  // so the client sends ISO instants bracketing the user's local calendar day
+  // (computed via Intl in the browser's tz). All other date columns are stored
+  // as bare YYYY-MM-DD and the client sends YYYY-MM-DD as-is.
   const salesFrom = req.query['sales_from'] as string | undefined
   const salesTo = req.query['sales_to'] as string | undefined
   const surveyFrom = req.query['survey_from'] as string | undefined
   const surveyTo = req.query['survey_to'] as string | undefined
   const installFrom = req.query['install_from'] as string | undefined
   const installTo = req.query['install_to'] as string | undefined
+  const installDoneFrom = req.query['install_done_from'] as string | undefined
+  const installDoneTo = req.query['install_done_to'] as string | undefined
+  const permitSubFrom = req.query['permit_sub_from'] as string | undefined
+  const permitSubTo = req.query['permit_sub_to'] as string | undefined
+  const permitApprFrom = req.query['permit_appr_from'] as string | undefined
+  const permitApprTo = req.query['permit_appr_to'] as string | undefined
+  const inspectionFrom = req.query['inspection_from'] as string | undefined
+  const inspectionTo = req.query['inspection_to'] as string | undefined
+  const ptoFrom = req.query['pto_from'] as string | undefined
+  const ptoTo = req.query['pto_to'] as string | undefined
   const pipeline = req.query['pipeline'] as string | undefined
   const sort = req.query['sort'] as string | undefined
   const favoritesOnly = req.query['favorites'] === '1'
@@ -788,6 +802,16 @@ router.get('/', (req: Request, res: Response): void => {
   if (surveyTo) { where += " AND survey_scheduled <= ?"; params.push(surveyTo) }
   if (installFrom) { where += " AND install_scheduled >= ?"; params.push(installFrom) }
   if (installTo) { where += " AND install_scheduled <= ?"; params.push(installTo) }
+  if (installDoneFrom) { where += " AND install_completed >= ?"; params.push(installDoneFrom) }
+  if (installDoneTo) { where += " AND install_completed <= ?"; params.push(installDoneTo) }
+  if (permitSubFrom) { where += " AND permit_submitted >= ?"; params.push(permitSubFrom) }
+  if (permitSubTo) { where += " AND permit_submitted <= ?"; params.push(permitSubTo) }
+  if (permitApprFrom) { where += " AND permit_approved >= ?"; params.push(permitApprFrom) }
+  if (permitApprTo) { where += " AND permit_approved <= ?"; params.push(permitApprTo) }
+  if (inspectionFrom) { where += " AND inspection_scheduled >= ?"; params.push(inspectionFrom) }
+  if (inspectionTo) { where += " AND inspection_scheduled <= ?"; params.push(inspectionTo) }
+  if (ptoFrom) { where += " AND pto_approved >= ?"; params.push(ptoFrom) }
+  if (ptoTo) { where += " AND pto_approved <= ?"; params.push(ptoTo) }
 
   // Pipeline KPI filter — use client's local date if provided, fall back to
   // server-computed Denver date. Server fallback used to be UTC, which

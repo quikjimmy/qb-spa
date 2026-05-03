@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted } from 'vue'
+import { ref, computed, inject, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
@@ -65,6 +65,13 @@ const search = ref('')
 const showFavorites = ref(false)
 const showDrawer = ref(false)
 
+// Pop-in: record_ids that arrived in the most recent freshness-driven
+// refresh and aren't in the previous render. Cleared after the CSS
+// animation finishes so the same row doesn't keep re-animating.
+const newIds = ref<Set<number>>(new Set())
+let newIdsClearTimeout: ReturnType<typeof setTimeout> | null = null
+function isNewRow(rid: number): boolean { return newIds.value.has(rid) }
+
 const f = ref({ status: '', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' })
 const activeKpi = ref('')
 const filters = ref<Filters>({ statuses: [], offices: [], coordinators: [], states: [], closers: [], lenders: [], epcs: [] })
@@ -103,16 +110,20 @@ const datePresets = [
 ]
 
 function setDatePreset(preset: string) {
-  const today = new Date(); const fmt = (d: Date) => d.toISOString().split('T')[0]!
-  const sow = new Date(today); sow.setDate(today.getDate() - today.getDay())
+  // Use the user's local calendar — toISOString() returns UTC date, which
+  // after ~6pm Denver flips "today" to the wrong day.
+  const today = new Date()
+  const y = today.getFullYear(), m = today.getMonth(), d = today.getDate()
+  const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+  const sow = new Date(y, m, d - today.getDay())
   switch (preset) {
     case 'today': f.value.dateFrom = f.value.dateTo = fmt(today); break
-    case 'yesterday': { const d = new Date(today); d.setDate(d.getDate() - 1); f.value.dateFrom = f.value.dateTo = fmt(d); break }
-    case 'tomorrow': { const d = new Date(today); d.setDate(d.getDate() + 1); f.value.dateFrom = f.value.dateTo = fmt(d); break }
-    case 'this_week': f.value.dateFrom = fmt(sow); f.value.dateTo = fmt(new Date(sow.getTime() + 6 * 86400000)); break
-    case 'last_week': { const d = new Date(sow); d.setDate(d.getDate() - 7); f.value.dateFrom = fmt(d); f.value.dateTo = fmt(new Date(d.getTime() + 6 * 86400000)); break }
-    case 'this_month': f.value.dateFrom = fmt(new Date(today.getFullYear(), today.getMonth(), 1)); f.value.dateTo = fmt(new Date(today.getFullYear(), today.getMonth() + 1, 0)); break
-    case 'last_month': { const d = new Date(today.getFullYear(), today.getMonth() - 1, 1); f.value.dateFrom = fmt(d); f.value.dateTo = fmt(new Date(today.getFullYear(), today.getMonth(), 0)); break }
+    case 'yesterday': f.value.dateFrom = f.value.dateTo = fmt(new Date(y, m, d - 1)); break
+    case 'tomorrow': f.value.dateFrom = f.value.dateTo = fmt(new Date(y, m, d + 1)); break
+    case 'this_week': f.value.dateFrom = fmt(sow); f.value.dateTo = fmt(new Date(sow.getFullYear(), sow.getMonth(), sow.getDate() + 6)); break
+    case 'last_week': { const start = new Date(sow.getFullYear(), sow.getMonth(), sow.getDate() - 7); f.value.dateFrom = fmt(start); f.value.dateTo = fmt(new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6)); break }
+    case 'this_month': f.value.dateFrom = fmt(new Date(y, m, 1)); f.value.dateTo = fmt(new Date(y, m + 1, 0)); break
+    case 'last_month': f.value.dateFrom = fmt(new Date(y, m - 1, 1)); f.value.dateTo = fmt(new Date(y, m, 0)); break
   }
   loadProjects()
 }
@@ -131,8 +142,13 @@ async function loadCancellations() {
   } catch { /* non-fatal */ }
 }
 
-async function loadProjects() {
-  loading.value = true
+async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
+  // silent: don't flip the loading skeleton (background refresh from polling).
+  // markNew: tag rows that weren't in the previous render so the template
+  // animates them in. Only set by the freshness poller — manual filter
+  // changes would otherwise paint everything as "new".
+  if (!opts?.silent) loading.value = true
+  const previousIds = opts?.markNew ? new Set(projects.value.map(p => p.record_id)) : null
   const now = new Date()
   const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   const params = new URLSearchParams({ limit: '100', today: localToday })
@@ -148,16 +164,74 @@ async function loadProjects() {
   if (f.value.sort) params.set('sort', f.value.sort)
   if (activeKpi.value) params.set('pipeline', activeKpi.value)
   if (f.value.dateFrom || f.value.dateTo) {
-    const df = f.value.dateField
-    const fromKey = df === 'sales_date' ? 'sales_from' : df.startsWith('survey') ? 'survey_from' : 'install_from'
-    if (f.value.dateFrom) params.set(fromKey, f.value.dateFrom)
-    if (f.value.dateTo) params.set(fromKey.replace('_from', '_to'), f.value.dateTo)
+    // Map the dropdown's column → server param keys. sales_date is stored
+    // as UTC ISO so we convert the picked local YYYY-MM-DD to UTC instants
+    // bracketing the user's local day; everything else is stored as bare
+    // YYYY-MM-DD and is sent as-is.
+    const fieldToKey: Record<string, string> = {
+      sales_date: 'sales',
+      survey_scheduled: 'survey',
+      install_scheduled: 'install',
+      install_completed: 'install_done',
+      permit_submitted: 'permit_sub',
+      permit_approved: 'permit_appr',
+      inspection_scheduled: 'inspection',
+      pto_approved: 'pto',
+    }
+    const base = fieldToKey[f.value.dateField]
+    if (base) {
+      if (f.value.dateField === 'sales_date') {
+        if (f.value.dateFrom) params.set(`${base}_from`, localDayBoundsToUtc(f.value.dateFrom).from)
+        if (f.value.dateTo) params.set(`${base}_to`, localDayBoundsToUtc(f.value.dateTo).to)
+      } else {
+        if (f.value.dateFrom) params.set(`${base}_from`, f.value.dateFrom)
+        if (f.value.dateTo) params.set(`${base}_to`, f.value.dateTo)
+      }
+    }
   }
   try {
     const res = await fetch(`/api/projects?${params}`, { headers: hdrs() })
     const data = await res.json()
     projects.value = data.projects; total.value = data.total; totalKw.value = data.total_kw || 0; filters.value = data.filters; cacheInfo.value = data.cache; kpi.value = data.kpi || kpi.value
+    if (previousIds && previousIds.size > 0) {
+      const fresh = new Set<number>()
+      for (const p of projects.value) {
+        if (!previousIds.has(p.record_id)) fresh.add(p.record_id)
+      }
+      if (fresh.size > 0) {
+        newIds.value = fresh
+        if (newIdsClearTimeout) clearTimeout(newIdsClearTimeout)
+        // Animation runs ~480ms + ring fade ~1.8s; clear well after both.
+        newIdsClearTimeout = setTimeout(() => { newIds.value = new Set() }, 2800)
+      }
+    }
   } finally { loading.value = false }
+}
+
+// ─── Freshness polling ──────────────────────────────────────
+// Poll /api/projects/freshness while the tab is visible. When the cache
+// timestamp advances past what we last saw, refetch /api/projects with
+// markNew so any record_ids we hadn't seen pop into the list.
+const lastSeenFreshness = ref<string | null>(null)
+let freshnessTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollFreshness() {
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+  try {
+    const res = await fetch('/api/projects/freshness', { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json() as { overall_latest: string | null }
+    const latest = data.overall_latest
+    if (!latest) return
+    if (lastSeenFreshness.value === null) {
+      lastSeenFreshness.value = latest
+      return
+    }
+    if (latest > lastSeenFreshness.value) {
+      lastSeenFreshness.value = latest
+      await loadProjects({ silent: true, markNew: true })
+    }
+  } catch { /* non-fatal */ }
 }
 
 async function refreshCache() { refreshing.value = true; try { await fetch('/api/projects/refresh', { method: 'POST', headers: hdrs() }); await loadProjects() } finally { refreshing.value = false } }
@@ -231,7 +305,7 @@ function getMilestones(p: Project): MilestoneStep[] {
 
 function has(val: string): boolean { return !!val && val !== '' && val !== '0' && val !== '-' }
 
-import { fmtDate, fmtDateFull, isPast } from '@/lib/dates'
+import { fmtDate, fmtDateFull, isPast, localDayBoundsToUtc } from '@/lib/dates'
 
 // Next upcoming task: prefer Arrivy task, fall back to project milestone dates
 function nextTask(p: Project): string {
@@ -270,6 +344,14 @@ onMounted(() => {
   loadHoldClassifications()
   loadCancellations()
   registerRefresh?.(() => { loadProjects(); loadCancellations() })
+  // Initial freshness read (no list refetch — just establishes the baseline),
+  // then poll every 30s. Same cadence as the DataFreshness badge.
+  pollFreshness()
+  freshnessTimer = setInterval(pollFreshness, 30_000)
+})
+onBeforeUnmount(() => {
+  if (freshnessTimer) clearInterval(freshnessTimer)
+  if (newIdsClearTimeout) clearTimeout(newIdsClearTimeout)
 })
 </script>
 
@@ -368,7 +450,7 @@ onMounted(() => {
       <div
         v-for="p in projects" :key="p.record_id"
         class="rounded-lg border-l-[3px] border border-border bg-card cursor-pointer group transition-colors hover:bg-muted/30 active:scale-[0.998]"
-        :class="getStatusConfig(p.status).border"
+        :class="[getStatusConfig(p.status).border, isNewRow(p.record_id) && 'animate-row-pop-in']"
         @click="openProject(p.record_id)"
       >
         <!-- ── Mobile card (matches qb-skin quick glance) ── -->

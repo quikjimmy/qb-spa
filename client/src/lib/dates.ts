@@ -89,3 +89,52 @@ export function timeAgo(d: string): string {
   if (days < 7) return `${days}d ago`
   return fmtDate(d)
 }
+
+// IANA tz of the user's browser, e.g. "America/Denver".
+export function userTz(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+// UTC offset (in minutes, positive = east of UTC) for `at` when projected into `tz`.
+function tzOffsetMinutes(at: Date, tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(at)
+  const m: Record<string, string> = {}
+  for (const p of parts) m[p.type] = p.value
+  // Intl returns hour "24" for midnight in some locales; normalize.
+  const hour = parseInt(m.hour!, 10) % 24
+  const wallUtcMs = Date.UTC(
+    parseInt(m.year!, 10), parseInt(m.month!, 10) - 1, parseInt(m.day!, 10),
+    hour, parseInt(m.minute!, 10), parseInt(m.second!, 10),
+  )
+  return (wallUtcMs - at.getTime()) / 60_000
+}
+
+// Given a YYYY-MM-DD picked in `tz`, return the UTC instants bracketing
+// that calendar day (start inclusive, end inclusive of last second). Used
+// to filter columns stored as full ISO timestamps (e.g. sales_date) by
+// the user's local calendar date.
+export function localDayBoundsToUtc(dateStr: string, tz: string = userTz()): { from: string; to: string } {
+  const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10))
+  // Sample noon UTC of the date — well clear of any DST transition (those
+  // happen at 02:00 local). The offset at noon UTC is the same as at the
+  // start/end of the local day for every IANA zone in practice.
+  const sample = new Date(Date.UTC(y!, m! - 1, d!, 12, 0, 0))
+  const offsetMin = tzOffsetMinutes(sample, tz)
+  const startMs = Date.UTC(y!, m! - 1, d!, 0, 0, 0) - offsetMin * 60_000
+  const endMs = Date.UTC(y!, m! - 1, d!, 23, 59, 59) - offsetMin * 60_000
+  return {
+    from: new Date(startMs).toISOString(),
+    to: new Date(endMs).toISOString(),
+  }
+}
+
+// YYYY-MM-DD for `at` projected into `tz`. en-CA formats natively as ISO.
+export function localDateInTz(at: Date, tz: string = userTz()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(at)
+}
