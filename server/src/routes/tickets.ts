@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from 'express'
+import cron from 'node-cron'
 import db from '../db'
+import { isAppActive } from '../lib/activity'
 
 const router = Router()
 
@@ -37,7 +39,17 @@ db.exec(`
     last_modified_by TEXT,
     recent_note TEXT,
     cached_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
+  );
+  CREATE TABLE IF NOT EXISTS ticket_cache_runs (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_started_at TEXT,
+    last_finished_at TEXT,
+    last_status TEXT,
+    last_rows_changed INTEGER,
+    last_error TEXT,
+    last_mode TEXT
+  );
+  INSERT OR IGNORE INTO ticket_cache_runs (id) VALUES (1);
 `)
 
 // QB field IDs for tickets table (bstdqwrkg)
@@ -76,19 +88,20 @@ function val(record: Record<string, { value: unknown }>, fid: number): string {
 
 // ─── Refresh cache ───────────────────────────────────────
 
-async function refreshCache(): Promise<{ total: number; duration: number }> {
-  const start = Date.now()
+// Pull a batch of QB tickets matching `where` (or all if empty). Returns
+// the raw record list — caller is responsible for upserting.
+async function fetchTickets(where: string): Promise<Array<Record<string, { value: unknown }>>> {
   const { realm, token } = getQbConfig()
-
-  // Pull open tickets — exclude completed/closed
-  const where = "{91.CT.'Completed'}AND{91.CT.'Closed'}AND{91.CT.'Complete'}"
-  // Actually we want NOT contains — pull everything then filter, or just pull all
-  // Simpler: pull all tickets, let the frontend filter
-  let allRecords: Array<Record<string, { value: unknown }>> = []
+  let all: Array<Record<string, { value: unknown }>> = []
   let skip = 0
   const batchSize = 1000
-
   while (true) {
+    const body: Record<string, unknown> = {
+      from: 'bstdqwrkg',
+      select: selectFids,
+      options: { skip, top: batchSize },
+    }
+    if (where) body['where'] = where
     const res = await fetch('https://api.quickbase.com/v1/records/query', {
       method: 'POST',
       headers: {
@@ -96,34 +109,28 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
         'Authorization': `QB-USER-TOKEN ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        from: 'bstdqwrkg',
-        select: selectFids,
-        options: { skip, top: batchSize },
-      }),
+      body: JSON.stringify(body),
     })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`QB query failed (${res.status}): ${text}`)
-    }
-
+    if (!res.ok) throw new Error(`QB query failed (${res.status}): ${await res.text()}`)
     const data = await res.json()
     const records = data.data || []
-    allRecords = allRecords.concat(records)
+    all = all.concat(records)
     if (records.length < batchSize) break
     skip += batchSize
   }
+  return all
+}
 
+function upsertRecords(records: Array<Record<string, { value: unknown }>>): number {
   const cols = fieldMap.map(f => f.col).join(', ')
   const placeholders = fieldMap.map(() => '?').join(', ')
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO ticket_cache (${cols}, cached_at)
     VALUES (${placeholders}, datetime('now'))
   `)
-
+  let rows = 0
   db.transaction(() => {
-    for (const record of allRecords) {
+    for (const record of records) {
       const rid = parseInt(val(record, 3))
       if (!rid) continue
       const values = fieldMap.map(f => {
@@ -138,10 +145,56 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
         return val(record, f.fid)
       })
       upsert.run(...values)
+      rows++
     }
   })()
+  return rows
+}
 
-  return { total: allRecords.length, duration: Date.now() - start }
+type RefreshResult = { total: number; duration: number; mode: 'full' | 'incremental' }
+
+async function refreshFull(): Promise<RefreshResult> {
+  const start = Date.now()
+  const records = await fetchTickets('')
+  const total = upsertRecords(records)
+  return { total, duration: Date.now() - start, mode: 'full' }
+}
+
+// Incremental refresh — pulls only tickets where date_modified (QB field 2)
+// is after the previous run's start time. Falls back to a full refresh
+// when the cache is empty (e.g. fresh dev DB) so the first call always
+// seeds the table. Stepping back 60s on the lower bound absorbs any clock
+// skew between QB and the server and avoids missing edits made in the
+// gap between query start and QB's modification timestamp commit.
+async function refreshIncremental(): Promise<RefreshResult> {
+  const start = Date.now()
+  const lastRow = db.prepare('SELECT MAX(cached_at) AS latest FROM ticket_cache').get() as { latest: string | null }
+  if (!lastRow.latest) return await refreshFull()
+  const lastIso = new Date(lastRow.latest.replace(' ', 'T') + 'Z').getTime() - 60_000
+  const sinceIso = new Date(lastIso).toISOString()
+  // QB date filter: {<fid>.AF.'<iso>'} = "after". Field 2 = date_modified.
+  const where = `{2.AF.'${sinceIso}'}`
+  const records = await fetchTickets(where)
+  const total = upsertRecords(records)
+  return { total, duration: Date.now() - start, mode: 'incremental' }
+}
+
+// Wrapper that mirrors what the run-tracker writes around the project tier
+// runs — start row, finish row with status/rows/error. Single source of
+// truth so the manual /refresh, the tier endpoint, and the scheduler all
+// share the same bookkeeping.
+async function trackedRefresh(mode: 'full' | 'incremental'): Promise<RefreshResult> {
+  db.prepare(`UPDATE ticket_cache_runs SET last_started_at = datetime('now'), last_status = 'running', last_error = NULL, last_mode = ? WHERE id = 1`).run(mode)
+  try {
+    const result = mode === 'full' ? await refreshFull() : await refreshIncremental()
+    db.prepare(`UPDATE ticket_cache_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_error = NULL, last_mode = ? WHERE id = 1`)
+      .run(result.total, result.mode)
+    return result
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    db.prepare(`UPDATE ticket_cache_runs SET last_finished_at = datetime('now'), last_status = 'failed', last_error = ? WHERE id = 1`).run(msg)
+    throw err
+  }
 }
 
 // ─── API Routes ──────────────────────────────────────────
@@ -261,16 +314,94 @@ router.get('/:id', (req: Request, res: Response): void => {
   res.json({ ticket })
 })
 
-// Refresh cache
-router.post('/refresh', async (_req: Request, res: Response): Promise<void> => {
+// Refresh — defaults to incremental (cheap; only modified tickets). Pass
+// ?full=1 to force a full rebuild (used by admin diagnostics page).
+router.post('/refresh', async (req: Request, res: Response): Promise<void> => {
   const { token } = getQbConfig()
   if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not configured' }); return }
+  const mode: 'full' | 'incremental' = req.query['full'] === '1' ? 'full' : 'incremental'
   try {
-    const result = await refreshCache()
+    const result = await trackedRefresh(mode)
     res.json({ success: true, ...result })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
 })
+
+// /refresh-tier/:tier — matches the URL the shared <DataFreshness>
+// component calls. Tickets have no tier system (date_modified is on the
+// row itself, so a single incremental sweep covers every freshness
+// budget), so :tier is accepted but ignored — every call runs the
+// incremental path.
+router.post('/refresh-tier/:tier', async (_req: Request, res: Response): Promise<void> => {
+  const { token } = getQbConfig()
+  if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not configured' }); return }
+  try {
+    const result = await trackedRefresh('incremental')
+    res.json({ ok: true, ...result })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// /freshness — same response shape as /api/projects/freshness so the
+// shared <DataFreshness resource="tickets"> component can render either
+// source. Tickets don't have tiers, so tier_runs/tier_counts are empty
+// and the component falls back to overall_latest. The single
+// ticket_cache_runs row is exposed under tier='hot' so the shared
+// "last status / running" UI still has something to read.
+router.get('/freshness', (_req: Request, res: Response): void => {
+  const overall = db.prepare(`SELECT MAX(cached_at) AS latest, COUNT(*) AS total FROM ticket_cache`).get() as { latest: string | null; total: number }
+  const run = db.prepare(`SELECT last_started_at, last_finished_at, last_status, last_rows_changed, last_error FROM ticket_cache_runs WHERE id = 1`).get() as {
+    last_started_at: string | null; last_finished_at: string | null; last_status: string | null; last_rows_changed: number | null; last_error: string | null
+  } | undefined
+  res.json({
+    overall_latest: overall.latest,
+    overall_total: overall.total,
+    tier_runs: run ? [{ tier: 'hot', ...run }] : [],
+    tier_counts: [],
+    server_time: new Date().toISOString(),
+    cadence: { hot: '5m', warm: '5m', cool: '5m', cold: '5m' },
+  })
+})
+
+// ─── Scheduler ───────────────────────────────────────────
+// Incremental every 5 min, gated on user activity (same pattern as
+// project_cache hot/warm/cool tiers). A daily full refresh catches edge
+// cases the incremental path can't see — restored tickets that were
+// previously deleted, schema changes that need a re-pull, etc.
+const ACTIVITY_WINDOW_MS = 30 * 60_000
+let schedulerStarted = false
+
+export function startTicketCacheScheduler(): void {
+  if (schedulerStarted) return
+  schedulerStarted = true
+
+  // Incremental every 5 min while users are active.
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      if (!getQbConfig().token) return
+      if (!isAppActive(ACTIVITY_WINDOW_MS)) return
+      const result = await trackedRefresh('incremental')
+      if (result.total > 0) console.log(`[ticket-cache] incremental: ${result.total} rows in ${result.duration}ms`)
+    } catch (e) {
+      console.error('[ticket-cache] incremental failed:', e instanceof Error ? e.message : e)
+    }
+  })
+
+  // Daily full sweep at 03:30 UTC — catches anything the incremental
+  // missed (deletions, schema-driven re-pulls).
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      if (!getQbConfig().token) return
+      const result = await trackedRefresh('full')
+      console.log(`[ticket-cache] full: ${result.total} rows in ${result.duration}ms`)
+    } catch (e) {
+      console.error('[ticket-cache] full failed:', e instanceof Error ? e.message : e)
+    }
+  })
+
+  console.log('[ticket-cache] scheduler started: incremental=5m (gated on activity), full=03:30 UTC daily')
+}
 
 export { router as ticketsRouter }
