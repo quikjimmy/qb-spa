@@ -307,15 +307,10 @@ router.get('/badges', (req: Request, res: Response): void => {
   res.json({ overdue, dueToday })
 })
 
-// Single ticket
-router.get('/:id', (req: Request, res: Response): void => {
-  const ticket = db.prepare('SELECT * FROM ticket_cache WHERE record_id = ?').get(req.params['id'])
-  if (!ticket) { res.status(404).json({ error: 'Ticket not found' }); return }
-  res.json({ ticket })
-})
-
 // Refresh — defaults to incremental (cheap; only modified tickets). Pass
 // ?full=1 to force a full rebuild (used by admin diagnostics page).
+// Specific paths registered BEFORE the /:id wildcard so Express doesn't
+// match `freshness`, `refresh`, etc. as a record_id.
 router.post('/refresh', async (req: Request, res: Response): Promise<void> => {
   const { token } = getQbConfig()
   if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not configured' }); return }
@@ -363,6 +358,15 @@ router.get('/freshness', (_req: Request, res: Response): void => {
     server_time: new Date().toISOString(),
     cadence: { hot: '5m', warm: '5m', cool: '5m', cold: '5m' },
   })
+})
+
+// Single ticket — wildcard last so it doesn't swallow the specific paths
+// above (was matching GET /freshness as id='freshness' → "Ticket not
+// found" 404, breaking the DataFreshness chip in prod).
+router.get('/:id', (req: Request, res: Response): void => {
+  const ticket = db.prepare('SELECT * FROM ticket_cache WHERE record_id = ?').get(req.params['id'])
+  if (!ticket) { res.status(404).json({ error: 'Ticket not found' }); return }
+  res.json({ ticket })
 })
 
 // ─── Scheduler ───────────────────────────────────────────
