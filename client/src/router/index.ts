@@ -93,7 +93,7 @@ const router = createRouter({
         {
           path: 'projects/design',
           name: 'milestone-design',
-          component: () => import('../views/MilestonePlaceholder.vue'),
+          component: () => import('../views/DesignDashboardView.vue'),
           meta: { order: 6, title: 'Design & Engineering', description: 'Site Survey Review queue (HITL) + design-team workflow. CAD submission, design completion, rejected-survey rework.' },
         },
         {
@@ -180,6 +180,14 @@ const router = createRouter({
           component: () => import('../views/TicketsView.vue'),
         },
         {
+          // Admin-only executive flash report. Sensitive financials → gate
+          // at the route, the API, and the sidebar nav.
+          path: 'reports/booked-and-boarded',
+          name: 'booked-and-boarded',
+          component: () => import('../views/BookedBoardedView.vue'),
+          meta: { requiresAdmin: true },
+        },
+        {
           path: 'chat',
           name: 'chat',
           component: () => import('../views/ChatView.vue'),
@@ -241,6 +249,14 @@ router.beforeEach(async (to) => {
   }
   if (shouldShowAgentsTeaser(to.path, to.query as Record<string, unknown>, auth.isAdmin)) {
     return { path: '/agents/coming-soon' }
+  }
+  // Routes with meta.requiresAdmin (admin diagnostics, agent task editor,
+  // booked-and-boarded report) bounce non-admins to home. The server-side
+  // route is also requireRole('admin') — this guard just keeps the URL
+  // out of the bundle path for non-admins so they don't see "report
+  // failed to load" flashes.
+  if (to.meta['requiresAdmin'] && !auth.isAdmin) {
+    return { name: 'home' }
   }
 })
 

@@ -21,6 +21,7 @@ import { retentionRouter } from './routes/retention'
 import { ptoAnalyticsRouter } from './routes/pto-analytics'
 import { ptoCacheRouter } from './routes/pto-cache'
 import { inspxAnalyticsRouter } from './routes/inspx-analytics'
+import { designAnalyticsRouter } from './routes/design-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
@@ -43,6 +44,7 @@ import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
+import { reportsRouter } from './routes/reports'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -89,6 +91,7 @@ app.use('/api/retention', authenticate, retentionRouter)
 app.use('/api/analytics/pto', authenticate, ptoAnalyticsRouter)
 app.use('/api/pto', authenticate, ptoCacheRouter)
 app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
+app.use('/api/analytics/design', authenticate, designAnalyticsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
@@ -107,6 +110,8 @@ app.use('/api/field', authenticate, fieldRouter)
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)
 app.use('/api/admin/qb-sync', authenticate, requireRole('admin'), qbSyncRouter)
 app.use('/api/admin/feed', authenticate, requireRole('admin'), feedIngestRouter)
+// Booked & Boarded executive report. Sensitive financials → admin only.
+app.use('/api/reports', authenticate, requireRole('admin'), reportsRouter)
 
 if (isProd) {
   const clientDist = process.env['CLIENT_DIST']
