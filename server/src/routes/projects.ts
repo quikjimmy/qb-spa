@@ -106,6 +106,10 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'permit_missing_items', 'nem_missing_items', 'pto_missing_items',
     // Intake decision pulled from the project (not the intake event row)
     'intake_status',
+    // Cancellation tracking — drives the Booked & Boarded retention metric.
+    // cancel_date is set the moment a customer requests cancel; if status
+    // later flips back to Active the project counts as "saved".
+    'cancel_date', 'cancel_reasons',
   ]
   for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
   const FUNDING_REAL = [
@@ -119,10 +123,25 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'net_cost', 'net_ppw',
     // Integration IDs (numeric)
     'project_number', 'max_arrivy_task_id',
+    // QB formula field — days since cancel_date.
+    'days_since_cancel',
   ]
   for (const c of FUNDING_REAL) addIfMissing(c, 'REAL')
   const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready']
   for (const c of FUNDING_BOOL) addIfMissing(c, 'INTEGER')
+
+  // Test-project marker (QB fid 622). Stored as 0/1; existing rows
+  // default to 0 (treated as "not a test"). Once the QB pull starts
+  // filtering at ingest, real test projects already in cache get
+  // cleaned up below.
+  addIfMissing('test_project', 'INTEGER')
+  try {
+    const before = (db.prepare(`SELECT COUNT(*) AS c FROM project_cache WHERE test_project = 1`).get() as { c: number }).c
+    if (before > 0) {
+      db.prepare(`DELETE FROM project_cache WHERE test_project = 1`).run()
+      console.log(`[project-cache] purged ${before} test projects from cache`)
+    }
+  } catch { /* ignore — purge runs again next boot */ }
 }
 
 // Tiered cache strategy migrations — wrapped in try/catch so a SQLite
@@ -285,6 +304,21 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2777, col: 'dca_expected_deposit' },
   { fid: 2773, col: 'dca_actual_deposit' },
   { fid: 2772, col: 'dca_total_received' },
+
+  // ─── Cancellation tracking — drives the retention side metric on the
+  // Booked & Boarded report. cancel_date is set when the customer first
+  // requests cancel; days_since_cancel is QB's formula on top of it; a
+  // project with cancel_date set but current status NOT in the cancel
+  // family counts as "saved" in the report's save-rate calc.
+  { fid: 437,  col: 'cancel_date' },
+  { fid: 877,  col: 'days_since_cancel' },
+  { fid: 2221, col: 'cancel_reasons' },
+
+  // Test-project marker — boolean. App-wide invariant is "where
+  // test_project is FALSE". Filtered at QB pull time below so test
+  // rows never enter the cache; downstream queries can safely assume
+  // test_project = 0 but still gate defensively.
+  { fid: 622, col: 'test_project' },
 ]
 
 const selectFids = fieldMap.map(f => f.fid)
@@ -310,12 +344,15 @@ const NUMERIC_AMOUNT_COLS = new Set([
   'system_price', 'gross_ppw', 'dealer_fees_pct', 'dealer_fee_ppw',
   'net_cost', 'net_ppw',
   'project_number', 'max_arrivy_task_id',
+  // QB formula field — integer days
+  'days_since_cancel',
 ])
 // Boolean columns (true/false from QB checkboxes) → 0/1.
 const BOOLEAN_COLS = new Set([
   'inspx_first_time_pass',
   'is_funded',
   'm1_ready', 'm2_ready', 'm3_ready',
+  'test_project',
 ])
 
 // Multi-select text columns — QB returns these as either an array of strings
@@ -323,6 +360,9 @@ const BOOLEAN_COLS = new Set([
 // so the client can split cleanly.
 const MULTI_SELECT_COLS = new Set([
   'permit_missing_items', 'nem_missing_items', 'pto_missing_items',
+  // cancel_reasons is QB multi-select — normalize so the report can
+  // split cleanly when surfacing in the retention stuck-deals cards.
+  'cancel_reasons',
 ])
 
 function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
