@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, nextTick } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table'
+import DataFreshness from '@/components/DataFreshness.vue'
 import { fmtDate, fmtDateLong as fmtDateFull, daysBetween, timeAgo, localTodayIso, localDateKey } from '@/lib/dates'
 
 const auth = useAuthStore()
@@ -29,7 +26,6 @@ interface PivotRow { name: string; past_due: number; today: number; future: numb
 const tickets = ref<Ticket[]>([])
 const total = ref(0)
 const loading = ref(true)
-const refreshing = ref(false)
 const search = ref('')
 const selectedTicket = ref<Ticket | null>(null)
 const detailRef = ref<HTMLElement | null>(null)
@@ -89,12 +85,6 @@ async function loadTickets() {
     tickets.value = data.tickets; total.value = data.total; kpi.value = data.kpi
     filters.value = data.filters; pivotData.value = data.pivot.data
   } finally { loading.value = false }
-}
-
-async function refreshCache() {
-  refreshing.value = true
-  try { await fetch('/api/tickets/refresh', { method: 'POST', headers: hdrs() }); await loadTickets() }
-  finally { refreshing.value = false }
 }
 
 function onSearch() { if (searchTimeout) clearTimeout(searchTimeout); searchTimeout = setTimeout(() => loadTickets(), 200) }
@@ -171,21 +161,43 @@ function daysPastDue(d: string): number { return Math.max(0, daysBetween(d)) }
 function ticketAge(d: string): number { return Math.max(0, daysBetween(d)) }
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadTickets().then(() => { if (kpi.value.allOpen === 0 && auth.isAdmin) refreshCache() }); registerRefresh?.(() => loadTickets()) })
+// First-paint cache seed: if the cache is empty (fresh dev DB), kick a
+// full refresh in the background. The DataFreshness badge handles ongoing
+// refresh from there.
+async function seedIfEmpty() {
+  if (kpi.value.allOpen === 0 && auth.isAdmin) {
+    try { await fetch('/api/tickets/refresh?full=1', { method: 'POST', headers: hdrs() }); await loadTickets() } catch { /* non-fatal */ }
+  }
+}
+
+onMounted(() => { loadTickets().then(seedIfEmpty); registerRefresh?.(() => loadTickets()) })
 </script>
 
 <template>
-  <div class="grid gap-2 sm:gap-3 min-w-0 max-w-full overflow-x-hidden">
-    <!-- Header -->
-    <div class="flex items-center justify-between gap-3">
-      <div class="flex items-center gap-4">
-        <div><h1 class="text-2xl font-semibold tracking-tight">Tickets</h1><p class="text-muted-foreground text-sm">{{ total.toLocaleString() }}{{ hasFilters ? ' matched' : '' }}</p></div>
+  <!-- grid-cols-1 = `grid-template-columns: minmax(0, 1fr)`. Without it,
+       grid auto-sizes the column to the widest child (the KPI strip's
+       ~452px of chips), inflating every child to that width. Symptoms:
+       KPI strip won't scroll (its content fits the inflated track),
+       search input extends past viewport, table & cards get clipped on
+       the right by parent overflow-x-hidden. -->
+  <div class="grid grid-cols-1 gap-2 sm:gap-3 min-w-0 overflow-x-hidden">
+    <!-- Header. Title + count on the leading edge; freshness badge sits
+         under them (admin sees ↻ for manual incremental refresh). View
+         toggle pinned trailing. flex-wrap keeps it sane at 390px. -->
+    <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+      <div class="flex flex-col gap-0.5 min-w-0">
+        <div class="flex items-baseline gap-2 min-w-0">
+          <h1 class="text-2xl font-semibold tracking-tight">Tickets</h1>
+          <span class="text-muted-foreground text-sm tabular-nums shrink-0">{{ total.toLocaleString() }}{{ hasFilters ? ' matched' : '' }}</span>
+        </div>
+        <DataFreshness resource="tickets" label="Cache" />
+      </div>
+      <div class="flex items-center gap-2 ml-auto">
         <div class="flex gap-0.5 p-0.5 bg-muted rounded-lg">
           <button class="px-3 py-1 text-xs font-medium rounded-md transition-colors" :class="viewMode === 'list' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'" @click="viewMode = 'list'">List</button>
           <button class="px-3 py-1 text-xs font-medium rounded-md transition-colors" :class="viewMode === 'activity' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'" @click="viewMode = 'activity'">Activity</button>
         </div>
       </div>
-      <Button v-if="auth.isAdmin" variant="outline" size="sm" class="shrink-0" :disabled="refreshing" @click="refreshCache">{{ refreshing ? 'Refreshing...' : 'Refresh' }}</Button>
     </div>
 
     <!-- ═══════ LIST VIEW ═══════ -->
@@ -274,72 +286,63 @@ onMounted(() => { loadTickets().then(() => { if (kpi.value.allOpen === 0 && auth
         >{{ p.label }}</button>
       </div>
 
-      <!-- Desktop: table -->
-      <div v-if="pivotData.length" class="hidden sm:block rounded-xl border bg-card overflow-hidden">
-        <Table class="table-fixed w-full">
-          <TableHeader>
-            <TableRow class="hover:bg-transparent text-xs">
-              <TableHead class="text-xs">{{ pivotOptions.find(p => p.key === pivotDimension)?.label }}</TableHead>
-              <TableHead class="text-xs text-right text-red-600 w-[55px]">Past Due</TableHead>
-              <TableHead class="text-xs text-right text-amber-600 w-[55px]">Today</TableHead>
-              <TableHead class="text-xs text-right text-emerald-600 w-[55px]">Future</TableHead>
-              <TableHead class="text-xs text-right w-[50px]">Total</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            <TableRow v-for="row in pivotData" :key="row.name" class="cursor-pointer hover:bg-muted/40" @click="drillPivot(row.name)">
-              <TableCell class="text-sm font-medium truncate max-w-[200px]">{{ row.name }}</TableCell>
-              <TableCell class="text-right text-xs font-mono" :class="row.past_due > 0 ? 'text-red-600 font-bold' : 'text-muted-foreground'">{{ row.past_due || '—' }}</TableCell>
-              <TableCell class="text-right text-xs font-mono" :class="row.today > 0 ? 'text-amber-600 font-bold' : 'text-muted-foreground'">{{ row.today || '—' }}</TableCell>
-              <TableCell class="text-right text-xs font-mono text-muted-foreground">{{ row.future || '—' }}</TableCell>
-              <TableCell class="text-right text-xs font-mono font-bold">{{ row.total }}</TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-      </div>
-
-      <!-- Mobile: same table but designed to fit -->
-      <div v-if="pivotData.length" class="sm:hidden rounded-xl border bg-card overflow-hidden">
-        <table class="w-full border-collapse" style="table-layout:fixed">
+      <!-- Pivot table — single responsive layout matching the canonical
+           pattern used in PtoDashboardView / InspxDashboardView byState
+           tables. Compact text-[11px], table-layout:fixed, only the name
+           col carries an explicit width, numbers right-aligned font-mono,
+           truncate on the name as the last-resort fallback. Scales from
+           390px through desktop without a separate mobile variant. -->
+      <div v-if="pivotData.length" class="rounded-xl bg-card overflow-hidden">
+        <table class="w-full text-[11px]" style="table-layout:fixed">
           <thead>
-            <tr class="bg-muted/30">
-              <th class="text-left text-[10px] font-bold uppercase tracking-wider text-muted-foreground p-2" style="width:36%">{{ pivotOptions.find(p => p.key === pivotDimension)?.label }}</th>
-              <th class="text-center text-[10px] font-bold uppercase tracking-wider text-red-500 p-2">Due</th>
-              <th class="text-center text-[10px] font-bold uppercase tracking-wider text-amber-500 p-2">Today</th>
-              <th class="text-center text-[10px] font-bold uppercase tracking-wider text-emerald-500 p-2">Future</th>
-              <th class="text-center text-[10px] font-bold uppercase tracking-wider text-foreground p-2">Total</th>
+            <tr class="text-muted-foreground bg-muted/30">
+              <th class="text-left font-semibold p-2" style="width:34%">{{ pivotOptions.find(p => p.key === pivotDimension)?.label }}</th>
+              <th class="text-right font-semibold p-1.5 text-red-500">Past</th>
+              <th class="text-right font-semibold p-1.5 text-amber-500">Today</th>
+              <th class="text-right font-semibold p-1.5 text-emerald-600">Future</th>
+              <th class="text-right font-semibold p-1.5">Total</th>
             </tr>
           </thead>
           <tbody>
             <tr
               v-for="row in pivotData" :key="row.name"
-              class="border-t border-border/50 cursor-pointer active:bg-muted/30"
+              class="border-t border-border/30 cursor-pointer hover:bg-muted/30"
               @click="drillPivot(row.name)"
             >
-              <td class="p-2 text-[13px] font-semibold truncate">{{ row.name }}</td>
-              <td class="p-2 text-center text-[13px] font-medium" :class="row.past_due > 0 ? 'text-red-600 font-bold' : 'text-muted-foreground'">{{ row.past_due || '—' }}</td>
-              <td class="p-2 text-center text-[13px] font-medium" :class="row.today > 0 ? 'text-amber-600 font-bold' : 'text-muted-foreground'">{{ row.today || '—' }}</td>
-              <td class="p-2 text-center text-[13px] text-muted-foreground">{{ row.future || '—' }}</td>
-              <td class="p-2 text-center text-[13px] font-bold">{{ row.total }}</td>
+              <td class="p-2 font-medium truncate">{{ row.name }}</td>
+              <td class="p-1.5 text-right font-mono" :class="row.past_due ? 'text-red-600 font-bold' : 'text-muted-foreground'">{{ row.past_due || '—' }}</td>
+              <td class="p-1.5 text-right font-mono" :class="row.today ? 'text-amber-600 font-bold' : 'text-muted-foreground'">{{ row.today || '—' }}</td>
+              <td class="p-1.5 text-right font-mono" :class="row.future ? 'text-emerald-600' : 'text-muted-foreground'">{{ row.future || '—' }}</td>
+              <td class="p-1.5 text-right font-mono font-bold">{{ row.total }}</td>
+            </tr>
+            <tr class="border-t-2 border-border font-bold">
+              <td class="p-2 text-muted-foreground text-[9px] uppercase">Total</td>
+              <td class="p-1.5 text-right font-mono text-red-600">{{ pivotData.reduce((s, r) => s + (r.past_due || 0), 0) }}</td>
+              <td class="p-1.5 text-right font-mono text-amber-600">{{ pivotData.reduce((s, r) => s + (r.today || 0), 0) }}</td>
+              <td class="p-1.5 text-right font-mono text-emerald-600">{{ pivotData.reduce((s, r) => s + (r.future || 0), 0) }}</td>
+              <td class="p-1.5 text-right font-mono">{{ pivotData.reduce((s, r) => s + (r.total || 0), 0) }}</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
-    <!-- Drill context bar -->
-    <div v-if="!showPivot && drillValue" class="flex items-center gap-3 rounded-lg bg-card px-4 py-2.5">
+    <!-- Drill context bar — at <sm the chevrons are decorative weight that
+         pushes the breadcrumb past 360px, so they collapse there. Order of
+         priority on a 390px screen: back button (always tappable),
+         dimension label, drilled value (truncates as last resort), count. -->
+    <div v-if="!showPivot && drillValue" class="flex items-center gap-2 sm:gap-3 rounded-lg bg-card px-3 sm:px-4 py-2.5 min-w-0">
       <button
-        class="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+        class="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors shrink-0"
         @click="backToPivot"
       >
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
         Summary
       </button>
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-muted-foreground/40"><path d="m9 18 6-6-6-6"/></svg>
-      <span class="text-xs text-muted-foreground">{{ drillLabel }}</span>
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-muted-foreground/40"><path d="m9 18 6-6-6-6"/></svg>
-      <span class="text-sm font-semibold">{{ drillValue }}</span>
-      <span class="text-xs text-muted-foreground ml-1">({{ total }})</span>
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="hidden sm:block text-muted-foreground/40 shrink-0"><path d="m9 18 6-6-6-6"/></svg>
+      <span class="text-[10px] sm:text-xs uppercase sm:normal-case tracking-wider sm:tracking-normal text-muted-foreground shrink-0">{{ drillLabel }}</span>
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="hidden sm:block text-muted-foreground/40 shrink-0"><path d="m9 18 6-6-6-6"/></svg>
+      <span class="text-sm font-semibold truncate min-w-0">{{ drillValue }}</span>
+      <span class="text-xs text-muted-foreground ml-auto sm:ml-1 shrink-0 tabular-nums">({{ total }})</span>
     </div>
     <button v-else-if="!showPivot" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground text-left" @click="backToPivot">
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
@@ -361,9 +364,10 @@ onMounted(() => { loadTickets().then(() => { if (kpi.value.allOpen === 0 && auth
         @click="openTicket(t)"
       >
         <div class="px-4 py-3.5">
-          <!-- Row 1: Title + status pill -->
+          <!-- Row 1: Title + status pill — title wraps to 2 lines instead of
+               clipping mid-word, which loses ticket intent on narrow screens. -->
           <div class="flex justify-between items-start gap-2">
-            <p class="text-[15px] font-semibold flex-1 min-w-0 leading-snug truncate">{{ t.title || 'Untitled' }}</p>
+            <p class="text-[15px] font-semibold flex-1 min-w-0 leading-snug line-clamp-2">{{ t.title || 'Untitled' }}</p>
             <span v-if="dueStatus(t.due_date).label" class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="dueStatus(t.due_date).cls">{{ dueStatus(t.due_date).label }}</span>
           </div>
           <!-- Row 2: Assignee (bold) -->
@@ -415,9 +419,9 @@ onMounted(() => { loadTickets().then(() => { if (kpi.value.allOpen === 0 && auth
           { label: 'State', value: selectedTicket.state },
           { label: 'Disposition', value: selectedTicket.disposition },
           { label: 'Project Status', value: selectedTicket.project_status },
-        ].filter(f => f.value && f.value !== '—')" :key="field.label" class="text-sm">
+        ].filter(f => f.value && f.value !== '—')" :key="field.label" class="text-sm min-w-0">
           <span class="text-muted-foreground text-xs">{{ field.label }}</span>
-          <p class="font-medium truncate">{{ field.value }}</p>
+          <p class="font-medium break-words leading-snug">{{ field.value }}</p>
         </div>
         <div v-if="selectedTicket.blocker" class="text-sm"><span class="text-muted-foreground text-xs">Blocker</span><p class="font-semibold text-red-600">Yes</p></div>
       </div>
@@ -472,9 +476,9 @@ onMounted(() => { loadTickets().then(() => { if (kpi.value.allOpen === 0 && auth
               <span class="text-[11px] text-muted-foreground shrink-0">{{ timeAgo(t.date_modified) }}</span>
             </div>
 
-            <!-- Title + pill -->
+            <!-- Title + pill — same line-clamp-2 treatment as the list view. -->
             <div class="flex justify-between items-start gap-2 mt-2">
-              <p class="text-[15px] font-semibold flex-1 min-w-0 leading-snug truncate">{{ t.title || 'Untitled' }}</p>
+              <p class="text-[15px] font-semibold flex-1 min-w-0 leading-snug line-clamp-2">{{ t.title || 'Untitled' }}</p>
               <span v-if="dueStatus(t.due_date).label" class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="dueStatus(t.due_date).cls">{{ dueStatus(t.due_date).label }}</span>
             </div>
 

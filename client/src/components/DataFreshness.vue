@@ -2,18 +2,23 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
-// Visible freshness badge for any view that reads from project_cache.
-// Pulls /api/projects/freshness once on mount + refreshes every 30s
-// (cheap; just reads SQLite). Surfaces a relative-time stamp tied to
-// the most relevant tier for this view, plus a manual "Refresh now"
-// for admins that triggers an immediate tier refresh.
+// Visible freshness badge for any view that reads from a server-side cache.
+// Pulls /api/<resource>/freshness once on mount + refreshes every 30s
+// (cheap; just reads SQLite). Surfaces a relative-time stamp tied to the
+// most relevant tier for this view, plus a manual "Refresh now" for admins
+// that triggers an immediate tier refresh.
 //
 // Usage:
-//   <DataFreshness />                       — overall (defaults to overall_latest)
-//   <DataFreshness tier="hot" />            — pin to a specific tier
-//   <DataFreshness label="Inbox" />         — custom label prefix
+//   <DataFreshness />                                — projects, overall
+//   <DataFreshness tier="hot" />                     — projects, specific tier
+//   <DataFreshness label="Inbox" />                  — custom label prefix
+//   <DataFreshness resource="tickets" label="Tickets" /> — ticket cache
 
 interface Props {
+  /** Backing cache resource. Server must expose /api/<resource>/freshness
+   *  with the same shape as /api/projects/freshness, plus
+   *  /api/<resource>/refresh-tier/:tier for the manual refresh button. */
+  resource?: 'projects' | 'tickets'
   /** Tier to track: 'hot' | 'warm' | 'cool' | 'cold'. Default = overall. */
   tier?: 'hot' | 'warm' | 'cool' | 'cold'
   /** Optional label prefix (e.g. "Projects"). */
@@ -24,6 +29,7 @@ interface Props {
   compact?: boolean
 }
 const props = withDefaults(defineProps<Props>(), {
+  resource: 'projects',
   tier: undefined,
   label: '',
   hideRefresh: false,
@@ -55,7 +61,7 @@ const error = ref('')
 
 async function load() {
   try {
-    const res = await fetch('/api/projects/freshness', {
+    const res = await fetch(`/api/${props.resource}/freshness`, {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     if (!res.ok) { error.value = `HTTP ${res.status}`; return }
@@ -71,7 +77,7 @@ async function refreshNow() {
   refreshing.value = true
   try {
     const tier = props.tier || 'hot'
-    await fetch(`/api/projects/refresh-tier/${tier}`, {
+    await fetch(`/api/${props.resource}/refresh-tier/${tier}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.token}` },
     })
