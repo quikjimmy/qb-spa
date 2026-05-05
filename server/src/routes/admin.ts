@@ -17,6 +17,13 @@ function normalizeAppRoleName(role: string): string {
   return legacy[trimmed] || trimmed
 }
 
+// Pragmatic email check — covers the typo cases (missing @, missing TLD,
+// stray spaces) without rejecting valid-but-uncommon formats.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+function isValidEmail(value: string): boolean {
+  return EMAIL_RE.test(value.trim())
+}
+
 function ensureAppRoles(): void {
   const descriptions: Record<string, string> = {
     admin: 'Full access to all portal features and settings',
@@ -43,12 +50,23 @@ router.post('/users', (req: Request, res: Response): void => {
     email?: string; name?: string; roles?: string[]
   }
 
-  if (!email || !name) {
+  const cleanEmail = String(email || '').trim().toLowerCase()
+  const cleanName = String(name || '').trim()
+
+  if (!cleanEmail || !cleanName) {
     res.status(400).json({ error: 'Email and name are required' })
     return
   }
+  if (!isValidEmail(cleanEmail)) {
+    res.status(400).json({ error: 'Enter a valid email address (e.g. name@company.com)' })
+    return
+  }
+  if (!Array.isArray(roles) || roles.length === 0) {
+    res.status(400).json({ error: 'Pick at least one role' })
+    return
+  }
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email)
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail)
   if (existing) {
     res.status(409).json({ error: 'Email already registered' })
     return
@@ -60,15 +78,13 @@ router.post('/users', (req: Request, res: Response): void => {
   const createUser = db.transaction(() => {
     const result = db.prepare(
       'INSERT INTO users (email, name, invite_token, invite_expires_at) VALUES (?, ?, ?, ?)'
-    ).run(email, name, inviteToken, expiresAt)
+    ).run(cleanEmail, cleanName, inviteToken, expiresAt)
     const userId = result.lastInsertRowid as number
 
     const assignRole = db.prepare(
       'INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = ?'
     )
-    const roleList = roles && roles.length > 0
-      ? [...new Set(roles.map(normalizeAppRoleName))]
-      : ['Customer']
+    const roleList = [...new Set(roles.map(normalizeAppRoleName))]
     for (const roleName of roleList) {
       assignRole.run(userId, roleName)
     }
@@ -82,9 +98,66 @@ router.post('/users', (req: Request, res: Response): void => {
   `).all(userId) as Array<{ name: string }>
 
   res.status(201).json({
-    user: { id: userId, email, name, roles: assignedRoles.map(r => r.name) },
+    user: { id: userId, email: cleanEmail, name: cleanName, roles: assignedRoles.map(r => r.name) },
     inviteLink: `/invite/${inviteToken}`,
   })
+})
+
+// --- Edit a user's identity (name + email) ---
+router.patch('/users/:id', (req: Request, res: Response): void => {
+  const userId = parseInt(String(req.params['id']), 10)
+  if (!Number.isInteger(userId)) {
+    res.status(400).json({ error: 'Invalid user id' })
+    return
+  }
+
+  const existing = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(userId) as
+    { id: number; email: string; name: string } | undefined
+  if (!existing) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  const { email, name } = req.body as { email?: string; name?: string }
+  const updates: { email?: string; name?: string } = {}
+
+  if (typeof name === 'string') {
+    const cleanName = name.trim()
+    if (!cleanName) {
+      res.status(400).json({ error: 'Name cannot be blank' })
+      return
+    }
+    updates.name = cleanName
+  }
+
+  if (typeof email === 'string') {
+    const cleanEmail = email.trim().toLowerCase()
+    if (!isValidEmail(cleanEmail)) {
+      res.status(400).json({ error: 'Enter a valid email address (e.g. name@company.com)' })
+      return
+    }
+    if (cleanEmail !== existing.email.toLowerCase()) {
+      const taken = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(cleanEmail, userId)
+      if (taken) {
+        res.status(409).json({ error: 'That email is already used by another user' })
+        return
+      }
+      updates.email = cleanEmail
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    res.json({ user: { id: existing.id, email: existing.email, name: existing.name } })
+    return
+  }
+
+  const fields = Object.keys(updates).map(k => `${k} = ?`).join(', ')
+  const values = Object.values(updates)
+  db.prepare(`UPDATE users SET ${fields} WHERE id = ?`).run(...values, userId)
+
+  const updated = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(userId) as
+    { id: number; email: string; name: string }
+  res.json({ user: updated })
 })
 
 // --- Roles CRUD ---

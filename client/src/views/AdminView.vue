@@ -84,12 +84,34 @@ const allPermissions = ref<Permission[]>([])
 
 // Invite user
 const inviteForm = ref({ name: '', email: '' })
-const inviteRoles = ref<Set<string>>(new Set(['Customer']))
+const inviteRoles = ref<Set<string>>(new Set())
 const inviteError = ref('')
+const inviteEmailError = ref('')
+const inviteEmailTouched = ref(false)
 const inviteSubmitting = ref(false)
 const lastInviteLink = ref('')
 const inviteCopied = ref(false)
 const basicRoleOptions = ['Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep']
+
+// Pragmatic email check — covers the typo cases (missing @, missing TLD,
+// stray spaces). Server applies the same check authoritatively.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+const isValidEmail = (v: string) => EMAIL_RE.test(v.trim())
+
+const canSubmitInvite = computed(() =>
+  inviteForm.value.name.trim().length > 0
+  && isValidEmail(inviteForm.value.email)
+  && inviteRoles.value.size > 0
+)
+
+function onInviteEmailBlur() {
+  inviteEmailTouched.value = true
+  const v = inviteForm.value.email.trim()
+  inviteEmailError.value = v && !isValidEmail(v) ? 'Enter a valid email (e.g. name@company.com)' : ''
+}
+function onInviteEmailInput() {
+  if (inviteEmailError.value && isValidEmail(inviteForm.value.email)) inviteEmailError.value = ''
+}
 
 // Edit user access
 const accessDialog = ref(false)
@@ -99,6 +121,23 @@ const accessKeepAdmin = ref(false)
 const accessDeptIds = ref<Set<number>>(new Set())
 const accessError = ref('')
 const accessSaving = ref(false)
+
+// Identity edits inside the access dialog
+const accessName = ref('')
+const accessEmail = ref('')
+const accessEmailError = ref('')
+const identityChanged = computed(() => {
+  if (!accessUser.value) return false
+  return accessName.value.trim() !== accessUser.value.name
+    || accessEmail.value.trim().toLowerCase() !== accessUser.value.email.toLowerCase()
+})
+function onAccessEmailBlur() {
+  const v = accessEmail.value.trim()
+  accessEmailError.value = v && !isValidEmail(v) ? 'Enter a valid email (e.g. name@company.com)' : ''
+}
+function onAccessEmailInput() {
+  if (accessEmailError.value && isValidEmail(accessEmail.value)) accessEmailError.value = ''
+}
 
 const departments = ref<Department[]>([])
 const newDeptName = ref('')
@@ -160,13 +199,18 @@ async function inviteUser() {
   inviteError.value = ''
   lastInviteLink.value = ''
   inviteCopied.value = false
+  inviteEmailTouched.value = true
 
-  if (!inviteForm.value.name.trim() || !inviteForm.value.email.trim()) {
-    inviteError.value = 'Name and email are required'
+  if (!inviteForm.value.name.trim()) {
+    inviteError.value = 'Name is required'
+    return
+  }
+  if (!isValidEmail(inviteForm.value.email)) {
+    inviteEmailError.value = 'Enter a valid email (e.g. name@company.com)'
     return
   }
   if (inviteRoles.value.size === 0) {
-    inviteError.value = 'Select at least one role'
+    inviteError.value = 'Pick at least one role'
     return
   }
 
@@ -176,7 +220,7 @@ async function inviteUser() {
       method: 'POST',
       headers: hdrs(),
       body: JSON.stringify({
-        email: inviteForm.value.email.trim(),
+        email: inviteForm.value.email.trim().toLowerCase(),
         name: inviteForm.value.name.trim(),
         roles: [...inviteRoles.value],
       }),
@@ -188,7 +232,9 @@ async function inviteUser() {
     }
     lastInviteLink.value = `${window.location.origin}${data.inviteLink}`
     inviteForm.value = { name: '', email: '' }
-    inviteRoles.value = new Set(['Customer'])
+    inviteRoles.value = new Set()
+    inviteEmailTouched.value = false
+    inviteEmailError.value = ''
     await loadUsers()
   } finally {
     inviteSubmitting.value = false
@@ -229,6 +275,9 @@ function openEditAccess(user: PortalUser) {
   accessRole.value = primaryEditableRole(user) || 'Customer'
   accessKeepAdmin.value = (user.roles || []).includes('admin')
   accessDeptIds.value = new Set((user.departments || []).map(d => Number(d.id)))
+  accessName.value = user.name
+  accessEmail.value = user.email
+  accessEmailError.value = ''
   accessError.value = ''
   accessDialog.value = true
   loadAltEmails(user.id)
@@ -364,9 +413,38 @@ function setAccessDepartment(id: number, checked: boolean) {
 async function saveUserAccess() {
   if (!accessUser.value) return
   accessError.value = ''
+  accessEmailError.value = ''
+
+  // Identity validation up front so we don't half-save.
+  const newName = accessName.value.trim()
+  const newEmail = accessEmail.value.trim().toLowerCase()
+  if (!newName) {
+    accessError.value = 'Name cannot be blank'
+    return
+  }
+  if (!isValidEmail(newEmail)) {
+    accessEmailError.value = 'Enter a valid email (e.g. name@company.com)'
+    return
+  }
+
   accessSaving.value = true
   try {
     const userId = accessUser.value.id
+
+    if (identityChanged.value) {
+      const idRes = await fetch(`/api/admin/users/${userId}`, {
+        method: 'PATCH',
+        headers: hdrs(),
+        body: JSON.stringify({ name: newName, email: newEmail }),
+      })
+      const idData = await idRes.json().catch(() => ({}))
+      if (!idRes.ok) {
+        if (idRes.status === 409) accessEmailError.value = idData.error || 'That email is already in use'
+        else accessError.value = idData.error || `Identity save failed (${idRes.status})`
+        return
+      }
+    }
+
     const rolesToSave = accessKeepAdmin.value ? ['admin', accessRole.value] : [accessRole.value]
     const roleRes = await fetch(`/api/admin/users/${userId}/roles`, {
       method: 'PUT',
@@ -392,6 +470,8 @@ async function saveUserAccess() {
 
     const user = users.value.find(u => u.id === userId)
     if (user) {
+      user.name = newName
+      user.email = newEmail
       user.roles = roleData.roles || rolesToSave
       user.departments = deptData.departments || []
     }
@@ -1348,21 +1428,30 @@ onMounted(async () => {
                     id="invite-email"
                     v-model="inviteForm.email"
                     type="email"
+                    inputmode="email"
+                    spellcheck="false"
                     placeholder="jane@example.com"
                     autocomplete="off"
+                    :aria-invalid="!!inviteEmailError"
+                    :class="inviteEmailError ? 'ring-1 ring-destructive/40 focus-visible:ring-destructive/60' : ''"
+                    @blur="onInviteEmailBlur"
+                    @input="onInviteEmailInput"
                   />
+                  <p v-if="inviteEmailError" class="text-xs text-destructive">{{ inviteEmailError }}</p>
                 </div>
               </div>
 
-              <!-- Role checkboxes -->
+              <!-- Role checkboxes — no default selection; admin must pick deliberately. -->
               <div class="space-y-3">
                 <Label>Assign roles</Label>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <label
                     v-for="role in roles"
                     :key="role.id"
-                    class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
-                    :class="inviteRoles.has(role.name) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
+                    class="flex items-start gap-3 rounded-lg p-3 cursor-pointer transition-colors ring-1"
+                    :class="inviteRoles.has(role.name)
+                      ? 'bg-primary/8 ring-primary/30'
+                      : 'bg-muted/30 ring-foreground/5 hover:bg-muted/50'"
                   >
                     <Checkbox
                       :checked="inviteRoles.has(role.name)"
@@ -1375,12 +1464,15 @@ onMounted(async () => {
                     </div>
                   </label>
                 </div>
+                <p v-if="inviteRoles.size === 0" class="text-xs text-muted-foreground">
+                  Pick at least one role.
+                </p>
               </div>
 
               <p v-if="inviteError" class="text-sm text-destructive">{{ inviteError }}</p>
 
               <div>
-                <Button class="w-full sm:w-auto" @click="inviteUser" :disabled="inviteSubmitting">
+                <Button class="w-full sm:w-auto" @click="inviteUser" :disabled="inviteSubmitting || !canSubmitInvite">
                   <span class="hidden sm:inline">{{ inviteSubmitting ? 'Creating...' : 'Create & Generate Invite Link' }}</span>
                   <span class="sm:hidden">{{ inviteSubmitting ? 'Creating…' : 'Create + Invite Link' }}</span>
                 </Button>
@@ -2766,23 +2858,54 @@ onMounted(async () => {
     <Dialog v-model:open="accessDialog">
       <DialogContent class="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Edit access</DialogTitle>
+          <DialogTitle>Edit user</DialogTitle>
           <DialogDescription v-if="accessUser">
-            {{ accessUser.name }} &mdash; {{ accessUser.email }}
+            Update identity, role, departments, and AI budget.
           </DialogDescription>
         </DialogHeader>
 
         <div class="grid gap-5 py-2">
-          <p v-if="accessError" class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p v-if="accessError" class="rounded-md bg-destructive/10 ring-1 ring-destructive/30 px-3 py-2 text-sm text-destructive">
             {{ accessError }}
           </p>
+
+          <!-- Identity (name + email, both editable) -->
+          <div class="rounded-lg bg-muted/30 ring-1 ring-foreground/5 p-3 space-y-3">
+            <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Identity</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="space-y-1.5">
+                <Label for="access-name" class="text-xs">Full name</Label>
+                <Input id="access-name" v-model="accessName" class="h-9" autocomplete="off" />
+              </div>
+              <div class="space-y-1.5">
+                <Label for="access-email" class="text-xs">Email address</Label>
+                <Input
+                  id="access-email"
+                  v-model="accessEmail"
+                  type="email"
+                  inputmode="email"
+                  spellcheck="false"
+                  autocomplete="off"
+                  class="h-9"
+                  :aria-invalid="!!accessEmailError"
+                  :class="accessEmailError ? 'ring-1 ring-destructive/40 focus-visible:ring-destructive/60' : ''"
+                  @blur="onAccessEmailBlur"
+                  @input="onAccessEmailInput"
+                />
+                <p v-if="accessEmailError" class="text-xs text-destructive">{{ accessEmailError }}</p>
+              </div>
+            </div>
+            <p v-if="identityChanged" class="text-[11px] text-muted-foreground">
+              Changes save when you press <span class="font-medium">Save</span>. The user keeps using their existing password.
+            </p>
+          </div>
 
           <div class="space-y-2">
             <Label for="access-role">Business role</Label>
             <select
               id="access-role"
               v-model="accessRole"
-              class="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              class="h-10 w-full rounded-md bg-muted/30 ring-1 ring-foreground/5 px-3 text-sm focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none"
             >
               <option v-for="roleName in basicRoleOptions" :key="roleName" :value="roleName">
                 {{ roleName }}
@@ -2790,7 +2913,10 @@ onMounted(async () => {
             </select>
           </div>
 
-          <label class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer">
+          <label
+            class="flex items-start gap-3 rounded-lg p-3 cursor-pointer transition-colors ring-1"
+            :class="accessKeepAdmin ? 'bg-primary/8 ring-primary/30' : 'bg-muted/30 ring-foreground/5 hover:bg-muted/50'"
+          >
             <input
               type="checkbox"
               class="mt-1 h-4 w-4"
@@ -2809,8 +2935,10 @@ onMounted(async () => {
               <label
                 v-for="d in departments"
                 :key="d.id"
-                class="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors"
-                :class="accessDeptIds.has(Number(d.id)) ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'"
+                class="flex items-start gap-3 rounded-lg p-3 cursor-pointer transition-colors ring-1"
+                :class="accessDeptIds.has(Number(d.id))
+                  ? 'bg-primary/8 ring-primary/30'
+                  : 'bg-muted/30 ring-foreground/5 hover:bg-muted/50'"
               >
                 <input
                   type="checkbox"
@@ -2907,7 +3035,7 @@ onMounted(async () => {
 
         <DialogFooter>
           <Button variant="outline" @click="accessDialog = false">Cancel</Button>
-          <Button :disabled="accessSaving" @click="saveUserAccess">{{ accessSaving ? 'Saving...' : 'Save access' }}</Button>
+          <Button :disabled="accessSaving" @click="saveUserAccess">{{ accessSaving ? 'Saving...' : 'Save changes' }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
