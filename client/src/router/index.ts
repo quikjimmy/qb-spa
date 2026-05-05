@@ -99,7 +99,7 @@ const router = createRouter({
         {
           path: 'projects/permit',
           name: 'milestone-permit',
-          component: () => import('../views/MilestonePlaceholder.vue'),
+          component: () => import('../views/PermitDashboardView.vue'),
           meta: { order: 7, title: 'Permit', description: 'AHJ submissions, approvals, rejections + missing-items checklists.' },
         },
         {

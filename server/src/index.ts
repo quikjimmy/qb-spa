@@ -22,6 +22,7 @@ import { ptoAnalyticsRouter } from './routes/pto-analytics'
 import { ptoCacheRouter } from './routes/pto-cache'
 import { inspxAnalyticsRouter } from './routes/inspx-analytics'
 import { designAnalyticsRouter } from './routes/design-analytics'
+import { permitAnalyticsRouter } from './routes/permit-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
@@ -92,6 +93,7 @@ app.use('/api/analytics/pto', authenticate, ptoAnalyticsRouter)
 app.use('/api/pto', authenticate, ptoCacheRouter)
 app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
 app.use('/api/analytics/design', authenticate, designAnalyticsRouter)
+app.use('/api/analytics/permit', authenticate, permitAnalyticsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
