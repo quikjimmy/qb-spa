@@ -15,28 +15,68 @@ export interface FeedRow {
   pinned?: boolean
 }
 
-const props = defineProps<{ items: FeedRow[] }>()
+const props = withDefaults(defineProps<{
+  items: FeedRow[]
+  /** 'single' (existing chip-radio) or 'multi' (checkbox-style toggles).
+   *  Multi mode is the default for the project-detail "All" tab so the
+   *  user can layer dimensions instead of swapping between them. */
+  mode?: 'single' | 'multi'
+  /** When false, hide the chip strip entirely. Useful when the parent
+   *  has already locked the feed to a single category (e.g. the Notes
+   *  tab passes only note items). */
+  showFilters?: boolean
+  /** When showFilters is false, an optional id that pre-filters to one
+   *  category. Equivalent to passing pre-filtered `items` but cleaner
+   *  for parents that already share the same feedItems prop. */
+  lockedFilter?: string
+}>(), { mode: 'single', showFilters: true })
 
+// Filter dimensions. Drops the old "Changes" and "Tasks" buckets;
+// "Schedule" replaces "Tasks" since it reads more clearly to ops.
+// `all` is single-mode-only — multi mode treats all-selected as the
+// no-op "show everything" state.
+const filters: Array<{ id: string; label: string; match: (k: string) => boolean }> = [
+  { id: 'all',       label: 'All',       match: () => true },
+  { id: 'notes',     label: 'Notes',     match: k => k === 'note_added' || k === 'note' || k === 'user_post' },
+  { id: 'schedule',  label: 'Schedule',  match: k => k === 'task_event' || k.startsWith('task') },
+  { id: 'milestone', label: 'Milestone', match: k => k === 'milestone' || k.includes('milestone') },
+  { id: 'comms',     label: 'Comms',     match: k => k.startsWith('comms.') },
+  { id: 'tickets',   label: 'Tickets',   match: k => k === 'ticket_created' || k.startsWith('ticket') },
+]
+// Filters available in multi mode (drops the "all" toggle since it's
+// implicit when nothing is unselected).
+const multiFilters = filters.filter(f => f.id !== 'all')
+
+// Single-mode state (existing behavior).
 const filter = ref<string>('all')
 
-// Filters drive the chip strip. Each one takes a fn that knows how to match
-// the real event_type values stored in feed_items + the synthetic
-// `comms.sms.*` / `comms.call.*` types we mix in for SMS + calls.
-const filters: Array<{ id: string; label: string; match: (k: string) => boolean }> = [
-  { id: 'all',        label: 'All',        match: () => true },
-  { id: 'notes',      label: 'Notes',      match: k => k === 'note_added' || k === 'note' || k === 'user_post' },
-  { id: 'comms',      label: 'Comms',      match: k => k.startsWith('comms.') },
-  { id: 'milestones', label: 'Milestones', match: k => k === 'milestone' || k.includes('milestone') },
-  { id: 'changes',    label: 'Changes',    match: k => k === 'status_change' || k.includes('change') || k === 'audit' },
-  { id: 'tickets',    label: 'Tickets',    match: k => k === 'ticket_created' || k.startsWith('ticket') },
-  { id: 'tasks',      label: 'Tasks',      match: k => k === 'task_event' || k.startsWith('task') },
-]
+// Multi-mode state. Defaults to "all dimensions on" so the feed reads
+// as everything until the user starts deselecting.
+const activeMulti = ref<Set<string>>(new Set(multiFilters.map(f => f.id)))
+function toggleMulti(id: string) {
+  const next = new Set(activeMulti.value)
+  if (next.has(id)) next.delete(id); else next.add(id)
+  activeMulti.value = next
+}
+function selectAllMulti() { activeMulti.value = new Set(multiFilters.map(f => f.id)) }
+function clearMulti() { activeMulti.value = new Set() }
 
 const visible = computed(() => {
+  const sorted = [...props.items].sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
+  if (!props.showFilters && props.lockedFilter) {
+    const f = filters.find(x => x.id === props.lockedFilter) ?? filters[0]!
+    return sorted.filter(it => f.match(it.event_type || ''))
+  }
+  if (props.mode === 'multi') {
+    if (activeMulti.value.size === 0) return []
+    const matchers = multiFilters.filter(f => activeMulti.value.has(f.id))
+    return sorted.filter(it => {
+      const k = it.event_type || ''
+      return matchers.some(m => m.match(k))
+    })
+  }
   const f = filters.find(x => x.id === filter.value) ?? filters[0]!
-  return [...props.items]
-    .filter(it => f.match(it.event_type || ''))
-    .sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
+  return sorted.filter(it => f.match(it.event_type || ''))
 })
 
 interface Group { key: string; items: FeedRow[] }
@@ -94,19 +134,42 @@ function decorate(it: FeedRow): Decoration {
 
 <template>
   <div class="flex flex-col gap-2.5">
-    <!-- Filter chip row -->
+    <!-- Filter chip row — single-mode renders the existing radio behavior;
+         multi-mode renders checkbox-style toggles + a "select all / clear"
+         affordance. Hidden entirely when showFilters is false. -->
     <div
-      class="flex gap-1.5 overflow-x-auto pb-1 -mb-1"
+      v-if="showFilters"
+      class="flex items-center gap-1.5 overflow-x-auto pb-1 -mb-1"
       style="scrollbar-width: none;"
     >
-      <button
-        v-for="f in filters"
-        :key="f.id"
-        type="button"
-        class="rounded-full px-3 py-1 font-medium text-[11.5px] whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-        :class="filter === f.id ? 'bg-teal-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'"
-        @click="filter = f.id"
-      >{{ f.label }}</button>
+      <template v-if="mode === 'multi'">
+        <button
+          v-for="f in multiFilters"
+          :key="f.id"
+          type="button"
+          class="rounded-full px-3 py-1 font-medium text-[11.5px] whitespace-nowrap shrink-0 transition-colors cursor-pointer border"
+          :class="activeMulti.has(f.id)
+            ? 'bg-teal-700 text-white border-teal-700'
+            : 'bg-white text-slate-500 border-slate-200 hover:text-slate-900 hover:bg-slate-50'"
+          :aria-pressed="activeMulti.has(f.id)"
+          @click="toggleMulti(f.id)"
+        >{{ f.label }}</button>
+        <button
+          type="button"
+          class="ml-1 text-[11px] text-slate-500 hover:text-slate-900 cursor-pointer shrink-0"
+          @click="activeMulti.size === multiFilters.length ? clearMulti() : selectAllMulti()"
+        >{{ activeMulti.size === multiFilters.length ? 'Clear' : 'All' }}</button>
+      </template>
+      <template v-else>
+        <button
+          v-for="f in filters"
+          :key="f.id"
+          type="button"
+          class="rounded-full px-3 py-1 font-medium text-[11.5px] whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+          :class="filter === f.id ? 'bg-teal-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'"
+          @click="filter = f.id"
+        >{{ f.label }}</button>
+      </template>
     </div>
 
     <div

@@ -25,6 +25,7 @@ import DealFeed, { type FeedRow } from '@/components/project-detail/DealFeed.vue
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
 import MilestoneDetail from '@/components/project-detail/MilestoneDetail.vue'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 interface Project extends Record<string, unknown> {
   record_id: number
@@ -208,8 +209,30 @@ const retentionSummary = ref<RetentionSummary | null>(null)
 const starred = ref(false)
 
 const isDesktop = ref(false)
+
+// Tabbed workspace — replaces the previous endless vertical stack of
+// Schedule / Tickets / Comms / Documents in the center column. URL
+// hash mirrors the active tab so deep links + browser back/forward
+// land on the same view. On desktop the deal sidebar + activity feed
+// stay visible alongside; on mobile they become tabs themselves.
+type WorkTab = 'all' | 'notes' | 'schedule' | 'docs' | 'comms' | 'breakdown'
+const VALID_TABS: WorkTab[] = ['all', 'notes', 'schedule', 'docs', 'comms', 'breakdown']
+function readTabFromHash(): WorkTab {
+  if (typeof window === 'undefined') return 'all'
+  const h = (window.location.hash || '').replace('#', '') as WorkTab
+  return VALID_TABS.includes(h) ? h : 'all'
+}
+const activeTab = ref<WorkTab>(readTabFromHash())
+function setTab(t: string) {
+  if (!VALID_TABS.includes(t as WorkTab)) return
+  activeTab.value = t as WorkTab
+  // Sync to URL hash without triggering a router navigation, so deep
+  // links work but the browser doesn't push a history entry per click.
+  if (typeof window !== 'undefined') {
+    history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${t}`)
+  }
+}
 const selectedStepId = ref<string | null>(null)
-const activeSection = ref<string>('breakdown')
 const smsOpen = ref(false)
 const stickyHeader = ref(false)
 const headerEl = ref<HTMLElement | null>(null)
@@ -547,37 +570,10 @@ const feedItems = computed<FeedRow[]>(() => {
 })
 
 // ── Scroll spy for mobile section nav ─────────────────────
-const sections: Array<{ id: string; label: string }> = [
-  { id: 'breakdown', label: 'Breakdown' },
-  { id: 'schedule',  label: 'Schedule' },
-  { id: 'activity',  label: 'Activity' },
-  { id: 'tickets',   label: 'Tickets' },
-  { id: 'comms',     label: 'Comms' },
-  { id: 'documents', label: 'Docs' },
-]
 
-let observer: IntersectionObserver | null = null
-
-function observeSections() {
-  if (typeof window === 'undefined' || isDesktop.value) return
-  if (observer) observer.disconnect()
-  observer = new IntersectionObserver(entries => {
-    const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
-    if (visible.length && visible[0]) activeSection.value = (visible[0].target as HTMLElement).id
-  }, { rootMargin: '-160px 0px -60% 0px', threshold: 0 })
-  for (const s of sections) {
-    const el = document.getElementById(s.id)
-    if (el) observer.observe(el)
-  }
-}
-
-function jumpTo(id: string) {
-  const el = document.getElementById(id)
-  if (!el) return
-  const top = el.getBoundingClientRect().top + window.scrollY - 110
-  window.scrollTo({ top, behavior: 'smooth' })
-  history.replaceState(null, '', `#${id}`)
-}
+// (Old IntersectionObserver-based section nav removed when the body
+// switched to a tabbed workspace — the active tab now drives focus,
+// and URL hash sync is handled by readTabFromHash / setTab.)
 
 // ── Sticky compact header on scroll past the main customer card ──
 function onScroll() {
@@ -597,19 +593,13 @@ onMounted(async () => {
   if (registerRefresh) registerRefresh(loadAll)
   if (Number.isFinite(recordId.value) && recordId.value > 0) await loadAll()
   await nextTick()
-  observeSections()
   onScroll()
-  const h = window.location.hash.replace('#', '')
-  if (h && sections.some(s => s.id === h)) jumpTo(h)
 })
 
 onBeforeUnmount(() => {
   if (mq) mq.removeEventListener('change', syncBp)
-  if (observer) observer.disconnect()
   window.removeEventListener('scroll', onScroll)
 })
-
-watch(isDesktop, () => observeSections())
 
 // ── Derived data ─────────────────────────────────────────
 
@@ -808,72 +798,89 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
         </div>
       </section>
 
-      <!-- DESKTOP: 3-col grid — left: breakdown, center: schedule/tickets/comms, RIGHT: feed -->
+      <!-- AI PROJECT SUMMARY — placeholder card the same width as the
+           milestone strip, sitting between the milestones and the body.
+           Stub for a future LLM-generated synopsis (Cliff's Notes of the
+           project state). -->
+      <section class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-3">
+        <div
+          class="rounded-2xl bg-white px-3 sm:px-5 py-3 border border-dashed border-slate-200"
+          style="box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 1px 0 rgba(15,23,42,0.03);"
+        >
+          <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">AI · Project Summary</p>
+            <p class="text-[10px] text-slate-400 italic">Coming soon — auto-generated from notes, milestones, and recent comms</p>
+          </div>
+          <p class="text-[12px] text-slate-500 mt-1.5">
+            Status snapshot, blockers worth knowing, and "what changed since you last looked" will land here once the summary
+            agent is wired in.
+          </p>
+        </div>
+      </section>
+
+      <!-- DESKTOP: 2-col workspace -->
       <div
         v-if="isDesktop"
         class="max-w-[1240px] mx-auto px-6 pb-6"
       >
-        <div class="grid grid-cols-[320px_1fr_380px] gap-[18px] items-start">
-          <div class="flex flex-col gap-3.5">
+        <!-- Two-pane workspace — left: deal facts + Next Up (stacked),
+             right: tabbed work area dominated by the unified "All" feed.
+             Sized so the page stays usable when the Live Comms Hub rail
+             is open (parent SidebarInset adds right padding for the rail
+             and this grid reflows naturally). -->
+        <div class="grid grid-cols-[320px_1fr] gap-4 items-start">
+          <!-- LEFT — Deal Breakdown + Next Up, sticky -->
+          <aside class="lg:sticky lg:top-20 self-start max-h-[calc(100vh-100px)] overflow-y-auto pr-1 flex flex-col gap-3.5">
             <DealBreakdown :p="project" />
-          </div>
-          <div class="flex flex-col gap-3.5">
             <NextUpBanner :project-rid="project.record_id" />
-            <div id="schedule"><EventsView :project-rid="project.record_id" /></div>
-            <div id="tickets"><Tickets :items="tickets" /></div>
-            <div id="comms"><Communications :items="comms" /></div>
-            <div id="documents"><Documents :project-rid="project.record_id" /></div>
-          </div>
-          <!-- Right rail: chronological project feed, sticky so it persists as the center scrolls -->
-          <div id="activity" class="lg:sticky lg:top-20 self-start">
-            <DealFeed :items="feedItems" />
-          </div>
+          </aside>
+
+          <!-- RIGHT — tabs. Default = "All" (chronological feed of notes
+               + schedule + milestone + comms + tickets, with multi-select
+               filter chips). Tickets is dropped as a top-level tab since
+               it's a filter dimension on the All view. -->
+          <main>
+            <Tabs :model-value="activeTab" @update:model-value="(v) => setTab(String(v))">
+              <TabsList class="w-full justify-start bg-card/60 p-1 rounded-xl">
+                <TabsTrigger value="all" class="flex-1">All</TabsTrigger>
+                <TabsTrigger value="notes" class="flex-1">Notes</TabsTrigger>
+                <TabsTrigger value="schedule" class="flex-1">Schedule</TabsTrigger>
+                <TabsTrigger value="docs" class="flex-1">Docs</TabsTrigger>
+                <TabsTrigger value="comms" class="flex-1">Comms</TabsTrigger>
+              </TabsList>
+              <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
+              <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
+              <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
+              <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
+              <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
+            </Tabs>
+          </main>
         </div>
       </div>
 
-      <!-- MOBILE -->
+      <!-- MOBILE — same tab order. Deal sidebar collapses into a "Deal"
+           tab since there's no room for the sidebar at narrow widths. -->
       <template v-else>
-        <nav
-          class="sticky top-14 z-20"
-          aria-label="Section navigation"
-          style="background: #f7f3f0;"
-        >
-          <div class="max-w-[1240px] mx-auto px-4 sm:px-6 py-1.5">
-            <ul class="flex items-center gap-1 overflow-x-auto" style="scrollbar-width: none;">
-              <li v-for="s in sections" :key="s.id">
-                <button
-                  type="button"
-                  class="text-[12px] px-2.5 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap"
-                  :class="activeSection === s.id
-                    ? 'text-teal-700 bg-teal-50 font-medium'
-                    : 'text-slate-500 hover:text-slate-900'"
-                  @click="jumpTo(s.id)"
-                >{{ s.label }}</button>
-              </li>
-            </ul>
-          </div>
-        </nav>
-
-        <div class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-6 flex flex-col gap-3.5">
+        <div class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-6">
           <NextUpBanner :project-rid="project.record_id" />
-          <section id="breakdown" class="scroll-mt-[140px]">
-            <DealBreakdown :p="project" />
-          </section>
-          <section id="schedule" class="scroll-mt-[140px]">
-            <EventsView :project-rid="project.record_id" list-only />
-          </section>
-          <section id="activity" class="scroll-mt-[140px]">
-            <DealFeed :items="feedItems" />
-          </section>
-          <section id="tickets" class="scroll-mt-[140px]">
-            <Tickets :items="tickets" />
-          </section>
-          <section id="comms" class="scroll-mt-[140px]">
-            <Communications :items="comms" />
-          </section>
-          <section id="documents" class="scroll-mt-[140px]">
-            <Documents :project-rid="project.record_id" />
-          </section>
+          <Tabs :model-value="activeTab" @update:model-value="(v) => setTab(String(v))" class="mt-3">
+            <div class="sticky top-14 z-20 -mx-4 sm:-mx-6 px-4 sm:px-6 py-1.5" style="background: #f7f3f0;">
+              <TabsList class="bg-card/60 p-1 rounded-xl overflow-x-auto no-scrollbar w-full justify-start">
+                <TabsTrigger value="all" class="shrink-0">All</TabsTrigger>
+                <TabsTrigger value="notes" class="shrink-0">Notes</TabsTrigger>
+                <TabsTrigger value="schedule" class="shrink-0">Schedule</TabsTrigger>
+                <TabsTrigger value="docs" class="shrink-0">Docs</TabsTrigger>
+                <TabsTrigger value="comms" class="shrink-0">Comms</TabsTrigger>
+                <TabsTrigger value="breakdown" class="shrink-0">Deal</TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
+            <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
+            <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
+            <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
+            <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
+            <TabsContent value="breakdown" class="mt-3"><DealBreakdown :p="project" /></TabsContent>
+          </Tabs>
         </div>
       </template>
 
