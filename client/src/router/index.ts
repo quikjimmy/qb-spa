@@ -75,8 +75,8 @@ const router = createRouter({
         {
           path: 'projects/intake',
           name: 'milestone-intake',
-          component: () => import('../views/MilestonePlaceholder.vue'),
-          meta: { order: 3, title: 'Intake', description: 'KCA + welcome call. Decision queue, missing-info follow-ups, intake-rejection turnaround.' },
+          component: () => import('../views/IntakeDashboardView.vue'),
+          meta: { order: 3, title: 'Intake', description: 'KCA + welcome call, intake failed-run recovery, and retry queue.' },
         },
         {
           path: 'projects/pc',
