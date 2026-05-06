@@ -5,6 +5,7 @@ import {
   FEEDBACK_TRIAGE_MODEL_DEFAULT,
   FEEDBACK_TRIAGE_MODEL_FALLBACK,
 } from './prompt'
+import { getDefaultKeyFor, getKeyById } from '../lib/userProviderKeys'
 
 export interface FeedbackInput {
   id: number
@@ -95,11 +96,8 @@ function parseTriageResponse(raw: string): TriageResponse {
   return parsed
 }
 
-async function callClaude(items: FeedbackInput[], model: string): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
-  const apiKey = process.env['ANTHROPIC_API_KEY']
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
-
-  const client = new Anthropic({ apiKey })
+async function callClaude(items: FeedbackInput[], model: string, key: { apiKey: string; baseUrl: string | null }): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
+  const client = new Anthropic({ apiKey: key.apiKey, ...(key.baseUrl ? { baseURL: key.baseUrl } : {}) })
   const userPrompt = `## Unclustered feedback (${items.length} items)\n\n${JSON.stringify(items, null, 2)}\n\nGroup these and draft a proposal for each cluster. Return only the JSON object.`
 
   const response = await client.messages.create({
@@ -121,9 +119,31 @@ async function callClaude(items: FeedbackInput[], model: string): Promise<{ raw:
   return { raw: textBlock.text, tokensIn, tokensOut }
 }
 
-export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: string }): Promise<TriageRunSummary> {
+// Resolve which Anthropic API key to use for this triage run, in order:
+//   1. opts.keyId — caller picked a specific user_provider_keys row
+//   2. opts.userId — caller's default Anthropic key
+//   3. ANTHROPIC_API_KEY env var — system fallback
+// Returns the resolved key + a label for logging/UI feedback.
+function resolveTriageKey(opts: { userId?: number; keyId?: number }): { apiKey: string; baseUrl: string | null; source: string } {
+  if (opts.keyId && opts.userId) {
+    const k = getKeyById(opts.userId, opts.keyId)
+    if (!k) throw new Error(`API key id=${opts.keyId} not found for user`)
+    if (k.provider !== 'anthropic') throw new Error(`Triage requires an Anthropic key — selected key is ${k.provider}`)
+    return { apiKey: k.apiKey, baseUrl: k.baseUrl, source: `user-key:${opts.keyId}${k.label ? ` (${k.label})` : ''}` }
+  }
+  if (opts.userId) {
+    const k = getDefaultKeyFor(opts.userId, 'anthropic')
+    if (k) return { apiKey: k.apiKey, baseUrl: k.baseUrl, source: 'user-default' }
+  }
+  const envKey = process.env['ANTHROPIC_API_KEY']
+  if (envKey) return { apiKey: envKey, baseUrl: null, source: 'env' }
+  throw new Error('No Anthropic API key available — add one in Settings or set ANTHROPIC_API_KEY')
+}
+
+export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: string; userId?: number; keyId?: number }): Promise<TriageRunSummary> {
   const model = opts?.model || FEEDBACK_TRIAGE_MODEL_DEFAULT
   const triggeredBy = opts?.triggeredBy ?? null
+  const key = resolveTriageKey({ userId: opts?.userId, keyId: opts?.keyId })
 
   const insertRun = db.prepare(
     `INSERT INTO feedback_triage_runs (status, triggered_by, model) VALUES ('running', ?, ?)`
@@ -155,13 +175,13 @@ export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: s
   let tokensOut: number
   let usedModel = model
   try {
-    const r = await callClaude(items, model)
+    const r = await callClaude(items, model, key)
     raw = r.raw
     tokensIn = r.tokensIn
     tokensOut = r.tokensOut
   } catch (err) {
     if (model === FEEDBACK_TRIAGE_MODEL_DEFAULT) {
-      const r = await callClaude(items, FEEDBACK_TRIAGE_MODEL_FALLBACK)
+      const r = await callClaude(items, FEEDBACK_TRIAGE_MODEL_FALLBACK, key)
       raw = r.raw
       tokensIn = r.tokensIn
       tokensOut = r.tokensOut
