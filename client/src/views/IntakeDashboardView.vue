@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
@@ -492,9 +493,20 @@ function progressClass(value: number | null) {
   return 'bg-rose-500'
 }
 
+const router = useRouter()
+
 function openUrl(url: string) {
   if (!url) return
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+// Click row → in-app project detail. The QB URL stays accessible via
+// the explicit "Open in QB" icon button so users can still pop the
+// record open in the source system when they need to edit fields the
+// SPA doesn't surface yet.
+function openProject(rid: number) {
+  if (!rid) return
+  router.push({ name: 'project-detail', params: { id: String(rid) } })
 }
 
 function errorLines(row: FailedRun | null): string[] {
@@ -546,7 +558,28 @@ async function triggerRetry(row: FailedRun) {
 }
 
 const dimensionRows = computed(() => data.value.intakeManager?.pivots?.[dimension.value] || [])
-const mobileDimensionRows = computed(() => dimensionRows.value.slice(0, 8))
+
+// Total row — sums across all visible dimension rows. Percentages are
+// weighted by the underlying counts (not averages of per-row %), so the
+// total reads as the true overall rate, not the mean of rates.
+interface DimRow { dimension_value: string; sold_count: number; sold_kw: number; kca_count: number; kca_kw: number; first_pass_count: number; kca_pct: number; first_pass_pct: number }
+const dimensionTotal = computed(() => {
+  const rows = dimensionRows.value as DimRow[]
+  if (!rows.length) return null
+  const sold = rows.reduce((a, r) => a + (r.sold_count || 0), 0)
+  const soldKw = rows.reduce((a, r) => a + (r.sold_kw || 0), 0)
+  const kca = rows.reduce((a, r) => a + (r.kca_count || 0), 0)
+  const kcaKw = rows.reduce((a, r) => a + (r.kca_kw || 0), 0)
+  const firstPass = rows.reduce((a, r) => a + (r.first_pass_count || 0), 0)
+  return {
+    sold_count: sold,
+    sold_kw: Math.round(soldKw * 10) / 10,
+    kca_count: kca,
+    kca_kw: Math.round(kcaKw * 10) / 10,
+    kca_pct: sold > 0 ? Math.round((kca / sold) * 100) : 0,
+    first_pass_pct: kca > 0 ? Math.round((firstPass / kca) * 100) : 0,
+  }
+})
 const tableRows = computed<FailedRun[]>(() => drillRows.value.length || drillLabel.value ? drillRows.value : (data.value.lists?.rows || []))
 const tableTitle = computed(() => drillLabel.value || 'Failed runs')
 const managerTableCount = computed(() => managerMode.value === 'processing' ? processingRows.value.length : managerRows.value.length)
@@ -663,56 +696,63 @@ onMounted(() => {
               </button>
             </div>
           </div>
-          <div class="sm:hidden divide-y">
-            <div v-for="row in mobileDimensionRows" :key="`mobile-${dimension}-${row.dimension_value}`" class="p-3">
-              <div class="flex items-start justify-between gap-3">
-                <p class="font-semibold text-[13px] leading-snug min-w-0 truncate" :title="row.dimension_value">{{ row.dimension_value }}</p>
-                <p class="shrink-0 text-[12px] font-bold tabular-nums">{{ row.sold_count }} sold</p>
-              </div>
-              <div class="mt-2 grid grid-cols-3 gap-1.5 text-[10px] tabular-nums">
-                <div class="rounded-md bg-muted/40 px-2 py-1">
-                  <p class="text-muted-foreground uppercase tracking-wider">kW Sold</p>
-                  <p class="font-semibold">{{ fmtKw(row.sold_kw) }}</p>
-                </div>
-                <div class="rounded-md bg-muted/40 px-2 py-1">
-                  <p class="text-muted-foreground uppercase tracking-wider">KCA</p>
-                  <p class="font-semibold">{{ row.kca_count }} · {{ row.kca_pct }}%</p>
-                </div>
-                <div class="rounded-md bg-muted/40 px-2 py-1">
-                  <p class="text-muted-foreground uppercase tracking-wider">First Pass</p>
-                  <p class="font-semibold" :class="row.first_pass_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ row.first_pass_pct }}%</p>
-                </div>
-              </div>
-            </div>
-            <div v-if="!mobileDimensionRows.length" class="px-3 py-6 text-center text-[12px] text-muted-foreground">No sold projects in this date range.</div>
-          </div>
-          <div class="hidden sm:block overflow-x-auto">
-            <table class="w-full text-[12px] tabular-nums">
-              <thead class="bg-muted/30 text-muted-foreground">
+          <!-- Compact pivot — selected dimension on Y, four metric columns
+               on X. Count + kW collapse into single "#/kW" cells (count
+               primary, kW secondary) so the whole table fits at 390px
+               without horizontal scroll for 4-letter state codes. State
+               dimension shows 2-letter codes; longer dims (closer/office)
+               truncate with a tooltip. -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-[11px] tabular-nums" style="table-layout:fixed">
+              <colgroup>
+                <col style="width:34%" />
+                <col style="width:18%" />
+                <col style="width:18%" />
+                <col style="width:15%" />
+                <col style="width:15%" />
+              </colgroup>
+              <thead class="bg-muted/30 text-muted-foreground text-[10px] uppercase tracking-wider">
                 <tr>
-                  <th class="text-left font-medium px-3 py-1.5">Dimension</th>
-                  <th class="text-right font-medium px-3 py-1.5">#Sold</th>
-                  <th class="text-right font-medium px-3 py-1.5">kW Sold</th>
-                  <th class="text-right font-medium px-3 py-1.5">#KCA</th>
-                  <th class="text-right font-medium px-3 py-1.5">kW KCA</th>
-                  <th class="text-right font-medium px-3 py-1.5">First Pass%</th>
-                  <th class="text-right font-medium px-3 py-1.5">%KCA</th>
+                  <th class="text-left font-semibold px-2 py-1.5">{{ dimensionOptions.find(d => d.key === dimension)?.label || 'Dimension' }}</th>
+                  <th class="text-right font-semibold px-2 py-1.5">#/kW Sold</th>
+                  <th class="text-right font-semibold px-2 py-1.5">#/kW KCA</th>
+                  <th class="text-right font-semibold px-2 py-1.5">KCA%</th>
+                  <th class="text-right font-semibold px-2 py-1.5">1st Pass%</th>
                 </tr>
               </thead>
               <tbody class="divide-y">
                 <tr v-for="row in dimensionRows" :key="`${dimension}-${row.dimension_value}`" class="hover:bg-muted/30">
-                  <td class="px-3 py-1.5 font-medium max-w-[260px] truncate" :title="row.dimension_value">{{ row.dimension_value }}</td>
-                  <td class="px-3 py-1.5 text-right">{{ row.sold_count }}</td>
-                  <td class="px-3 py-1.5 text-right">{{ fmtKw(row.sold_kw) }}</td>
-                  <td class="px-3 py-1.5 text-right">{{ row.kca_count }}</td>
-                  <td class="px-3 py-1.5 text-right">{{ fmtKw(row.kca_kw) }}</td>
-                  <td class="px-3 py-1.5 text-right font-semibold" :class="row.first_pass_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ row.first_pass_pct }}%</td>
-                  <td class="px-3 py-1.5 text-right font-semibold" :class="row.kca_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ row.kca_pct }}%</td>
+                  <td class="px-2 py-1.5 font-medium truncate" :title="row.dimension_value">{{ row.dimension_value }}</td>
+                  <td class="px-2 py-1.5 text-right whitespace-nowrap">
+                    <span class="font-semibold">{{ row.sold_count }}</span>
+                    <span class="text-muted-foreground"> / {{ fmtKw(row.sold_kw) }}</span>
+                  </td>
+                  <td class="px-2 py-1.5 text-right whitespace-nowrap">
+                    <span class="font-semibold">{{ row.kca_count }}</span>
+                    <span class="text-muted-foreground"> / {{ fmtKw(row.kca_kw) }}</span>
+                  </td>
+                  <td class="px-2 py-1.5 text-right font-semibold" :class="row.kca_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ row.kca_pct }}%</td>
+                  <td class="px-2 py-1.5 text-right font-semibold" :class="row.first_pass_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ row.first_pass_pct }}%</td>
                 </tr>
                 <tr v-if="!dimensionRows.length">
-                  <td colspan="7" class="px-3 py-6 text-center text-muted-foreground">No sold projects in this date range.</td>
+                  <td colspan="5" class="px-2 py-6 text-center text-muted-foreground">No sold projects in this date range.</td>
                 </tr>
               </tbody>
+              <tfoot v-if="dimensionTotal">
+                <tr class="border-t-2 border-border bg-muted/40 font-bold">
+                  <td class="px-2 py-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">Total</td>
+                  <td class="px-2 py-1.5 text-right whitespace-nowrap">
+                    <span>{{ dimensionTotal.sold_count }}</span>
+                    <span class="text-muted-foreground font-normal"> / {{ fmtKw(dimensionTotal.sold_kw) }}</span>
+                  </td>
+                  <td class="px-2 py-1.5 text-right whitespace-nowrap">
+                    <span>{{ dimensionTotal.kca_count }}</span>
+                    <span class="text-muted-foreground font-normal"> / {{ fmtKw(dimensionTotal.kca_kw) }}</span>
+                  </td>
+                  <td class="px-2 py-1.5 text-right" :class="dimensionTotal.kca_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ dimensionTotal.kca_pct }}%</td>
+                  <td class="px-2 py-1.5 text-right" :class="dimensionTotal.first_pass_pct >= 85 ? 'text-emerald-600' : 'text-amber-600'">{{ dimensionTotal.first_pass_pct }}%</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>
@@ -731,148 +771,117 @@ onMounted(() => {
           </div>
 
           <div v-if="managerMode === 'projects'">
-            <div class="md:hidden divide-y">
-              <button
-                v-for="row in managerRows"
-                :key="`mobile-project-${row.record_id}`"
-                type="button"
-                class="w-full px-3 py-2.5 text-left hover:bg-muted/30"
-                @click="openUrl(row.project_url)"
-              >
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <p class="font-semibold text-[13px] truncate">{{ row.customer_name }}</p>
-                    <p class="text-[11px] text-muted-foreground">{{ fmtRunDate(row.sales_date) }} · {{ row.state || '—' }}</p>
-                  </div>
-                  <span class="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
-                    {{ row.intake_status || '—' }}
-                  </span>
-                </div>
-                <div class="mt-2 flex items-center gap-2">
-                  <div class="h-2 flex-1 rounded-full bg-muted overflow-hidden">
-                    <div class="h-full rounded-full" :class="progressClass(row.intake_progress)" :style="{ width: `${row.intake_progress ?? 0}%` }" />
-                  </div>
-                  <span class="w-9 text-right text-[11px] font-semibold tabular-nums">{{ row.intake_progress ?? 0 }}%</span>
-                </div>
-                <p v-if="row.first_pass_missing_items_list?.length || row.missing_items_list?.length" class="mt-1.5 line-clamp-2 text-[11px] text-muted-foreground">
-                  {{ row.first_pass_missing_items_list?.join(', ') || row.missing_items_list?.join(', ') }}
-                </p>
-              </button>
-              <div v-if="!managerRows.length" class="px-3 py-6 text-center text-[12px] text-muted-foreground">No projects in this queue.</div>
-            </div>
-            <div class="hidden md:block overflow-x-auto">
-              <table class="w-full text-[12px] tabular-nums">
-              <thead class="bg-muted/30 text-muted-foreground">
-                <tr>
-                  <th class="text-left font-medium px-3 py-1.5">Customer</th>
-                  <th class="text-left font-medium px-3 py-1.5">Intake</th>
-                  <th class="text-left font-medium px-3 py-1.5">Project</th>
-                  <th class="text-right font-medium px-3 py-1.5">Sold</th>
-                  <th class="text-left font-medium px-3 py-1.5">State</th>
-                  <th class="text-left font-medium px-3 py-1.5">Progress</th>
-                  <th class="text-left font-medium px-3 py-1.5">Missing Items</th>
-                  <th class="text-right font-medium px-3 py-1.5">Idle</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y">
-                <tr v-for="row in managerRows" :key="row.record_id" class="hover:bg-muted/30">
-                  <td class="px-3 py-1.5 font-medium max-w-[220px]">
-                    <button type="button" class="text-left truncate hover:underline" :title="row.customer_name" @click="openUrl(row.project_url)">
-                      {{ row.customer_name }}
-                    </button>
-                    <p class="text-[10px] text-muted-foreground">RID {{ row.record_id }}</p>
-                  </td>
-                  <td class="px-3 py-1.5">
-                    <span class="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700 whitespace-nowrap">
-                      {{ row.intake_status || '—' }}
-                    </span>
-                  </td>
-                  <td class="px-3 py-1.5">{{ row.project_status || '—' }}</td>
-                  <td class="px-3 py-1.5 text-right whitespace-nowrap">{{ fmtRunDate(row.sales_date) }}</td>
-                  <td class="px-3 py-1.5">{{ row.state || '—' }}</td>
-                  <td class="px-3 py-1.5 min-w-[120px]">
-                    <div class="flex items-center gap-2">
-                      <div class="h-2 w-20 rounded-full bg-muted overflow-hidden">
-                        <div class="h-full rounded-full" :class="progressClass(row.intake_progress)" :style="{ width: `${row.intake_progress ?? 0}%` }" />
+            <!-- Single table for all viewports — narrow screens get
+                 horizontal scroll. Avoids the duplicate card-vs-table
+                 mode that hid columns on mobile. -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-[12px] tabular-nums min-w-[760px]">
+                <thead class="bg-muted/30 text-muted-foreground">
+                  <tr>
+                    <th class="text-left font-medium px-3 py-1.5">Customer</th>
+                    <th class="text-left font-medium px-3 py-1.5">Intake</th>
+                    <th class="text-left font-medium px-3 py-1.5">Project</th>
+                    <th class="text-right font-medium px-3 py-1.5">Sold</th>
+                    <th class="text-left font-medium px-3 py-1.5">State</th>
+                    <th class="text-left font-medium px-3 py-1.5">Progress</th>
+                    <th class="text-left font-medium px-3 py-1.5">Missing Items</th>
+                    <th class="text-right font-medium px-3 py-1.5">Idle</th>
+                    <th class="text-right font-medium px-3 py-1.5">QB</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y">
+                  <tr
+                    v-for="row in managerRows"
+                    :key="row.record_id"
+                    class="hover:bg-muted/30 cursor-pointer"
+                    @click="openProject(row.record_id)"
+                  >
+                    <td class="px-3 py-1.5 font-medium max-w-[220px]">
+                      <span class="block truncate hover:underline" :title="row.customer_name">{{ row.customer_name }}</span>
+                      <p class="text-[10px] text-muted-foreground">RID {{ row.record_id }}</p>
+                    </td>
+                    <td class="px-3 py-1.5">
+                      <span class="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700 whitespace-nowrap">
+                        {{ row.intake_status || '—' }}
+                      </span>
+                    </td>
+                    <td class="px-3 py-1.5">{{ row.project_status || '—' }}</td>
+                    <td class="px-3 py-1.5 text-right whitespace-nowrap">{{ fmtRunDate(row.sales_date) }}</td>
+                    <td class="px-3 py-1.5">{{ row.state || '—' }}</td>
+                    <td class="px-3 py-1.5 min-w-[120px]">
+                      <div class="flex items-center gap-2">
+                        <div class="h-2 w-20 rounded-full bg-muted overflow-hidden">
+                          <div class="h-full rounded-full" :class="progressClass(row.intake_progress)" :style="{ width: `${row.intake_progress ?? 0}%` }" />
+                        </div>
+                        <span class="text-[11px] font-semibold">{{ row.intake_progress ?? 0 }}%</span>
                       </div>
-                      <span class="text-[11px] font-semibold">{{ row.intake_progress ?? 0 }}%</span>
-                    </div>
-                  </td>
-                  <td class="px-3 py-1.5 max-w-[320px]">
-                    <span class="truncate block" :title="row.first_pass_missing_items || row.missing_items">
-                      {{ row.first_pass_missing_items_list?.join(', ') || row.missing_items_list?.join(', ') || '—' }}
-                    </span>
-                  </td>
-                  <td class="px-3 py-1.5 text-right">{{ row.hours_since_last_event ?? '—' }}h</td>
-                </tr>
-                <tr v-if="!managerRows.length">
-                  <td colspan="8" class="px-3 py-6 text-center text-muted-foreground">No projects in this queue.</td>
-                </tr>
-              </tbody>
+                    </td>
+                    <td class="px-3 py-1.5 max-w-[320px]">
+                      <span class="truncate block" :title="row.first_pass_missing_items || row.missing_items">
+                        {{ row.first_pass_missing_items_list?.join(', ') || row.missing_items_list?.join(', ') || '—' }}
+                      </span>
+                    </td>
+                    <td class="px-3 py-1.5 text-right">{{ row.hours_since_last_event ?? '—' }}h</td>
+                    <td class="px-3 py-1.5 text-right">
+                      <Button size="icon-sm" variant="ghost" title="Open in QuickBase" :disabled="!row.project_url" @click.stop="openUrl(row.project_url)">
+                        <ExternalLink class="size-3.5" />
+                      </Button>
+                    </td>
+                  </tr>
+                  <tr v-if="!managerRows.length">
+                    <td colspan="9" class="px-3 py-6 text-center text-muted-foreground">No projects in this queue.</td>
+                  </tr>
+                </tbody>
               </table>
             </div>
           </div>
 
           <div v-else>
-            <div class="md:hidden divide-y">
-              <div v-for="row in processingRows" :key="`mobile-processing-${row.record_id}`" class="px-3 py-2.5">
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <p class="font-semibold text-[13px] truncate">{{ row.customer_name }}</p>
-                    <p class="text-[11px] text-muted-foreground">{{ row.project_status || '—' }} · {{ fmtRunDate(row.started_processing) }}</p>
-                  </div>
-                  <Button size="icon-sm" variant="ghost" title="Open Project" :disabled="!row.project_url" @click="openUrl(row.project_url)">
-                    <ExternalLink class="size-3.5" />
-                  </Button>
-                </div>
-                <div class="mt-2 flex items-center gap-2">
-                  <div class="h-2 flex-1 rounded-full bg-muted overflow-hidden">
-                    <div class="h-full rounded-full" :class="progressClass(row.completion_pct)" :style="{ width: `${row.completion_pct}%` }" />
-                  </div>
-                  <span class="w-9 text-right text-[11px] font-semibold tabular-nums">{{ row.completion_pct }}%</span>
-                </div>
-              </div>
-              <div v-if="!processingRows.length" class="px-3 py-6 text-center text-[12px] text-muted-foreground">No processing events in this queue.</div>
-            </div>
-            <div class="hidden md:block overflow-x-auto">
-              <table class="w-full text-[12px] tabular-nums">
-              <thead class="bg-muted/30 text-muted-foreground">
-                <tr>
-                  <th class="text-left font-medium px-3 py-1.5">Customer</th>
-                  <th class="text-left font-medium px-3 py-1.5">Project Status</th>
-                  <th class="text-right font-medium px-3 py-1.5">Started</th>
-                  <th class="text-left font-medium px-3 py-1.5">Progress</th>
-                  <th class="text-right font-medium px-3 py-1.5">Links</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y">
-                <tr v-for="row in processingRows" :key="row.record_id" class="hover:bg-muted/30">
-                  <td class="px-3 py-1.5 font-medium max-w-[240px] truncate" :title="row.customer_name">{{ row.customer_name }}</td>
-                  <td class="px-3 py-1.5">{{ row.project_status || '—' }}</td>
-                  <td class="px-3 py-1.5 text-right whitespace-nowrap">{{ fmtRunDate(row.started_processing) }}</td>
-                  <td class="px-3 py-1.5 min-w-[120px]">
-                    <div class="flex items-center gap-2">
-                      <div class="h-2 w-20 rounded-full bg-muted overflow-hidden">
-                        <div class="h-full rounded-full" :class="progressClass(row.completion_pct)" :style="{ width: `${row.completion_pct}%` }" />
+            <!-- Same table-everywhere pattern as the projects mode. -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-[12px] tabular-nums min-w-[640px]">
+                <thead class="bg-muted/30 text-muted-foreground">
+                  <tr>
+                    <th class="text-left font-medium px-3 py-1.5">Customer</th>
+                    <th class="text-left font-medium px-3 py-1.5">Project Status</th>
+                    <th class="text-right font-medium px-3 py-1.5">Started</th>
+                    <th class="text-left font-medium px-3 py-1.5">Progress</th>
+                    <th class="text-right font-medium px-3 py-1.5">Links</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y">
+                  <tr
+                    v-for="row in processingRows"
+                    :key="row.record_id"
+                    class="hover:bg-muted/30 cursor-pointer"
+                    @click="openProject(row.record_id)"
+                  >
+                    <td class="px-3 py-1.5 font-medium max-w-[240px] truncate" :title="row.customer_name">{{ row.customer_name }}</td>
+                    <td class="px-3 py-1.5">{{ row.project_status || '—' }}</td>
+                    <td class="px-3 py-1.5 text-right whitespace-nowrap">{{ fmtRunDate(row.started_processing) }}</td>
+                    <td class="px-3 py-1.5 min-w-[120px]">
+                      <div class="flex items-center gap-2">
+                        <div class="h-2 w-20 rounded-full bg-muted overflow-hidden">
+                          <div class="h-full rounded-full" :class="progressClass(row.completion_pct)" :style="{ width: `${row.completion_pct}%` }" />
+                        </div>
+                        <span class="text-[11px] font-semibold">{{ row.completion_pct }}%</span>
                       </div>
-                      <span class="text-[11px] font-semibold">{{ row.completion_pct }}%</span>
-                    </div>
-                  </td>
-                  <td class="px-3 py-1.5 text-right">
-                    <div class="flex justify-end gap-1">
-                      <Button size="icon-sm" variant="ghost" title="Open Intake Event" @click="openUrl(row.intake_event_url)">
-                        <ExternalLink class="size-3.5" />
-                      </Button>
-                      <Button size="icon-sm" variant="ghost" title="Open Project" :disabled="!row.project_url" @click="openUrl(row.project_url)">
-                        <ExternalLink class="size-3.5" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="!processingRows.length">
-                  <td colspan="5" class="px-3 py-6 text-center text-muted-foreground">No processing events in this queue.</td>
-                </tr>
-              </tbody>
+                    </td>
+                    <td class="px-3 py-1.5 text-right">
+                      <div class="flex justify-end gap-1">
+                        <Button size="icon-sm" variant="ghost" title="Open Intake Event in QB" @click.stop="openUrl(row.intake_event_url)">
+                          <ExternalLink class="size-3.5" />
+                        </Button>
+                        <Button size="icon-sm" variant="ghost" title="Open Project in QB" :disabled="!row.project_url" @click.stop="openUrl(row.project_url)">
+                          <ExternalLink class="size-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr v-if="!processingRows.length">
+                    <td colspan="5" class="px-3 py-6 text-center text-muted-foreground">No processing events in this queue.</td>
+                  </tr>
+                </tbody>
               </table>
             </div>
           </div>
