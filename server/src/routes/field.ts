@@ -119,9 +119,24 @@ function dateRange(preset: string): { from: Date; to: Date } {
 // classifier port stays a 1:1 translation of the original.
 router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
   const preset = String(req.query['preset'] || 'today')
-  const { from, to } = dateRange(preset)
-  const fromStr = `${fmtDate(from)}T00:00:00Z`
-  const toStr = `${fmtDate(to)}T23:59:59Z`
+  // Prefer client-supplied UTC bounds — the client knows its own tz and
+  // resolves presets against the user's local calendar. Server-side
+  // dateRange() falls back to UTC-anchored math which silently rolls
+  // "today" forward after 6pm Mountain on Railway.
+  const fromIsoQ = String(req.query['fromIso'] || '')
+  const toIsoQ = String(req.query['toIso'] || '')
+  let from: Date, to: Date, fromStr: string, toStr: string
+  if (fromIsoQ && toIsoQ && !isNaN(new Date(fromIsoQ).getTime()) && !isNaN(new Date(toIsoQ).getTime())) {
+    from = new Date(fromIsoQ)
+    to = new Date(toIsoQ)
+    fromStr = from.toISOString()
+    toStr = to.toISOString()
+  } else {
+    const r = dateRange(preset)
+    from = r.from; to = r.to
+    fromStr = `${fmtDate(from)}T00:00:00Z`
+    toStr = `${fmtDate(to)}T23:59:59Z`
+  }
   const where = `{'${F.scheduledDateTime}'.OAF.'${fromStr}'}AND{'${F.scheduledDateTime}'.OBF.'${toStr}'}`
   try {
     const records = await qbQuery(QB.arrivyTable, where, SELECT_FIELDS, {
