@@ -46,6 +46,23 @@ export function listUserKeys(userId: number): ProviderKeyRow[] {
   ).all(userId) as ProviderKeyRow[]
 }
 
+// Lookup a specific key by id, scoped to the calling user. Used when the
+// caller picks a non-default key (e.g. admin selecting which Anthropic
+// account to bill for a feedback triage run).
+export function getKeyById(userId: number, keyId: number): { apiKey: string; baseUrl: string | null; provider: ProviderId; label: string | null } | null {
+  const row = db.prepare(
+    `SELECT api_key_encrypted, base_url, provider, label FROM user_provider_keys
+      WHERE id = ? AND user_id = ? LIMIT 1`
+  ).get(keyId, userId) as { api_key_encrypted: string; base_url: string | null; provider: string; label: string | null } | undefined
+  if (!row) return null
+  if (!isSupportedProvider(row.provider)) return null
+  try {
+    return { apiKey: decryptSecret(row.api_key_encrypted), baseUrl: row.base_url, provider: row.provider, label: row.label }
+  } catch {
+    return null
+  }
+}
+
 // Defaults applied when the client doesn't provide a base URL for a provider.
 export function defaultBaseUrl(provider: ProviderId): string {
   if (provider === 'ollama') return 'https://ollama.com'

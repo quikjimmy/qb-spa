@@ -98,14 +98,41 @@ router.patch('/:id', requireRole('admin'), (req: Request, res: Response): void =
   res.json({ ok: true })
 })
 
-// POST /api/feedback/triage/run — admin only; cluster unclustered feedback + draft proposals
+// POST /api/feedback/triage/run — admin only; cluster unclustered feedback
+// + draft proposals. Body may include { keyId } to pick a specific
+// Anthropic API key from the admin's BYOM keys; otherwise falls back to
+// their default key, then to the system env var.
 router.post('/triage/run', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
   try {
-    const summary = await runFeedbackTriage({ triggeredBy: req.user!.userId })
+    const userId = req.user!.userId
+    const { keyId, model } = (req.body || {}) as { keyId?: number; model?: string }
+    const summary = await runFeedbackTriage({ triggeredBy: userId, userId, keyId, model })
     res.json({ ok: true, summary })
   } catch (err) {
     res.status(500).json({ error: (err as Error).message || 'triage failed' })
   }
+})
+
+// GET /api/feedback/triage/keys — admin only; list the admin's Anthropic
+// keys for the "Run Triage Now" picker. Filtered to anthropic since the
+// triage runner uses the Anthropic SDK.
+router.get('/triage/keys', requireRole('admin'), (req: Request, res: Response): void => {
+  const userId = req.user!.userId
+  const rows = db.prepare(
+    `SELECT id, label, is_default, last_test_ok, last_tested_at
+       FROM user_provider_keys
+      WHERE user_id = ? AND provider = 'anthropic'
+      ORDER BY is_default DESC, created_at DESC`
+  ).all(userId) as Array<{ id: number; label: string | null; is_default: number; last_test_ok: number | null; last_tested_at: string | null }>
+  res.json({
+    keys: rows.map(r => ({
+      id: r.id,
+      label: r.label,
+      is_default: r.is_default === 1,
+      last_test_ok: r.last_test_ok === 1 ? true : r.last_test_ok === 0 ? false : null,
+      last_tested_at: r.last_tested_at,
+    })),
+  })
 })
 
 // GET /api/feedback/triage/runs — admin only; recent triage run history

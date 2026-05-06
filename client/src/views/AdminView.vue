@@ -1224,6 +1224,29 @@ interface ProposalRow {
 const triageRuns = ref<TriageRunRow[]>([])
 const triageRunning = ref(false)
 const triageMessage = ref<string>('')
+
+// BYOM keys for the "Run Triage Now" picker. Only the admin's own
+// Anthropic keys are listed since the triage runner uses the Anthropic
+// SDK. With 0 keys we fall back to ANTHROPIC_API_KEY env on the server,
+// 1 key auto-uses it, 2+ shows a Select.
+interface TriageKey { id: number; label: string | null; is_default: boolean; last_test_ok: boolean | null; last_tested_at: string | null }
+const triageKeys = ref<TriageKey[]>([])
+const triageKeyId = ref<number | null>(null)
+
+async function loadTriageKeys() {
+  const res = await fetch('/api/feedback/triage/keys', { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json() as { keys: TriageKey[] }
+  triageKeys.value = data.keys || []
+  // Auto-select the default key on load so single-key admins don't need to think.
+  const def = triageKeys.value.find(k => k.is_default) || triageKeys.value[0]
+  triageKeyId.value = def ? def.id : null
+}
+
+function triageKeyLabel(k: TriageKey): string {
+  const base = k.label || `key #${k.id}`
+  return k.is_default ? `${base} (default)` : base
+}
 const proposals = ref<ProposalRow[]>([])
 const proposalCounts = ref<Record<string, number>>({})
 const proposalFilter = ref<string>('awaiting_approval')
@@ -1254,7 +1277,11 @@ async function runTriage() {
   triageRunning.value = true
   triageMessage.value = ''
   try {
-    const res = await fetch('/api/feedback/triage/run', { method: 'POST', headers: hdrs() })
+    const body: Record<string, unknown> = {}
+    if (triageKeyId.value) body['keyId'] = triageKeyId.value
+    const res = await fetch('/api/feedback/triage/run', {
+      method: 'POST', headers: hdrs(), body: JSON.stringify(body),
+    })
     const data = await res.json()
     if (!res.ok) {
       triageMessage.value = data.error || 'Triage failed'
@@ -1366,7 +1393,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadProposals(), loadTriageRuns(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadProposals(), loadTriageRuns(), loadTriageKeys(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -1906,12 +1933,39 @@ onMounted(async () => {
                     Manual run only — review proposals below before approving.
                   </CardDescription>
                 </div>
-                <Button :disabled="triageRunning" @click="runTriage">
-                  {{ triageRunning ? 'Running…' : 'Run triage now' }}
-                </Button>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <!-- BYOM key picker. Only renders when the admin has 2+
+                       Anthropic keys configured; with 1 key we use it
+                       silently, with 0 we fall through to the system env. -->
+                  <select
+                    v-if="triageKeys.length >= 2"
+                    v-model.number="triageKeyId"
+                    class="h-9 rounded-md border bg-background px-2 text-xs"
+                    :disabled="triageRunning"
+                    title="Which Anthropic key to bill"
+                  >
+                    <option v-for="k in triageKeys" :key="k.id" :value="k.id">{{ triageKeyLabel(k) }}</option>
+                  </select>
+                  <Button :disabled="triageRunning" @click="runTriage">
+                    {{ triageRunning ? 'Running…' : 'Run triage now' }}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent class="grid gap-2">
+              <!-- Source of the API key being used. Helps the admin see
+                   which BYOM (or system fallback) will be billed. -->
+              <p class="text-[11px] text-muted-foreground">
+                <template v-if="triageKeys.length === 0">
+                  No personal Anthropic key — using system fallback. Add one in Settings to bill your own account.
+                </template>
+                <template v-else-if="triageKeys.length === 1">
+                  Using your Anthropic key: <span class="font-medium">{{ triageKeyLabel(triageKeys[0]!) }}</span>
+                </template>
+                <template v-else>
+                  Run will bill: <span class="font-medium">{{ triageKeys.find(k => k.id === triageKeyId)?.label || `key #${triageKeyId}` }}</span>
+                </template>
+              </p>
               <div v-if="triageMessage" class="rounded-md border bg-muted/40 px-3 py-2 text-sm">
                 {{ triageMessage }}
               </div>
