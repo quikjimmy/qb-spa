@@ -142,9 +142,13 @@ try {
       last_finished_at TEXT,
       last_status TEXT,
       last_rows_changed INTEGER,
+      last_watermark TEXT,
       last_error TEXT
     )
   `)
+  const runCols = db.prepare(`PRAGMA table_info(project_cache_tier_runs)`).all() as Array<{ name: string }>
+  const runNames = new Set(runCols.map(c => c.name))
+  if (!runNames.has('last_watermark')) db.exec(`ALTER TABLE project_cache_tier_runs ADD COLUMN last_watermark TEXT`)
 } catch (e) {
   console.error('[project-cache] tier migration failed:', e instanceof Error ? e.message : e)
 }
@@ -397,6 +401,52 @@ export function classifyTier(p: TierInputs): RefreshTier {
   return 'warm'
 }
 
+function textOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  const s = String(v)
+  return s ? s : null
+}
+
+function tierInputsFromCacheRow(row: Record<string, unknown>): TierInputs {
+  return {
+    status: textOrNull(row['status']),
+    install_scheduled: textOrNull(row['install_scheduled']),
+    install_completed: textOrNull(row['install_completed']),
+    inspection_passed: textOrNull(row['inspection_passed']),
+    pto_approved: textOrNull(row['pto_approved']),
+    qb_modified_at: textOrNull(row['qb_modified_at']),
+    permit_rejected: textOrNull(row['permit_rejected']),
+    nem_rejected: textOrNull(row['nem_rejected']),
+  }
+}
+
+function backfillMissingRefreshTiers(): void {
+  try {
+    const rows = db.prepare(`
+      SELECT record_id, status, install_scheduled, install_completed,
+             inspection_passed, pto_approved, qb_modified_at,
+             permit_rejected, nem_rejected
+      FROM project_cache
+      WHERE refresh_tier IS NULL
+         OR refresh_tier = ''
+         OR refresh_tier NOT IN ('hot', 'warm', 'cool', 'cold')
+    `).all() as Array<Record<string, unknown>>
+    if (rows.length === 0) return
+
+    const update = db.prepare(`UPDATE project_cache SET refresh_tier = ? WHERE record_id = ?`)
+    db.transaction(() => {
+      for (const row of rows) {
+        update.run(classifyTier(tierInputsFromCacheRow(row)), row['record_id'])
+      }
+    })()
+    console.log(`[project-cache] backfilled refresh_tier for ${rows.length} cached projects`)
+  } catch (e) {
+    console.error('[project-cache] refresh_tier backfill failed:', e instanceof Error ? e.message : e)
+  }
+}
+
+backfillMissingRefreshTiers()
+
 const TIER_CADENCE: Record<RefreshTier, string> = {
   hot: '*/5 * * * *',     // every 5 min
   warm: '*/30 * * * *',   // every 30 min
@@ -420,7 +470,7 @@ export async function fetchOneLive(recordId: number): Promise<Record<string, unk
     body: JSON.stringify({
       from: 'br9kwm8na',
       select: selectFids,
-      where: `{3.EX.${recordId}}`,
+      where: `{3.EX.${recordId}}AND{622.EX.'false'}`,
       options: { top: 1 },
     }),
   })
@@ -463,23 +513,56 @@ export async function ensureFresh(recordId: number, maxAgeMs = 60_000): Promise<
 }
 
 // ─── Tiered scheduler ───────────────────────────────────
-// Pulls only rows whose cached row is in the requested tier AND whose
-// QB Date Modified has advanced since our last fetch. The first run
-// after a deploy will pull more (no last_modified watermark yet);
-// steady-state is small.
+function watermarkFloor(watermark: string | null): string | null {
+  if (!watermark) return null
+  const ms = Date.parse(watermark)
+  if (!Number.isFinite(ms)) return watermark
+  return new Date(ms - 2 * 60_000).toISOString()
+}
+
+function maxQbModified(current: string | null, records: Array<Record<string, { value: unknown }>>): string | null {
+  let max = current
+  let maxMs = max ? Date.parse(max) : Number.NEGATIVE_INFINITY
+  for (const rec of records) {
+    const modified = val(rec, 2)
+    if (!modified) continue
+    const ms = Date.parse(modified)
+    if (Number.isFinite(ms)) {
+      if (ms > maxMs) {
+        max = modified
+        maxMs = ms
+      }
+    } else if (!max || modified > max) {
+      max = modified
+    }
+  }
+  return max
+}
+
+function seedMissingTierWatermarks(watermark: string): void {
+  const upsert = db.prepare(`
+    INSERT INTO project_cache_tier_runs (tier, last_watermark)
+    VALUES (?, ?)
+    ON CONFLICT(tier) DO UPDATE SET
+      last_watermark = COALESCE(project_cache_tier_runs.last_watermark, excluded.last_watermark)
+  `)
+  for (const t of Object.keys(TIER_CADENCE)) upsert.run(t, watermark)
+}
+
+// Pulls rows whose QB Date Modified has advanced since this cadence last
+// checked Quickbase. Any returned row is upserted, even if its new state
+// moves it into a different tier; otherwise KPI rows can stay stale until
+// someone opens project detail and triggers a single-record live fetch.
 async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration: number }> {
   const start = Date.now()
   db.prepare(`INSERT INTO project_cache_tier_runs (tier, last_started_at, last_status) VALUES (?, datetime('now'), 'running')
               ON CONFLICT(tier) DO UPDATE SET last_started_at = excluded.last_started_at, last_status = excluded.last_status`)
     .run(tier)
 
-  // Watermark: the latest qb_modified_at we've seen for this tier so
-  // far. We pull rows modified after this watermark (or any matching-
-  // tier row that's missing the watermark column entirely).
   const wmRow = db.prepare(
-    `SELECT MAX(qb_modified_at) AS wm FROM project_cache WHERE refresh_tier = ?`
-  ).get(tier) as { wm: string | null }
-  const watermark = wmRow.wm
+    `SELECT last_watermark AS wm FROM project_cache_tier_runs WHERE tier = ?`
+  ).get(tier) as { wm: string | null } | undefined
+  const watermark = wmRow?.wm || null
 
   // Status set per tier — kept here in code for grep/inspection.
   // The full WHERE for QB merges status filter + the modified-since
@@ -498,11 +581,12 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
   let allRecords: Array<Record<string, { value: unknown }>> = []
   let skip = 0
   const batch = 1000
-  // Build WHERE: "modified after watermark" if we have one, else "all
-  // non-deleted." First run on a fresh DB does the bulk; subsequent
-  // runs are deltas only.
-  const where = watermark
-    ? `{622.EX.'false'}AND{2.AF.'${watermark}'}`
+  // Build WHERE: "modified after watermark" if we have one, else all
+  // non-test rows. The 2-minute overlap protects against tied Date
+  // Modified values and edge timing during paginated QB reads.
+  const queryWatermark = watermarkFloor(watermark)
+  const where = queryWatermark
+    ? `{622.EX.'false'}AND{2.AF.'${queryWatermark}'}`
     : `{622.EX.'false'}`
 
   try {
@@ -544,18 +628,16 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
           permit_rejected: val(rec, 706) || null,
           nem_rejected: val(rec, 1878) || null,
         })
-        // Only write rows that classify into the tier we're refreshing
-        // (avoid duplicate writes when one QB pass returns rows that
-        // belong to multiple tiers — the cold tier nightly run is the
-        // promotion path that picks up tier transitions for everyone).
-        if (computedTier !== tier && tier !== 'cold') continue
         upsert.run(...mapRecordToValues(rec), computedTier)
         changed++
       }
     })()
 
-    db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_error = NULL WHERE tier = ?`)
-      .run(changed, tier)
+    const nextWatermark = maxQbModified(watermark, allRecords)
+    if (!watermark && nextWatermark) seedMissingTierWatermarks(nextWatermark)
+
+    db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_watermark = COALESCE(?, last_watermark), last_error = NULL WHERE tier = ?`)
+      .run(changed, nextWatermark, tier)
     return { rows: changed, duration: Date.now() - start }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -978,7 +1060,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 // Toggle favorite
 router.post('/favorites/:projectId', (req: Request, res: Response): void => {
   const userId = req.user!.userId
-  const projectId = parseInt(req.params['projectId']!, 10)
+  const projectId = parseInt(String(req.params['projectId'] || ''), 10)
 
   const existing = db.prepare(
     'SELECT 1 FROM favorites WHERE user_id = ? AND project_id = ?'
