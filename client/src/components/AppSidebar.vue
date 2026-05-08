@@ -68,7 +68,7 @@ const navBottom = [
 // view yet point at the shared placeholder so the nav structure exists
 // while individual milestone surfaces grow in.
 const projectSubItems = [
-  { label: 'All Projects',         to: '/projects' },
+  { label: 'Projects',             to: '/projects' },
   { label: 'Sales',                to: '/projects/sales' },
   { label: 'Intake',               to: '/projects/intake' },
   { label: 'Project Coordination', to: '/projects/pc' },
@@ -130,13 +130,13 @@ function isActive(path: string) {
               </SidebarMenuButton>
             </SidebarMenuItem>
 
-            <!-- Projects (collapsible with sub-menu) -->
+            <!-- Pipeline (collapsible with sub-menu, funnel icon) -->
             <Collapsible as-child :default-open="projectsOpen">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
                   <SidebarMenuButton :is-active="projectsOpen">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
-                    <span class="flex-1">Projects</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                    <span class="flex-1">Pipeline</span>
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform duration-200" :class="projectsOpen ? 'rotate-90' : ''"><path d="m9 18 6-6-6-6"/></svg>
                   </SidebarMenuButton>
                 </CollapsibleTrigger>

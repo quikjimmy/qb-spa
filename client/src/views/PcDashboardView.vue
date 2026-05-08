@@ -891,7 +891,8 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
                 </div>
                 <a :href="`https://kin.quickbase.com/db/btvik5kwi?a=er&dfid=10&rid=${r.record_id}`" target="_blank" @click.stop
                   class="inline-flex items-center justify-center rounded-md h-7 px-2 text-[10px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shrink-0"
-                >Update</a>
+                  title="Open PC Outreach form in QuickBase"
+                >Log in QB</a>
               </div>
             </div>
 

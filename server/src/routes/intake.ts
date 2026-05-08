@@ -224,6 +224,15 @@ interface QueueDef {
 }
 
 let failedRunsCache: { rows: QbRecord[]; fetchedAt: string; expiresAt: number } | null = null
+
+// Cache invalidator — used by the QB project-created webhook so a
+// freshly-saved project doesn't have to wait for the 60s TTL. Next
+// poll from any open intake dashboard hits QB live + warms the cache.
+export function invalidateIntakeCaches(reason?: string): void {
+  failedRunsCache = null
+  intakeManagerCache = null
+  if (reason) console.log(`[intake-cache] invalidated: ${reason}`)
+}
 let intakeManagerCache: {
   projects: QbRecord[]
   processingEvents: QbRecord[]
