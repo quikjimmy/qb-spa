@@ -8,7 +8,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import DataFreshness from '@/components/DataFreshness.vue'
-import { fmtDate, localTodayIso } from '@/lib/dates'
+import { localTodayIso } from '@/lib/dates'
+import { openProjectWithEvent } from '@/lib/openProject'
 
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -31,21 +32,32 @@ interface FlashStage {
   isTotal?: boolean
 }
 interface GapMetric { count: number; kw: number; rev: number; avgAgeDays: number; p90AgeDays: number; oldestDays: number; daysSupply: number }
+interface AgingBucket { key: string; label: string; min: number; max: number | null; count: number; kw: number; rev: number }
+interface StuckDeal {
+  gap: GapKey; recordId: number; customerName: string
+  state: string; closer: string; coordinator: string; lender: string
+  anchorDate: string; days: number; slaDays: number
+  severity: 'warn' | 'red'; blocker: string
+  systemPrice: number; systemSizeKw: number
+}
+interface AgingGap { buckets: AgingBucket[]; warnCount: number; redCount: number; stuck: StuckDeal[] }
 interface CycleStats { n: number; min: number; p25: number; median: number; p75: number; max: number }
 interface CycleWindow { window: '30d' | '60d' | '90d'; current: CycleStats; prior: CycleStats }
 interface CycleTransition { stage: string; windows: CycleWindow[] }
 interface MacdPoint { date: string; count: number; ma30: number; ma60: number; macd: number; signal: number; histogram: number }
-interface DrillRow { name: string; count: number; kw: number; rev: number; daysSupply: number }
+interface DrillRow { name: string; count: number; kw: number; rev: number; daysSupply: number; p25: number; p50: number; p75: number; p90: number; max: number }
 interface AuditRow {
   recordId: number; customerName: string
   state: string; status: string; closer: string; lender: string
   salesDate: string; installCompleted: string; m2Date: string; m3Date: string
+  dcaDate: string; dcaStatus: string
   systemPrice: number; systemSizeKw: number; cancelDate: string
 }
 interface SLA {
   bookedToInstalled: { warn: number; red: number }
   installedToM2: { warn: number; red: number }
   m2ToM3: { warn: number; red: number }
+  m3ToDca: { warn: number; red: number }
   pendingCancel: { warn: number; red: number }
 }
 interface Report {
@@ -57,7 +69,9 @@ interface Report {
     soldNotInstalled: GapMetric
     installedNotM2: GapMetric
     m2NotM3: GapMetric
+    m3NotDca: GapMetric
   }
+  aging: Record<GapKey, AgingGap>
   cycleTime: { transitions: CycleTransition[] }
   macd: { subject: string; points: MacdPoint[] }
   audit: Record<GapKey, AuditRow[]>
@@ -66,7 +80,7 @@ interface Report {
 }
 type Unit = '#' | 'kW' | '$'
 type Timeframe = 'yesterday' | '7d' | 'mtd' | '30d' | '60d' | 'ytd' | 'custom'
-type GapKey = 'soldNotInstalled' | 'installedNotM2' | 'm2NotM3'
+type GapKey = 'soldNotInstalled' | 'installedNotM2' | 'm2NotM3' | 'm3NotDca'
 type Dimension = 'state' | 'closer' | 'setter' | 'sales_office' | 'lender' | 'utility' | 'ahj' | 'area_director' | 'coordinator'
 // MACD subject is locked to Booked for v1. Server still accepts a subject
 // param so we can expand later without a schema change.
@@ -106,6 +120,7 @@ const err = ref('')
 const drillGap = ref<GapKey | null>((route.query['drill'] as GapKey) || null)
 const drillDim = ref<Dimension>((route.query['drillDim'] as Dimension) || 'state')
 const drillRows = ref<DrillRow[]>([])
+const drillTotal = ref<DrillRow | null>(null)
 const drillLoading = ref(false)
 
 // Filter drawer toggle.
@@ -117,6 +132,7 @@ const auditOpen = ref<Record<GapKey, boolean>>({
   soldNotInstalled: false,
   installedNotM2: false,
   m2NotM3: false,
+  m3NotDca: false,
 })
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
@@ -169,7 +185,7 @@ async function load() {
 }
 
 async function loadDrill() {
-  if (!drillGap.value) { drillRows.value = []; return }
+  if (!drillGap.value) { drillRows.value = []; drillTotal.value = null; return }
   drillLoading.value = true
   const params = new URLSearchParams({ gap: drillGap.value, dimension: drillDim.value })
   if (fState.value)  params.set('state', fState.value)
@@ -183,14 +199,18 @@ async function loadDrill() {
   if (asOf.value && asOf.value !== localTodayIso()) params.set('asOf', asOf.value)
   try {
     const res = await fetch(`/api/reports/booked-and-boarded/drill?${params}`, { headers: hdrs() })
-    if (res.ok) drillRows.value = (await res.json()).rows as DrillRow[]
+    if (res.ok) {
+      const payload = await res.json() as { rows: DrillRow[]; total?: DrillRow }
+      drillRows.value = payload.rows
+      drillTotal.value = payload.total || null
+    }
   } catch { /* non-fatal */ } finally { drillLoading.value = false }
 }
 
 // ─── Setters ─────────────────────────────────────────────
-function setState(s: string)     { fState.value = s === '__all__' ? '' : s; persist(); load() }
-function setCloser(s: string)    { fCloser.value = s === '__all__' ? '' : s; persist(); load() }
-function setLender(s: string)    { fLender.value = s === '__all__' ? '' : s; persist(); load() }
+function setState(s: unknown)     { const value = String(s ?? ''); fState.value = value === '__all__' ? '' : value; persist(); load() }
+function setCloser(s: unknown)    { const value = String(s ?? ''); fCloser.value = value === '__all__' ? '' : value; persist(); load() }
+function setLender(s: unknown)    { const value = String(s ?? ''); fLender.value = value === '__all__' ? '' : value; persist(); load() }
 function setTimeframe(t: Timeframe) { timeframe.value = t; persist(); load() }
 function setUnit(u: Unit)        { unit.value = u; persist() }
 
@@ -208,12 +228,12 @@ async function selectGap(g: GapKey) {
   drillGap.value = drillGap.value === g ? null : g
   persist()
   if (drillGap.value) {
-    await loadDrill()
-    setTimeout(() => document.getElementById('bb-drill')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
+    await load()
+    setTimeout(() => document.getElementById('bb-selected-kpi')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
   }
 }
 async function setDimension(d: Dimension) { drillDim.value = d; persist(); await loadDrill() }
-function closeDrill() { drillGap.value = null; persist() }
+function closeDrill() { drillGap.value = null; drillRows.value = []; drillTotal.value = null; persist() }
 
 // ─── Formatters ──────────────────────────────────────────
 function fmtNum(n: number): string { return Math.round(n).toLocaleString() }
@@ -335,8 +355,8 @@ onMounted(() => {
 })
 watch([asOf, customFrom, customTo], () => { persist(); load() })
 
-function openProject(rid: number) {
-  router.push({ name: 'project-detail', params: { id: String(rid) } })
+function openProject(rid: number, e?: MouseEvent) {
+  openProjectWithEvent(router, rid, e)
 }
 
 // Dimensions for the drill switcher.
@@ -355,14 +375,77 @@ const DIMENSIONS: Array<{ key: Dimension; label: string }> = [
 // KPI chip metadata. Bar color matches text color (same -600 shade) so
 // the colored line at top reads as the same accent as the headline number.
 const GAP_META: Record<GapKey, { label: string; subtitle: string; color: string; bar: string }> = {
-  soldNotInstalled: { label: 'Sold · Not Installed', subtitle: 'Active/Hold pre-install pipeline (matches ProjectsView preInstall + future + WIP)',           color: 'text-blue-600',    bar: 'bg-blue-600' },
+  soldNotInstalled: { label: 'Booked · Not Installed', subtitle: 'Active/Hold pre-install pipeline (matches ProjectsView preInstall + future + WIP)',         color: 'text-blue-600',    bar: 'bg-blue-600' },
   installedNotM2:   { label: 'Installed · Not M2',   subtitle: 'Install completed but M2 not received OR M2 was clawed back (net ≤ 0) — the cash gap.',      color: 'text-violet-600',  bar: 'bg-violet-600' },
   m2NotM3:          { label: 'M2 · Not M3',          subtitle: 'M2 received and not clawed back, waiting on final M3 deposit (or M3 was clawed back).',      color: 'text-emerald-600', bar: 'bg-emerald-600' },
+  m3NotDca:         { label: 'M3 · Not DCA',         subtitle: 'DCA-eligible projects with M3 funded but no DCA deposit or positive DCA cash received.',     color: 'text-amber-600',   bar: 'bg-amber-600' },
 }
 
 // Audit ordering — same key order so the cheat table at the bottom
 // reads in the same visual flow as the KPI strip.
-const AUDIT_ORDER: GapKey[] = ['soldNotInstalled', 'installedNotM2', 'm2NotM3']
+const AUDIT_ORDER: GapKey[] = ['soldNotInstalled', 'installedNotM2', 'm2NotM3', 'm3NotDca']
+
+const selectedAging = computed(() => {
+  if (!data.value || !drillGap.value) return null
+  return data.value.aging[drillGap.value]
+})
+const selectedStuckRows = computed(() => {
+  if (!data.value || !drillGap.value) return []
+  return [...data.value.aging[drillGap.value].stuck]
+    .sort((a, b) => {
+      const sev = (b.severity === 'red' ? 1 : 0) - (a.severity === 'red' ? 1 : 0)
+      return sev || b.days - a.days || b.systemPrice - a.systemPrice
+    })
+    .slice(0, 100)
+})
+const slaTotals = computed(() => {
+  if (!selectedAging.value) return { red: 0, warn: 0 }
+  return { red: selectedAging.value.redCount, warn: selectedAging.value.warnCount }
+})
+
+function agingPct(bucket: AgingBucket, key: GapKey): number {
+  const total = data.value?.gaps[key].count || 0
+  if (!total) return 0
+  return Math.max(4, Math.min(100, Math.round((bucket.count / total) * 100)))
+}
+function agingBucketTone(bucket: AgingBucket, key: GapKey): string {
+  const sla = data.value?.sla
+  if (!sla) return 'bg-muted'
+  const red =
+    key === 'soldNotInstalled' ? sla.bookedToInstalled.red :
+    key === 'installedNotM2' ? sla.installedToM2.red :
+    key === 'm2NotM3' ? sla.m2ToM3.red :
+    sla.m3ToDca.red
+  const warn =
+    key === 'soldNotInstalled' ? sla.bookedToInstalled.warn :
+    key === 'installedNotM2' ? sla.installedToM2.warn :
+    key === 'm2NotM3' ? sla.m2ToM3.warn :
+    sla.m3ToDca.warn
+  if (bucket.min >= red) return 'bg-red-500'
+  if (bucket.min >= warn) return 'bg-amber-500'
+  return 'bg-emerald-500'
+}
+function stuckTone(severity: StuckDeal['severity']): string {
+  return severity === 'red'
+    ? 'bg-red-50 text-red-700 ring-red-200'
+    : 'bg-amber-50 text-amber-700 ring-amber-200'
+}
+
+const emptyDrillTotal: DrillRow = { name: 'Total', count: 0, kw: 0, rev: 0, daysSupply: 0, p25: 0, p50: 0, p75: 0, p90: 0, max: 0 }
+const drillDisplayTotal = computed(() => drillTotal.value || emptyDrillTotal)
+const drillDisplayMetric = computed<Metric>(() => {
+  if (!data.value || !drillGap.value) return { count: 0, kw: 0, rev: 0 }
+  return data.value.gaps[drillGap.value]
+})
+
+function auditSummary(key: GapKey): Metric {
+  const rows = data.value?.audit[key] || []
+  return {
+    count: rows.length,
+    kw: Math.round(rows.reduce((sum, r) => sum + r.systemSizeKw, 0) * 10) / 10,
+    rev: Math.round(rows.reduce((sum, r) => sum + r.systemPrice, 0)),
+  }
+}
 
 // Tiny "(date)" label for an empty-string date — keeps the audit table
 // from showing blank cells while still being clear it's missing data.
@@ -531,9 +614,9 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
         </div>
       </section>
 
-      <!-- ═══ Gap KPI strip ═══ -->
+      <!-- ═══ KPI strip ═══ -->
       <section class="space-y-2">
-        <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Gap KPIs · click to drill</h2>
+        <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">KPIs · click to drill</h2>
         <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
           <button
             v-for="(meta, key) in GAP_META" :key="key"
@@ -552,8 +635,11 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
               <span class="text-xl font-extrabold tabular-nums" :class="meta.color">{{ fmtNum(data.gaps[key as GapKey].count) }}</span>
               <span class="text-[10px] font-bold tabular-nums" :class="meta.color"> / {{ fmtKw(data.gaps[key as GapKey].kw) }}</span>
             </p>
+            <p class="mt-1 text-[9px] font-semibold tabular-nums text-muted-foreground">
+              {{ fmtMoney(data.gaps[key as GapKey].rev) }} gross
+            </p>
             <!-- Mini metrics — context the user wants visible without
-                 drilling. Sold-Not-Inst gets days-supply + mean age.
+                 drilling. Booked-Not-Installed gets days-supply + mean age.
                  Inst-Not-M2 / M2-Not-M3 get mean + P90 days since their
                  anchor stage (live "stuck" indicator). Cancelled gets
                  oldest-only since lost rev is windowed. -->
@@ -565,7 +651,7 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                 <span v-if="data.gaps.soldNotInstalled.avgAgeDays > 0">avg {{ data.gaps.soldNotInstalled.avgAgeDays }}d</span>
                 <span v-if="data.gaps.soldNotInstalled.oldestDays > 0">max {{ data.gaps.soldNotInstalled.oldestDays }}d</span>
               </template>
-              <template v-else-if="key === 'installedNotM2' || key === 'm2NotM3'">
+              <template v-else>
                 <span v-if="data.gaps[key as GapKey].avgAgeDays > 0">avg {{ data.gaps[key as GapKey].avgAgeDays }}d</span>
                 <span v-if="data.gaps[key as GapKey].p90AgeDays > 0">P90 {{ data.gaps[key as GapKey].p90AgeDays }}d</span>
                 <span v-if="data.gaps[key as GapKey].oldestDays > 0">max {{ data.gaps[key as GapKey].oldestDays }}d</span>
@@ -577,14 +663,93 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
         <p v-if="drillGap" class="text-[10px] text-muted-foreground italic px-1">{{ GAP_META[drillGap].subtitle }}</p>
       </section>
 
+      <!-- ═══ Selected KPI detail ═══ -->
+      <section
+        v-if="drillGap && selectedAging"
+        id="bb-selected-kpi"
+        class="space-y-3 rounded-2xl border border-foreground/15 bg-muted/20 p-3 shadow-sm"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Selected KPI</p>
+            <h2 class="text-sm font-bold truncate" :class="GAP_META[drillGap].color">{{ GAP_META[drillGap].label }}</h2>
+            <p class="text-[10px] text-muted-foreground">{{ GAP_META[drillGap].subtitle }}</p>
+          </div>
+          <button class="text-xs text-muted-foreground hover:text-foreground shrink-0" @click="closeDrill">Close</button>
+        </div>
+
+        <div class="border-t border-border/60 pt-3 space-y-2">
+          <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Aging &amp; SLA</h3>
+            <p class="text-[10px] text-muted-foreground tabular-nums">
+              {{ slaTotals.red }} red · {{ slaTotals.warn }} warn · {{ fmtNum(data.gaps[drillGap].count) }} rows
+            </p>
+          </div>
+
+          <div class="grid grid-cols-5 gap-1.5">
+            <div v-for="b in selectedAging.buckets" :key="`${drillGap}-${b.key}`" class="min-w-0 rounded-lg border border-border/50 bg-background/70 p-2">
+              <div class="h-1.5 rounded-full bg-muted overflow-hidden">
+                <div class="h-full rounded-full" :class="agingBucketTone(b, drillGap)" :style="{ width: `${agingPct(b, drillGap)}%` }" />
+              </div>
+              <p class="mt-1 text-[9px] text-muted-foreground truncate">{{ b.label }}</p>
+              <p class="text-[13px] font-bold tabular-nums leading-none">{{ fmtNum(b.count) }}</p>
+              <p class="text-[8px] text-muted-foreground tabular-nums truncate">{{ fmtKw(b.kw) }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-border/60 pt-3 space-y-2">
+          <div class="flex items-baseline justify-between gap-2 flex-wrap">
+            <h3 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Needs Action</h3>
+            <p class="text-[10px] text-muted-foreground tabular-nums">Top {{ selectedStuckRows.length }}</p>
+          </div>
+          <div v-if="selectedStuckRows.length" class="overflow-auto max-h-[520px] rounded-xl border border-border/60">
+            <table class="w-full text-[10px] min-w-[700px]" style="table-layout:auto">
+              <thead>
+                <tr class="text-muted-foreground bg-muted/50">
+                  <th class="text-left font-semibold p-1.5">Customer</th>
+                  <th class="text-left font-semibold p-1.5">Owner</th>
+                  <th class="text-left font-semibold p-1.5">State</th>
+                  <th class="text-right font-semibold p-1.5">Days</th>
+                  <th class="text-right font-semibold p-1.5">kW</th>
+                  <th class="text-right font-semibold p-1.5">$</th>
+                  <th class="text-left font-semibold p-1.5">Blocker</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in selectedStuckRows" :key="`${r.gap}-${r.recordId}`" class="border-t border-border/30 hover:bg-muted/30 cursor-pointer" @click="openProject(r.recordId, $event)" @auxclick.prevent="openProject(r.recordId, $event)">
+                  <td class="p-1.5 font-medium max-w-[160px] truncate">{{ r.customerName || '—' }}</td>
+                  <td class="p-1.5 max-w-[160px] truncate">
+                    <span>{{ r.closer || r.coordinator || '—' }}</span>
+                    <span v-if="r.closer && r.coordinator" class="text-muted-foreground"> · {{ r.coordinator }}</span>
+                  </td>
+                  <td class="p-1.5 truncate">{{ r.state || '—' }}</td>
+                  <td class="p-1.5 text-right">
+                    <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold ring-1 ring-inset tabular-nums" :class="stuckTone(r.severity)">
+                      {{ r.days }}
+                    </span>
+                  </td>
+                  <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
+                  <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(r.systemPrice) }}</td>
+                  <td class="p-1.5 max-w-[240px] truncate text-muted-foreground" :title="r.blocker">{{ r.blocker }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="rounded-xl border border-border/60 px-3 py-4 text-center text-[11px] text-muted-foreground">
+            No records past the warning threshold for this KPI.
+          </div>
+        </div>
+      </section>
+
       <!-- ═══ Inline drill panel — sits right under the KPI strip so the
            "click chip → see breakdown" interaction is immediately
            visible without scrolling. ═══ -->
-      <section v-if="drillGap" id="bb-drill" class="space-y-2">
+      <section v-if="drillGap" id="bb-drill" class="space-y-2 rounded-2xl border border-foreground/15 bg-card p-3 shadow-sm">
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-baseline gap-2 min-w-0">
             <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground truncate">Drill · {{ GAP_META[drillGap].label }}</h2>
-            <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ drillRows.length }} rows</span>
+            <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ fmtNum(drillDisplayMetric.count) }} records</span>
           </div>
           <button class="text-xs text-muted-foreground hover:text-foreground" @click="closeDrill">Close</button>
         </div>
@@ -600,15 +765,20 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
         </div>
         <div v-if="drillLoading" class="rounded-xl bg-card p-8 text-center text-xs text-muted-foreground">Loading…</div>
         <div v-else-if="drillRows.length === 0" class="rounded-xl bg-card p-8 text-center text-xs text-muted-foreground">No rows for this dimension.</div>
-        <div v-else class="rounded-xl bg-card overflow-hidden">
-          <table class="w-full text-[11px]" style="table-layout:fixed">
+        <div v-else class="rounded-xl border border-border/60 overflow-auto">
+          <table class="w-full text-[11px] min-w-[720px]" style="table-layout:fixed">
             <thead>
               <tr class="text-muted-foreground bg-muted/30">
-                <th class="text-left font-semibold p-2" style="width:36%">{{ DIMENSIONS.find(d => d.key === drillDim)?.label }}</th>
+                <th class="text-left font-semibold p-2" style="width:24%">{{ DIMENSIONS.find(d => d.key === drillDim)?.label }}</th>
                 <th class="text-right font-semibold p-1.5">Count</th>
                 <th class="text-right font-semibold p-1.5">kW</th>
                 <th class="text-right font-semibold p-1.5">$ Rev</th>
-                <th v-if="drillGap === 'soldNotInstalled'" class="text-right font-semibold p-1.5">Days Supply</th>
+                <th v-if="drillGap === 'soldNotInstalled'" class="text-right font-semibold p-1.5 hidden md:table-cell">Days Supply</th>
+                <th class="text-right font-semibold p-1.5 hidden sm:table-cell">P25</th>
+                <th class="text-right font-semibold p-1.5">P50</th>
+                <th class="text-right font-semibold p-1.5 hidden sm:table-cell">P75</th>
+                <th class="text-right font-semibold p-1.5 hidden sm:table-cell">P90</th>
+                <th class="text-right font-semibold p-1.5 hidden sm:table-cell">Max</th>
               </tr>
             </thead>
             <tbody>
@@ -617,14 +787,24 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                 <td class="p-1.5 text-right font-mono tabular-nums font-semibold">{{ fmtNum(r.count) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ fmtKw(r.kw) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(r.rev) }}</td>
-                <td v-if="drillGap === 'soldNotInstalled'" class="p-1.5 text-right font-mono tabular-nums" :class="r.daysSupply > 60 ? 'text-amber-600 font-semibold' : 'text-muted-foreground'">{{ r.daysSupply }}d</td>
+                <td v-if="drillGap === 'soldNotInstalled'" class="p-1.5 text-right font-mono tabular-nums hidden md:table-cell" :class="r.daysSupply > 60 ? 'text-amber-600 font-semibold' : 'text-muted-foreground'">{{ r.daysSupply }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ r.p25 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums font-bold">{{ r.p50 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ r.p75 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ r.p90 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ r.max }}d</td>
               </tr>
               <tr class="border-t-2 border-border font-bold">
                 <td class="p-2 text-muted-foreground text-[9px] uppercase">Total</td>
-                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtNum(drillRows.reduce((s,r) => s+r.count, 0)) }}</td>
-                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtKw(drillRows.reduce((s,r) => s+r.kw, 0)) }}</td>
-                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(drillRows.reduce((s,r) => s+r.rev, 0)) }}</td>
-                <td v-if="drillGap === 'soldNotInstalled'" class="p-1.5"></td>
+                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtNum(drillDisplayMetric.count) }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtKw(drillDisplayMetric.kw) }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(drillDisplayMetric.rev) }}</td>
+                <td v-if="drillGap === 'soldNotInstalled'" class="p-1.5 text-right font-mono tabular-nums hidden md:table-cell">{{ drillDisplayTotal.daysSupply }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ drillDisplayTotal.p25 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums">{{ drillDisplayTotal.p50 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ drillDisplayTotal.p75 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ drillDisplayTotal.p90 }}d</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ drillDisplayTotal.max }}d</td>
               </tr>
             </tbody>
           </table>
@@ -698,7 +878,7 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
       <section class="space-y-2 pb-8">
         <div class="flex items-baseline gap-2 flex-wrap">
           <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Audit · All Records per KPI</h2>
-          <p class="text-[10px] text-muted-foreground italic">Click a section to expand · ✓ widget = rows means the count is reconciled</p>
+          <p class="text-[10px] text-muted-foreground italic">Click a section to expand</p>
         </div>
         <div
           v-for="key in AUDIT_ORDER" :key="`audit-${key}`"
@@ -712,14 +892,14 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
               <span class="text-[10px] text-muted-foreground">{{ auditOpen[key] ? '▾' : '▸' }}</span>
               <span class="text-[11px] font-semibold" :class="GAP_META[key].color">{{ GAP_META[key].label }}</span>
             </div>
-            <p class="text-[10px] tabular-nums shrink-0" :class="data.gaps[key].count === data.audit[key].length ? 'text-emerald-600' : 'text-amber-600 font-semibold'">
-              {{ data.gaps[key].count === data.audit[key].length ? '✓ ' : '⚠ ' }}widget {{ data.gaps[key].count }} · rows {{ data.audit[key].length }}
+            <p class="text-[10px] tabular-nums shrink-0 text-muted-foreground">
+              {{ fmtNum(auditSummary(key).count) }} · {{ fmtKw(auditSummary(key).kw) }} · {{ fmtMoney(auditSummary(key).rev) }}
             </p>
           </button>
           <div v-if="auditOpen[key]">
             <div v-if="data.audit[key].length === 0" class="px-3 pb-3 text-[11px] text-muted-foreground italic">No records in this bucket.</div>
             <div v-else class="overflow-auto max-h-[480px]">
-              <table class="w-full text-[10px] min-w-[760px]" style="table-layout:auto">
+              <table class="w-full text-[10px] min-w-[840px]" style="table-layout:auto">
                 <thead class="sticky top-0">
                   <tr class="text-muted-foreground bg-muted">
                     <th class="text-left font-semibold p-1.5">RID</th>
@@ -732,13 +912,13 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                     <th class="text-left font-semibold p-1.5">Inst</th>
                     <th class="text-left font-semibold p-1.5">M2</th>
                     <th class="text-left font-semibold p-1.5">M3</th>
-                    <th v-if="key === 'cancelledLost' || key === 'pendingAtRisk'" class="text-left font-semibold p-1.5">Cancel</th>
+                    <th class="text-left font-semibold p-1.5">DCA</th>
                     <th class="text-right font-semibold p-1.5">$</th>
                     <th class="text-right font-semibold p-1.5">kW</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in data.audit[key]" :key="`${key}-${r.recordId}`" class="border-t border-border/30 hover:bg-muted/30 cursor-pointer" @click="openProject(r.recordId)">
+                  <tr v-for="r in data.audit[key]" :key="`${key}-${r.recordId}`" class="border-t border-border/30 hover:bg-muted/30 cursor-pointer" @click="openProject(r.recordId, $event)" @auxclick.prevent="openProject(r.recordId, $event)">
                     <td class="p-1.5 font-mono text-muted-foreground">{{ r.recordId }}</td>
                     <td class="p-1.5 font-medium truncate max-w-[160px]">{{ r.customerName || '—' }}</td>
                     <td class="p-1.5 truncate max-w-[80px]">{{ r.state || '—' }}</td>
@@ -749,7 +929,9 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                     <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.installCompleted) }}</td>
                     <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.m2Date) }}</td>
                     <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.m3Date) }}</td>
-                    <td v-if="key === 'cancelledLost' || key === 'pendingAtRisk'" class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.cancelDate) }}</td>
+                    <td class="p-1.5 max-w-[120px] truncate text-muted-foreground" :title="r.dcaStatus || fmtAuditDate(r.dcaDate)">
+                      {{ r.dcaStatus || fmtAuditDate(r.dcaDate) }}
+                    </td>
                     <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(r.systemPrice) }}</td>
                     <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
                   </tr>

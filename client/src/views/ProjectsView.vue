@@ -264,7 +264,15 @@ function setKpiFilter(key: string) {
   loadProjects()
 }
 
-function openProject(rid: number) {
+function projectHref(rid: number): string {
+  return router.resolve({ name: 'project-detail', params: { id: String(rid) } }).href
+}
+// Plain left-click → SPA nav; modifier-clicks (Cmd/Ctrl/Shift) and
+// non-primary buttons fall through to the browser so right-click "Open
+// in new tab", ⌘+click, and middle-click all work natively.
+function onCardClick(e: MouseEvent, rid: number) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+  e.preventDefault()
   router.push({ name: 'project-detail', params: { id: String(rid) } })
 }
 function openProjectInQb(rid: number) {
@@ -445,13 +453,18 @@ onBeforeUnmount(() => {
     <!-- Empty -->
     <div v-else-if="projects.length === 0" class="rounded-xl border bg-card p-12 text-center"><p class="text-muted-foreground">No projects found{{ search ? ` for "${search}"` : '' }}.</p></div>
 
-    <!-- ═══ Project Cards ═══ -->
+    <!-- ═══ Project Cards ═══
+         Cards render as <a> so the browser's native link behaviors work:
+         right-click → Open in new tab, ⌘+click / Ctrl+click / middle-click
+         → new tab. Plain left-click is intercepted by onCardClick for
+         SPA navigation. -->
     <div v-else class="space-y-1 sm:space-y-1.5">
-      <div
+      <a
         v-for="p in projects" :key="p.record_id"
-        class="rounded-lg border-l-[3px] border border-border bg-card cursor-pointer group transition-colors hover:bg-muted/30 active:scale-[0.998]"
+        :href="projectHref(p.record_id)"
+        class="block rounded-lg border-l-[3px] border border-border bg-card cursor-pointer group transition-colors hover:bg-muted/30 active:scale-[0.998] no-underline text-foreground"
         :class="[getStatusConfig(p.status).border, isNewRow(p.record_id) && 'animate-row-pop-in']"
-        @click="openProject(p.record_id)"
+        @click="onCardClick($event, p.record_id)"
       >
         <!-- ── Mobile card (matches qb-skin quick glance) ── -->
         <div class="sm:hidden px-3 py-3">
@@ -614,7 +627,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-      </div>
+      </a>
     </div>
 
     <p v-if="!loading && projects.length > 0 && projects.length < total" class="text-center text-xs text-muted-foreground py-2">Showing {{ projects.length }} of {{ total.toLocaleString() }}</p>

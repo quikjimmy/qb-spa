@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { formatPhone, fmtTalkSec } from '@/lib/callBuckets'
+import { openProjectWithEvent } from '@/lib/openProject'
 import DtIconClose from '@dialpad/dialtone-icons/vue3/close'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
@@ -141,10 +142,13 @@ function timeAgo(iso: string | null | undefined): string {
 
 function close() { emit('close') }
 
-function openProject() {
+function openProject(e?: MouseEvent) {
   if (!props.contact?.project_id) return
-  emit('close')
-  router.push(`/projects/${props.contact.project_id}`)
+  // Modifier-aware: ⌘/Ctrl/Shift/middle click opens in a new tab. Plain
+  // click closes this card and pushes through SPA router.
+  const isModifier = e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)
+  if (!isModifier) emit('close')
+  openProjectWithEvent(router, props.contact.project_id, e)
 }
 </script>
 
@@ -281,7 +285,7 @@ function openProject() {
               v-if="contact.project_id"
               type="button"
               class="w-full inline-flex items-center gap-2 h-9 px-2 rounded-lg cursor-pointer text-[12.5px] text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors"
-              @click="openProject"
+              @click="openProject($event)" @auxclick.prevent="openProject($event)"
             >
               <component :is="DtIconBriefcase" class="w-3.5 h-3.5" />
               Open project #{{ contact.project_id }}

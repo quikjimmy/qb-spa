@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { openProjectWithEvent } from '@/lib/openProject'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
@@ -500,13 +501,12 @@ function openUrl(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-// Click row → in-app project detail. The QB URL stays accessible via
-// the explicit "Open in QB" icon button so users can still pop the
-// record open in the source system when they need to edit fields the
-// SPA doesn't surface yet.
-function openProject(rid: number) {
+// Click row → in-app project detail. Modifier-aware: ⌘/Ctrl/Shift/middle
+// click opens in a new tab. The QB URL stays accessible via the
+// explicit "Open in QB" icon button.
+function openProject(rid: number, e?: MouseEvent) {
   if (!rid) return
-  router.push({ name: 'project-detail', params: { id: String(rid) } })
+  openProjectWithEvent(router, rid, e)
 }
 
 function errorLines(row: FailedRun | null): string[] {
@@ -794,7 +794,7 @@ onMounted(() => {
                     v-for="row in managerRows"
                     :key="row.record_id"
                     class="hover:bg-muted/30 cursor-pointer"
-                    @click="openProject(row.record_id)"
+                    @click="openProject(row.record_id, $event)" @auxclick.prevent="openProject(row.record_id, $event)"
                   >
                     <td class="px-3 py-1.5 font-medium max-w-[220px]">
                       <span class="block truncate hover:underline" :title="row.customer_name">{{ row.customer_name }}</span>
@@ -854,7 +854,7 @@ onMounted(() => {
                     v-for="row in processingRows"
                     :key="row.record_id"
                     class="hover:bg-muted/30 cursor-pointer"
-                    @click="openProject(row.record_id)"
+                    @click="openProject(row.record_id, $event)" @auxclick.prevent="openProject(row.record_id, $event)"
                   >
                     <td class="px-3 py-1.5 font-medium max-w-[240px] truncate" :title="row.customer_name">{{ row.customer_name }}</td>
                     <td class="px-3 py-1.5">{{ row.project_status || '—' }}</td>
