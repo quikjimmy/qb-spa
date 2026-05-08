@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { openProjectWithEvent } from '@/lib/openProject'
 import { use } from 'echarts/core'
@@ -205,9 +205,11 @@ function apiParams(extra?: Record<string, string>): URLSearchParams {
   return p
 }
 
-async function loadData(force = false) {
+async function loadData(force = false, silent = false) {
+  // silent: background poll. Don't flip the loading skeleton (would
+  // flash the page every 30s) and don't show the "refreshing…" state.
   if (force) refreshing.value = true
-  else loading.value = true
+  else if (!silent) loading.value = true
   errorMsg.value = ''
   actionError.value = ''
   try {
@@ -219,11 +221,24 @@ async function loadData(force = false) {
     if (!drillLabel.value) drillRows.value = json.lists?.rows || []
     syncManagerRows(json)
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    if (!silent) errorMsg.value = err instanceof Error ? err.message : String(err)
+    // silent polls swallow errors so a brief network blip doesn't replace
+    // the user's data with a red banner — manual Refresh still surfaces.
   } finally {
     loading.value = false
     refreshing.value = false
   }
+}
+
+// Auto-refresh while the tab is visible. Server holds a 60s TTL so
+// this 30s cadence yields at most ~1 QB hit per 30s no matter how many
+// PCs have the page open. Skipped when the tab is hidden so an idle
+// background tab doesn't churn the API.
+let pollHandle: ReturnType<typeof setInterval> | null = null
+async function silentPoll() {
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+  if (refreshing.value || loading.value) return
+  await loadData(false, true)
 }
 
 const filterDefs = computed<FilterDef[]>(() => [
@@ -596,6 +611,14 @@ const zapSteps = [
 onMounted(() => {
   setInitialRange()
   loadData()
+  // Near-live polling — every 30s while the tab is visible. Silent so
+  // the page doesn't flash; surfaces fresh "ready for intake" rows
+  // without the user clicking Refresh.
+  pollHandle = setInterval(silentPoll, 30_000)
+})
+
+onBeforeUnmount(() => {
+  if (pollHandle) clearInterval(pollHandle)
 })
 </script>
 

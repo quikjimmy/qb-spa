@@ -46,6 +46,7 @@ import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 import { reportsRouter } from './routes/reports'
+import { qbWebhookRouter } from './routes/qb-webhooks'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -77,6 +78,10 @@ app.use('/api/webhooks/dialpad', dialpadWebhookRouter)
 // (auth-protected) lists recent ingests for forensics.
 app.use('/api/webhooks', arrivyWebhookRouter)
 app.use('/api/field/webhooks', authenticate, arrivyWebhookAdminRouter)
+// QB Pipeline webhooks — PUBLIC, gated by shared secret in
+// X-QB-Webhook-Secret header. Used to invalidate intake caches when
+// a new project lands so dashboards see it on the next 30s poll.
+app.use('/api/webhooks/qb', qbWebhookRouter)
 
 // Protected routes — require JWT
 app.use('/api/qb', authenticate, qbRouter)
