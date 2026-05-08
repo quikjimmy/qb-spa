@@ -869,6 +869,33 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_users_email ON dialpad_users_cache(LOWER(email))`)
 
+// Address book of contacts saved from the Comms Hub. Local-first: the save
+// flow upserts here and *also* pushes to Dialpad's shared address book so
+// agents' Dialpad apps see the name on their phones. Caller attribution
+// reads from this table (between Arrivy and the project_cache fallback)
+// so a saved contact's name shows up on every inbound event in our hub.
+//
+// `kind` mirrors the user's chosen category from the Add Contact dialog
+// (customer / employee / crew / supplier). Caller-attribution maps it
+// onto the existing chip vocabulary.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dialpad_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_canonical TEXT NOT NULL UNIQUE,
+    phone_e164 TEXT NOT NULL,
+    first_name TEXT NOT NULL,
+    last_name TEXT,
+    kind TEXT,
+    created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    dialpad_contact_id TEXT,
+    dialpad_synced_at TEXT,
+    dialpad_sync_error TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_contacts_phone ON dialpad_contacts(phone_canonical)`)
+
 // Per-message reminders (Slack-style "remind me about this"). When a user
 // long-presses a message in the thread drawer they pick a delay; this row
 // is created with remind_at = now + delay. A cron worker fires due rows

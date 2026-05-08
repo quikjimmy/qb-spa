@@ -5,6 +5,7 @@ import { useDialpadLive, type LiveEvent } from '@/lib/dialpadLive'
 import { usePhoneMatches } from '@/composables/usePhoneMatches'
 import { useAuthStore } from '@/stores/auth'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import AddContactDialog from '@/components/AddContactDialog.vue'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
 import DtIconBellRing from '@dialpad/dialtone-icons/vue3/bell-ring'
 import DtIconMessage from '@dialpad/dialtone-icons/vue3/message'
@@ -91,6 +92,26 @@ function openEvent(e: LiveEvent) {
   // contact's number — call_id is no longer needed because the drawer
   // shows every call + every SMS for that contact.
   smsThread.value = { open: true, number: e.external_number, name: customerName(e) }
+}
+
+// Add Contact — small bookmark icon shows on rows where the caller is still
+// unknown (no Arrivy/internal stamp AND no customer-cache match). Click stops
+// propagation so the row click (which would open the thread) doesn't fire.
+const addContact = ref<{ open: boolean; phone: string; name: string }>({ open: false, phone: '', name: '' })
+function isUnknownCaller(e: LiveEvent): boolean {
+  return !!e.external_number && !e.caller_name && !customerName(e)
+}
+function openSaveContact(e: LiveEvent, ev: Event) {
+  ev.stopPropagation()
+  if (!e.external_number) return
+  // If we have a project_cache match for this number, pre-fill so the user
+  // just confirms the name. caller_name (Arrivy/internal) won't reach here
+  // because isUnknownCaller filters those rows out.
+  addContact.value = {
+    open: true,
+    phone: e.external_number,
+    name: customerName(e) || '',
+  }
 }
 
 // Pull message body out of the raw_json blob for SMS rows so we can render
@@ -254,6 +275,18 @@ function visualFor(e: LiveEvent): EventVisual {
               <template v-if="e.user_name || e.user_email"> · {{ e.user_name || e.user_email }}</template>
             </p>
           </div>
+          <!-- Save contact — only on unknown-caller rows, so the rail stays
+               quiet for matched contacts. Stops row-click propagation. -->
+          <button
+            v-if="isUnknownCaller(e)"
+            type="button"
+            class="shrink-0 size-7 rounded-full hover:bg-foreground/10 active:bg-foreground/15 transition-colors flex items-center justify-center text-muted-foreground hover:text-foreground"
+            :aria-label="`Save ${formatPhone(e.external_number) || e.external_number}`"
+            title="Save contact"
+            @click="openSaveContact(e, $event)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+          </button>
           <div class="shrink-0 text-right">
             <p class="text-[11px] tabular-nums">{{ splitStartedAt(e.received_at).time }}</p>
             <p class="text-[10px] text-muted-foreground">{{ splitStartedAt(e.received_at).date }}</p>
@@ -287,6 +320,14 @@ function visualFor(e: LiveEvent): EventVisual {
       :external-number="smsThread.number"
       :contact-name="smsThread.name"
       @close="smsThread.open = false"
+    />
+
+    <!-- Save contact dialog — opened from per-row bookmark icon. -->
+    <AddContactDialog
+      :open="addContact.open"
+      :prefill-phone="addContact.phone"
+      :prefill-name="addContact.name"
+      @close="addContact.open = false"
     />
   </div>
 </template>
