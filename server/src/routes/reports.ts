@@ -37,6 +37,7 @@ const SLA = {
   bookedToInstalled: { warn: 14, red: 30 },
   installedToM2: { warn: 14, red: 30 },
   m2ToM3: { warn: 30, red: 60 },
+  m3ToDca: { warn: 30, red: 60 },
   pendingCancel: { warn: 3, red: 7 },
 } as const
 
@@ -277,15 +278,14 @@ function buildFlash(asOf: Date, f: Filters): {
   return { stages, sellingDaysElapsed, sellingDaysTotal, operatingDaysElapsed, operatingDaysTotal }
 }
 
-// ─── Gap KPIs ────────────────────────────────────────────
-// Five gap KPIs the report tracks. Each is a point-in-time count of
+// ─── KPIs ────────────────────────────────────────────────
+// Point-in-time KPI widgets the report tracks. Each is a count of
 // projects in a particular state — not windowed by timeframe.
 //
 //   soldNotInstalled : status IN (Active,Hold) AND no install_completed
 //   installedNotM2   : install_completed AND no m2_deposit_date
 //   m2NotM3          : m2_deposit_date AND no m3_deposit_date
-//   cancelledLost    : status='Cancelled' AND cancel_date in timeframe window
-//   pendingAtRisk    : status='Pending Cancel' (point-in-time)
+//   m3NotDca         : DCA-eligible + m3_deposit_date AND no DCA deposit
 
 interface GapMetric {
   count: number
@@ -296,6 +296,77 @@ interface GapMetric {
   oldestDays: number
   daysSupply: number     // count / (installs_last_30d / 30) — for inventory gaps only
   pctOfRevenue?: number  // 0..1 — cancelled $ / booked $ in same window. Cancelled gap only.
+}
+
+const GAP_KEYS = ['soldNotInstalled', 'installedNotM2', 'm2NotM3', 'm3NotDca'] as const
+type GapKey = typeof GAP_KEYS[number]
+
+const DCA_ELIGIBLE_FRAGMENT = `(
+  dca_status IS NOT NULL
+  AND dca_status != ''
+  AND TRIM(LOWER(dca_status)) NOT IN ('not eligible', 'create dca event')
+)`
+
+interface GapBase {
+  where: string
+  params: unknown[]
+  ageColumn: string
+  revColumn: string
+  sla: { warn: number; red: number }
+}
+
+function gapBase(gap: GapKey, f: Filters): GapBase {
+  switch (gap) {
+    case 'soldNotInstalled': {
+      const a = activeWhere(f)
+      return {
+        where: a.where + ` AND (install_completed IS NULL OR install_completed = '' OR install_completed = '0')`,
+        params: a.params,
+        ageColumn: 'sales_date',
+        revColumn: 'system_price',
+        sla: SLA.bookedToInstalled,
+      }
+    }
+    case 'installedNotM2': {
+      const a = activeWhere(f)
+      return {
+        where: a.where +
+          ` AND install_completed IS NOT NULL AND install_completed != '' AND install_completed != '0'` +
+          ` AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)`,
+        params: a.params,
+        ageColumn: 'install_completed',
+        revColumn: 'system_price',
+        sla: SLA.installedToM2,
+      }
+    }
+    case 'm2NotM3': {
+      const a = activeWhere(f)
+      return {
+        where: a.where +
+          ` AND m2_deposit_date IS NOT NULL AND m2_deposit_date != '' AND m2_deposit_date != '0'` +
+          ` AND COALESCE(m2_net_received, 0) > 0` +
+          ` AND (m3_deposit_date IS NULL OR m3_deposit_date = '' OR m3_deposit_date = '0' OR COALESCE(m3_net_received, 0) <= 0)`,
+        params: a.params,
+        ageColumn: 'm2_deposit_date',
+        revColumn: 'system_price',
+        sla: SLA.m2ToM3,
+      }
+    }
+    case 'm3NotDca': {
+      const a = applyFilters(`WHERE 1=1`, [], f)
+      return {
+        where: a.where +
+          ` AND ${DCA_ELIGIBLE_FRAGMENT}` +
+          ` AND m3_deposit_date IS NOT NULL AND m3_deposit_date != '' AND m3_deposit_date != '0'` +
+          ` AND COALESCE(m3_net_received, 0) > 0` +
+          ` AND (dca_actual_deposit IS NULL OR dca_actual_deposit = '' OR dca_actual_deposit = '0' OR COALESCE(dca_total_received, 0) <= 0)`,
+        params: a.params,
+        ageColumn: 'm3_deposit_date',
+        revColumn: 'system_price',
+        sla: SLA.m3ToDca,
+      }
+    }
+  }
 }
 
 // Installs/day over last 30 days — used to compute "days supply" of
@@ -363,67 +434,310 @@ interface Gaps {
   soldNotInstalled: GapMetric
   installedNotM2: GapMetric
   m2NotM3: GapMetric
+  m3NotDca: GapMetric
 }
 
 function buildGaps(asOf: Date, timeframe: { from: string; to: string }, f: Filters): Gaps {
   const installsRate = installsPerDay30(asOf, f)
 
   // Sold-Not-Installed: pre-install / WIP (status active|hold, no install).
-  const sniBase = (() => {
-    const a = activeWhere(f)
-    return {
-      where: a.where + ` AND (install_completed IS NULL OR install_completed = '' OR install_completed = '0')`,
-      params: a.params,
-    }
-  })()
+  const sniBase = gapBase('soldNotInstalled', f)
   const soldNotInstalled = buildGap({
-    asOf, f, baseWhere: sniBase, ageColumn: 'sales_date', revColumn: 'system_price', installsPerDay: installsRate,
+    asOf, f, baseWhere: sniBase, ageColumn: sniBase.ageColumn, revColumn: sniBase.revColumn, installsPerDay: installsRate,
   })
 
   // Installed-Not-M2: install set AND (no M2 deposit OR M2 net received
   // is non-positive — i.e. clawed back). Captures projects that lost
   // their M2 funding and need it re-funded.
-  const inm2Base = (() => {
-    const a = activeWhere(f)
-    return {
-      where: a.where +
-        ` AND install_completed IS NOT NULL AND install_completed != '' AND install_completed != '0'` +
-        ` AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)`,
-      params: a.params,
-    }
-  })()
+  const inm2Base = gapBase('installedNotM2', f)
   const installedNotM2 = buildGap({
-    asOf, f, baseWhere: inm2Base, ageColumn: 'install_completed', revColumn: 'system_price', installsPerDay: 0,
+    asOf, f, baseWhere: inm2Base, ageColumn: inm2Base.ageColumn, revColumn: inm2Base.revColumn, installsPerDay: 0,
   })
 
   // M2-Not-M3: M2 deposited (and not clawed back), M3 still pending or
   // clawed back. Same clawback logic on M3 — a clawback re-opens the
   // funding gap.
-  const m2m3Base = (() => {
-    const a = activeWhere(f)
-    return {
-      where: a.where +
-        ` AND m2_deposit_date IS NOT NULL AND m2_deposit_date != '' AND m2_deposit_date != '0'` +
-        ` AND COALESCE(m2_net_received, 0) > 0` +
-        ` AND (m3_deposit_date IS NULL OR m3_deposit_date = '' OR m3_deposit_date = '0' OR COALESCE(m3_net_received, 0) <= 0)`,
-      params: a.params,
-    }
-  })()
+  const m2m3Base = gapBase('m2NotM3', f)
   const m2NotM3 = buildGap({
-    asOf, f, baseWhere: m2m3Base, ageColumn: 'm2_deposit_date', revColumn: 'system_price', installsPerDay: 0,
+    asOf, f, baseWhere: m2m3Base, ageColumn: m2m3Base.ageColumn, revColumn: m2m3Base.revColumn, installsPerDay: 0,
+  })
+
+  // M3-Not-DCA: DCA-eligible projects where final M3 cash has landed,
+  // but the DCA / funding true-up has not landed yet. Uses broad status
+  // scope because these projects are commonly Complete by this point.
+  const m3DcaBase = gapBase('m3NotDca', f)
+  const m3NotDca = buildGap({
+    asOf, f, baseWhere: m3DcaBase, ageColumn: m3DcaBase.ageColumn, revColumn: m3DcaBase.revColumn, installsPerDay: 0,
   })
 
   void timeframe  // unused — cancel widget removed; reserved for future windowed gaps
-  return { soldNotInstalled, installedNotM2, m2NotM3 }
+  return { soldNotInstalled, installedNotM2, m2NotM3, m3NotDca }
 }
 
-// ─── Drill — per-dimension breakdown for one gap ─────────
-// Returns rows of {dimension_value, count, kw, rev, daysSupply}
-// for the selected gap broken down by the requested dimension. Powers
-// the inline drill panel at the bottom of the report.
+// ─── Aging / SLA action list ─────────────────────────────
+// Bucket each gap by days in its current stage, then name the records
+// that have crossed the warning threshold. This turns the KPI strip into
+// an accountability list without requiring the user to expand the full
+// audit table.
 
-const DRILL_GAPS = ['soldNotInstalled', 'installedNotM2', 'm2NotM3'] as const
-type DrillGap = typeof DRILL_GAPS[number]
+interface AgeBucketDef { key: string; label: string; min: number; max: number | null }
+
+const AGE_BUCKETS: readonly AgeBucketDef[] = [
+  { key: '0_7', label: '0-7', min: 0, max: 7 },
+  { key: '8_14', label: '8-14', min: 8, max: 14 },
+  { key: '15_30', label: '15-30', min: 15, max: 30 },
+  { key: '31_60', label: '31-60', min: 31, max: 60 },
+  { key: '60_plus', label: '60+', min: 61, max: null },
+] as const
+
+const M2_NOT_M3_AGE_BUCKETS: readonly AgeBucketDef[] = [
+  { key: '0_15', label: '0-15', min: 0, max: 15 },
+  { key: '16_30', label: '16-30', min: 16, max: 30 },
+  { key: '31_45', label: '31-45', min: 31, max: 45 },
+  { key: '46_60', label: '46-60', min: 46, max: 60 },
+  { key: '60_plus', label: '60+', min: 61, max: null },
+] as const
+
+function ageBucketsForGap(gap: GapKey): readonly AgeBucketDef[] {
+  return gap === 'm2NotM3' ? M2_NOT_M3_AGE_BUCKETS : AGE_BUCKETS
+}
+
+interface AgingBucket {
+  key: string
+  label: string
+  min: number
+  max: number | null
+  count: number
+  kw: number
+  rev: number
+}
+
+interface StuckDeal {
+  gap: GapKey
+  recordId: number
+  customerName: string
+  state: string
+  closer: string
+  coordinator: string
+  lender: string
+  anchorDate: string
+  days: number
+  slaDays: number
+  severity: 'warn' | 'red'
+  blocker: string
+  systemPrice: number
+  systemSizeKw: number
+}
+
+interface AgingGap {
+  buckets: AgingBucket[]
+  warnCount: number
+  redCount: number
+  stuck: StuckDeal[]
+}
+
+type Aging = Record<GapKey, AgingGap>
+
+interface AgingRow {
+  recordId: number
+  customerName: string
+  state: string
+  closer: string
+  coordinator: string
+  lender: string
+  status: string
+  anchorDate: string
+  days: number
+  systemPrice: number
+  systemSizeKw: number
+  urgentBannerText: string
+  nextTaskType: string
+  installScheduled: string
+  surveyScheduled: string
+  surveySubmitted: string
+  surveyApproved: string
+  cadSubmitted: string
+  designCompleted: string
+  permitSubmitted: string
+  permitApproved: string
+  permitRejected: string
+  inspectionPassed: string
+  ptoSubmitted: string
+  ptoApproved: string
+  permitMissingItems: string
+  nemMissingItems: string
+  ptoMissingItems: string
+  m2Status: string
+  m3Status: string
+  dcaStatus: string
+  dcaExpectedDeposit: string
+}
+
+function compactLabel(s: string): string {
+  return (s || '').replace(/;/g, ', ').replace(/\s+/g, ' ').trim()
+}
+function shortDateLabel(s: string): string {
+  const v = compactLabel(s)
+  return v ? v.slice(0, 10) : ''
+}
+function hasDate(s: string): boolean {
+  const v = compactLabel(s)
+  return !!v && v !== '0'
+}
+
+function deriveBlocker(gap: GapKey, r: AgingRow): string {
+  const banner = compactLabel(r.urgentBannerText)
+  if (banner) return banner
+
+  if (gap === 'soldNotInstalled') {
+    if (hasDate(r.installScheduled)) return `Install scheduled ${shortDateLabel(r.installScheduled)}`
+    if (!hasDate(r.permitApproved)) {
+      if (hasDate(r.permitRejected)) return `Permit rejected ${shortDateLabel(r.permitRejected)}`
+      if (hasDate(r.permitSubmitted)) return `Permit pending since ${shortDateLabel(r.permitSubmitted)}`
+      return 'Permit not submitted'
+    }
+    if (!hasDate(r.designCompleted)) {
+      if (hasDate(r.cadSubmitted)) return `Design pending since ${shortDateLabel(r.cadSubmitted)}`
+      return 'Design not complete'
+    }
+    if (!hasDate(r.surveyApproved)) {
+      if (hasDate(r.surveySubmitted)) return `Survey approval pending since ${shortDateLabel(r.surveySubmitted)}`
+      if (hasDate(r.surveyScheduled)) return `Survey scheduled ${shortDateLabel(r.surveyScheduled)}`
+      return 'Survey not approved'
+    }
+    return compactLabel(r.nextTaskType) ||
+      compactLabel(r.permitMissingItems) ||
+      compactLabel(r.nemMissingItems) ||
+      'Ready to schedule install'
+  }
+
+  if (gap === 'installedNotM2') {
+    if (!hasDate(r.ptoApproved)) {
+      if (hasDate(r.ptoSubmitted)) return `PTO pending since ${shortDateLabel(r.ptoSubmitted)}`
+      if (!hasDate(r.inspectionPassed)) return 'Inspection not passed'
+      return 'PTO not submitted'
+    }
+    return compactLabel(r.ptoMissingItems) ||
+      compactLabel(r.m2Status) ||
+      compactLabel(r.nextTaskType) ||
+      'M2 funding review'
+  }
+
+  if (gap === 'm2NotM3') {
+    return compactLabel(r.m3Status) ||
+      compactLabel(r.nextTaskType) ||
+      'Final funding review'
+  }
+
+  return compactLabel(r.dcaStatus) ||
+    (hasDate(r.dcaExpectedDeposit) ? `DCA expected ${shortDateLabel(r.dcaExpectedDeposit)}` : '') ||
+    compactLabel(r.nextTaskType) ||
+    'DCA funding review'
+}
+
+function buildAgingGap(gap: GapKey, asOf: Date, f: Filters): AgingGap {
+  const base = gapBase(gap, f)
+  const asOfStr = fmtDate(asOf)
+  const sql = `SELECT
+      record_id AS recordId,
+      customer_name AS customerName,
+      COALESCE(state, '') AS state,
+      COALESCE(closer, '') AS closer,
+      COALESCE(coordinator, '') AS coordinator,
+      COALESCE(lender, '') AS lender,
+      COALESCE(status, '') AS status,
+      COALESCE(${base.ageColumn}, '') AS anchorDate,
+      CAST(julianday(?) - julianday(substr(${base.ageColumn},1,10)) AS INTEGER) AS days,
+      COALESCE(system_price, 0) AS systemPrice,
+      COALESCE(system_size_kw, 0) AS systemSizeKw,
+      COALESCE(urgent_banner_text, '') AS urgentBannerText,
+      COALESCE(next_task_type, '') AS nextTaskType,
+      COALESCE(install_scheduled, '') AS installScheduled,
+      COALESCE(survey_scheduled, '') AS surveyScheduled,
+      COALESCE(survey_submitted, '') AS surveySubmitted,
+      COALESCE(survey_approved, '') AS surveyApproved,
+      COALESCE(cad_submitted, '') AS cadSubmitted,
+      COALESCE(design_completed, '') AS designCompleted,
+      COALESCE(permit_submitted, '') AS permitSubmitted,
+      COALESCE(permit_approved, '') AS permitApproved,
+      COALESCE(permit_rejected, '') AS permitRejected,
+      COALESCE(inspection_passed, '') AS inspectionPassed,
+      COALESCE(pto_submitted, '') AS ptoSubmitted,
+      COALESCE(pto_approved, '') AS ptoApproved,
+      COALESCE(permit_missing_items, '') AS permitMissingItems,
+      COALESCE(nem_missing_items, '') AS nemMissingItems,
+      COALESCE(pto_missing_items, '') AS ptoMissingItems,
+      COALESCE(m2_status, '') AS m2Status,
+      COALESCE(m3_status, '') AS m3Status,
+      COALESCE(dca_status, '') AS dcaStatus,
+      COALESCE(dca_expected_deposit, '') AS dcaExpectedDeposit
+    FROM project_cache ${base.where}
+      AND ${base.ageColumn} IS NOT NULL AND ${base.ageColumn} != '' AND ${base.ageColumn} != '0'`
+  const rows = db.prepare(sql).all(asOfStr, ...base.params) as AgingRow[]
+  const cleanRows = rows.filter(r => r.days >= 0 && r.days <= 365 * 5)
+
+  const buckets = ageBucketsForGap(gap).map(b => {
+    const rowsInBucket = cleanRows.filter(r => r.days >= b.min && (b.max === null || r.days <= b.max))
+    return {
+      key: b.key,
+      label: b.label,
+      min: b.min,
+      max: b.max,
+      count: rowsInBucket.length,
+      kw: Math.round(rowsInBucket.reduce((sum, r) => sum + r.systemSizeKw, 0) * 10) / 10,
+      rev: Math.round(rowsInBucket.reduce((sum, r) => sum + r.systemPrice, 0)),
+    }
+  })
+
+  const stuck = cleanRows
+    .filter(r => r.days >= base.sla.warn)
+    .sort((a, b) => {
+      const aRed = a.days >= base.sla.red ? 1 : 0
+      const bRed = b.days >= base.sla.red ? 1 : 0
+      return bRed - aRed || b.days - a.days || b.systemPrice - a.systemPrice
+    })
+    .slice(0, 100)
+    .map((r): StuckDeal => ({
+      gap,
+      recordId: r.recordId,
+      customerName: r.customerName,
+      state: r.state,
+      closer: r.closer,
+      coordinator: r.coordinator,
+      lender: r.lender,
+      anchorDate: r.anchorDate,
+      days: r.days,
+      slaDays: r.days >= base.sla.red ? base.sla.red : base.sla.warn,
+      severity: r.days >= base.sla.red ? 'red' : 'warn',
+      blocker: deriveBlocker(gap, r),
+      systemPrice: Math.round(r.systemPrice),
+      systemSizeKw: Math.round(r.systemSizeKw * 10) / 10,
+    }))
+
+  return {
+    buckets,
+    warnCount: cleanRows.filter(r => r.days >= base.sla.warn && r.days < base.sla.red).length,
+    redCount: cleanRows.filter(r => r.days >= base.sla.red).length,
+    stuck,
+  }
+}
+
+function buildAging(asOf: Date, f: Filters): Aging {
+  return {
+    soldNotInstalled: buildAgingGap('soldNotInstalled', asOf, f),
+    installedNotM2: buildAgingGap('installedNotM2', asOf, f),
+    m2NotM3: buildAgingGap('m2NotM3', asOf, f),
+    m3NotDca: buildAgingGap('m3NotDca', asOf, f),
+  }
+}
+
+// ─── Drill — per-dimension breakdown for one KPI ─────────
+// Returns rows of {dimension_value, count, kw, rev, daysSupply, age stats}
+// for the selected KPI broken down by the requested dimension. Powers
+// the inline drill panel under the KPI strip.
+
+const DRILL_GAPS = GAP_KEYS
+type DrillGap = GapKey
 
 const DIMENSIONS: Record<string, string> = {
   state: 'state',
@@ -437,39 +751,31 @@ const DIMENSIONS: Record<string, string> = {
   coordinator: 'coordinator',
 }
 
-interface DrillRow { name: string; count: number; kw: number; rev: number; daysSupply: number }
+interface DrillAgeStats { p25: number; p50: number; p75: number; p90: number; max: number }
+interface DrillRow extends DrillAgeStats { name: string; count: number; kw: number; rev: number; daysSupply: number }
+interface DrillResult { rows: DrillRow[]; total: DrillRow }
 
-function buildDrill(gap: DrillGap, dimension: string, asOf: Date, timeframe: { from: string; to: string }, f: Filters): DrillRow[] {
-  const dimCol = DIMENSIONS[dimension]
-  if (!dimCol) return []
-
-  let where = ''
-  let params: unknown[] = []
-  const a = activeWhere(f)
-
-  switch (gap) {
-    case 'soldNotInstalled':
-      where = a.where + ` AND (install_completed IS NULL OR install_completed = '' OR install_completed = '0')`
-      params = a.params
-      break
-    case 'installedNotM2':
-      where = a.where +
-        ` AND install_completed IS NOT NULL AND install_completed != '' AND install_completed != '0'` +
-        ` AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)`
-      params = a.params
-      break
-    case 'm2NotM3':
-      where = a.where +
-        ` AND m2_deposit_date IS NOT NULL AND m2_deposit_date != '' AND m2_deposit_date != '0'` +
-        ` AND COALESCE(m2_net_received, 0) > 0` +
-        ` AND (m3_deposit_date IS NULL OR m3_deposit_date = '' OR m3_deposit_date = '0' OR COALESCE(m3_net_received, 0) <= 0)`
-      params = a.params
-      break
+function buildDrillAgeStats(days: number[]): DrillAgeStats {
+  if (days.length === 0) return { p25: 0, p50: 0, p75: 0, p90: 0, max: 0 }
+  const sorted = [...days].sort((a, b) => a - b)
+  return {
+    p25: Math.round(percentile(sorted, 0.25)),
+    p50: Math.round(percentile(sorted, 0.5)),
+    p75: Math.round(percentile(sorted, 0.75)),
+    p90: Math.round(percentile(sorted, 0.9)),
+    max: Math.round(sorted[sorted.length - 1]!),
   }
+}
+
+function buildDrill(gap: DrillGap, dimension: string, asOf: Date, timeframe: { from: string; to: string }, f: Filters): DrillResult {
+  const dimCol = DIMENSIONS[dimension]
+  if (!dimCol) return { rows: [], total: { name: 'Total', count: 0, kw: 0, rev: 0, daysSupply: 0, p25: 0, p50: 0, p75: 0, p90: 0, max: 0 } }
+
+  const base = gapBase(gap, f)
   void timeframe  // unused after cancel widget removal
-  void asOf
 
   const installsRate = gap === 'soldNotInstalled' ? installsPerDay30(asOf, f) : 0
+  const asOfStr = fmtDate(asOf)
 
   // Roll up null/empty dimension values into "(unknown)" so the drill
   // total exactly matches the widget count — projects with missing
@@ -477,25 +783,57 @@ function buildDrill(gap: DrillGap, dimension: string, asOf: Date, timeframe: { f
   // silently dropping out of the breakdown.
   const sql = `SELECT
       CASE WHEN ${dimCol} IS NULL OR ${dimCol} = '' THEN '(unknown)' ELSE ${dimCol} END AS name,
-      COUNT(*) AS count,
-      COALESCE(SUM(system_size_kw),0) AS kw,
-      COALESCE(SUM(system_price),0) AS rev
-    FROM project_cache ${where}
-    GROUP BY name
-    ORDER BY count DESC, rev DESC
-    LIMIT 100`
-  const rows = db.prepare(sql).all(...params) as Array<{ name: string; count: number; kw: number; rev: number }>
+      COALESCE(system_size_kw,0) AS kw,
+      COALESCE(system_price,0) AS rev,
+      CAST(julianday(?) - julianday(substr(${base.ageColumn},1,10)) AS INTEGER) AS days
+    FROM project_cache ${base.where}`
+  const records = db.prepare(sql).all(asOfStr, ...base.params) as Array<{ name: string; kw: number; rev: number; days: number }>
+  const groups = new Map<string, { count: number; kw: number; rev: number; days: number[] }>()
+  const total = { count: 0, kw: 0, rev: 0, days: [] as number[] }
+  for (const r of records) {
+    const name = r.name || '(unknown)'
+    const g = groups.get(name) || { count: 0, kw: 0, rev: 0, days: [] }
+    g.count++
+    g.kw += Number(r.kw || 0)
+    g.rev += Number(r.rev || 0)
+    total.count++
+    total.kw += Number(r.kw || 0)
+    total.rev += Number(r.rev || 0)
+    const d = Number(r.days)
+    if (Number.isFinite(d) && d >= 0 && d <= 365 * 5) {
+      g.days.push(d)
+      total.days.push(d)
+    }
+    groups.set(name, g)
+  }
+
   // Days supply rolls up with the same denominator (global 30d install rate
   // when no state filter is present — for state-specific rows we'd need a
   // per-state rate which is out of scope for v1; the row-level number is
   // a useful approximation).
-  return rows.map(r => ({
-    name: r.name,
-    count: r.count,
-    kw: Math.round(r.kw * 10) / 10,
-    rev: Math.round(r.rev),
-    daysSupply: installsRate > 0 ? Math.round(r.count / installsRate) : 0,
-  }))
+  const rows = [...groups.entries()]
+    .map(([name, g]): DrillRow => ({
+      name,
+      count: g.count,
+      kw: Math.round(g.kw * 10) / 10,
+      rev: Math.round(g.rev),
+      daysSupply: installsRate > 0 ? Math.round(g.count / installsRate) : 0,
+      ...buildDrillAgeStats(g.days),
+    }))
+    .sort((a, b) => b.count - a.count || b.rev - a.rev)
+    .slice(0, 100)
+
+  return {
+    rows,
+    total: {
+      name: 'Total',
+      count: total.count,
+      kw: Math.round(total.kw * 10) / 10,
+      rev: Math.round(total.rev),
+      daysSupply: installsRate > 0 ? Math.round(total.count / installsRate) : 0,
+      ...buildDrillAgeStats(total.days),
+    },
+  }
 }
 
 // ─── Cycle time medians ──────────────────────────────────
@@ -677,6 +1015,8 @@ interface AuditRow {
   installCompleted: string
   m2Date: string
   m3Date: string
+  dcaDate: string
+  dcaStatus: string
   systemPrice: number
   systemSizeKw: number
   cancelDate: string
@@ -685,7 +1025,7 @@ interface AuditRow {
 function buildAudit(asOf: Date, timeframe: { from: string; to: string }, f: Filters): Record<DrillGap, AuditRow[]> {
   void asOf; void timeframe  // unused after cancel widget removal
   const out: Record<DrillGap, AuditRow[]> = {
-    soldNotInstalled: [], installedNotM2: [], m2NotM3: [],
+    soldNotInstalled: [], installedNotM2: [], m2NotM3: [], m3NotDca: [],
   }
 
   function fetchSample(where: { where: string; params: unknown[] }, orderBy: string): AuditRow[] {
@@ -700,6 +1040,8 @@ function buildAudit(asOf: Date, timeframe: { from: string; to: string }, f: Filt
         COALESCE(install_completed, '') AS installCompleted,
         COALESCE(m2_deposit_date, '') AS m2Date,
         COALESCE(m3_deposit_date, '') AS m3Date,
+        COALESCE(dca_actual_deposit, '') AS dcaDate,
+        COALESCE(dca_status, '') AS dcaStatus,
         COALESCE(system_price, 0) AS systemPrice,
         COALESCE(system_size_kw, 0) AS systemSizeKw,
         COALESCE(cancel_date, '') AS cancelDate
@@ -709,25 +1051,21 @@ function buildAudit(asOf: Date, timeframe: { from: string; to: string }, f: Filt
     return db.prepare(sql).all(...where.params) as AuditRow[]
   }
 
-  const a = activeWhere(f)
   out.soldNotInstalled = fetchSample(
-    { where: a.where + ` AND (install_completed IS NULL OR install_completed = '' OR install_completed = '0')`, params: a.params },
+    gapBase('soldNotInstalled', f),
     `sales_date DESC`,
   )
   out.installedNotM2 = fetchSample(
-    { where: a.where +
-        ` AND install_completed IS NOT NULL AND install_completed != '' AND install_completed != '0'` +
-        ` AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)`,
-      params: a.params },
+    gapBase('installedNotM2', f),
     `install_completed DESC`,
   )
   out.m2NotM3 = fetchSample(
-    { where: a.where +
-        ` AND m2_deposit_date IS NOT NULL AND m2_deposit_date != '' AND m2_deposit_date != '0'` +
-        ` AND COALESCE(m2_net_received, 0) > 0` +
-        ` AND (m3_deposit_date IS NULL OR m3_deposit_date = '' OR m3_deposit_date = '0' OR COALESCE(m3_net_received, 0) <= 0)`,
-      params: a.params },
+    gapBase('m2NotM3', f),
     `m2_deposit_date DESC`,
+  )
+  out.m3NotDca = fetchSample(
+    gapBase('m3NotDca', f),
+    `m3_deposit_date DESC`,
   )
   return out
 }
@@ -797,6 +1135,7 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
     const timeframe = resolveTimeframe(tf, asOf, customFrom, customTo)
     const flash = buildFlash(asOf, filters)
     const gaps = buildGaps(asOf, timeframe, filters)
+    const aging = buildAging(asOf, filters)
     const cycleTime = buildCycleTime(asOf, filters)
     const macd = buildMacd(macdSubject, asOf, filters)
     const audit = buildAudit(asOf, timeframe, filters)
@@ -808,6 +1147,7 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
       sla: SLA,
       flash,
       gaps,
+      aging,
       cycleTime,
       macd: { subject: macdSubject, points: macd },
       audit,
@@ -839,8 +1179,74 @@ router.get('/booked-and-boarded/drill', (req: Request, res: Response): void => {
 
   try {
     const timeframe = resolveTimeframe(tf, asOf, customFrom, customTo)
-    const rows = buildDrill(gap, dimension, asOf, timeframe, filters)
-    res.json({ gap, dimension, rows })
+    const drill = buildDrill(gap, dimension, asOf, timeframe, filters)
+    res.json({ gap, dimension, rows: drill.rows, total: drill.total })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Cycle-time drill — per-dimension breakdown of median cycle days for
+// one transition (e.g. "Booked → Installed" by state). Fueled by the
+// same gapDays() / percentile() primitives the main cycle-time builder
+// uses. Returns n + min/p25/median/p75/max so the client can render the
+// same stats grid dimensionally.
+const CYCLE_COLS = new Set([
+  'sales_date', 'install_completed', 'pto_approved',
+  'm1_deposit_date', 'm2_deposit_date', 'm3_deposit_date',
+  'dca_actual_deposit',
+])
+const CYCLE_WINDOWS: Record<string, number> = { '30d': 30, '60d': 60, '90d': 90 }
+
+router.get('/booked-and-boarded/cycle-drill', (req: Request, res: Response): void => {
+  const fromCol = String(req.query['from'] || '')
+  const toCol = String(req.query['to'] || '')
+  const dimension = (req.query['dimension'] as string) || 'state'
+  const win = String(req.query['window'] || '90d')
+  if (!CYCLE_COLS.has(fromCol) || !CYCLE_COLS.has(toCol)) {
+    res.status(400).json({ error: 'invalid from/to column' }); return
+  }
+  if (!DIMENSIONS[dimension]) { res.status(400).json({ error: 'invalid dimension' }); return }
+  const days = CYCLE_WINDOWS[win] || 90
+
+  const asOfRaw = (req.query['asOf'] as string) || ''
+  const asOf = /^\d{4}-\d{2}-\d{2}$/.test(asOfRaw) ? parseDate(asOfRaw) : new Date()
+  const filters: Filters = {
+    state: (req.query['state'] as string) || undefined,
+    closer: (req.query['closer'] as string) || undefined,
+    lender: (req.query['lender'] as string) || undefined,
+    epc: (req.query['epc'] as string) || undefined,
+  }
+  const winStart = fmtDate(shiftDays(asOf, -days))
+  const winEnd = fmtDate(asOf)
+  const dimCol = DIMENSIONS[dimension]!
+  const base = applyFilters('WHERE 1=1', [], filters)
+
+  try {
+    // Pull individual cycle-time samples joined to the dimension column,
+    // then bucket by dimension in JS and compute percentiles. SQL would
+    // need a window function for percentiles; the JS path mirrors the
+    // existing buildCycleTime() approach exactly so numbers tie out.
+    const sql = `SELECT
+        CASE WHEN ${dimCol} IS NULL OR ${dimCol} = '' THEN '(unknown)' ELSE ${dimCol} END AS dim,
+        julianday(substr(${toCol},1,10)) - julianday(substr(${fromCol},1,10)) AS days
+      FROM project_cache ${base.where}
+        AND ${fromCol} IS NOT NULL AND ${fromCol} != '' AND ${fromCol} != '0'
+        AND ${toCol} IS NOT NULL AND ${toCol} != '' AND ${toCol} != '0'
+        AND substr(${toCol},1,10) BETWEEN ? AND ?`
+    const rows = db.prepare(sql).all(...base.params, winStart, winEnd) as Array<{ dim: string; days: number }>
+    const buckets = new Map<string, number[]>()
+    for (const r of rows) {
+      if (r.days < 0 || r.days > 365 * 3) continue
+      const arr = buckets.get(r.dim) || []
+      arr.push(r.days)
+      buckets.set(r.dim, arr)
+    }
+    const out = [...buckets.entries()].map(([name, samples]) => ({
+      name,
+      ...buildStats(samples),
+    })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name))
+    res.json({ from: fromCol, to: toCol, window: win, dimension, rows: out })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }

@@ -288,6 +288,72 @@ function cycleDeltaTone(w: CycleWindow): string {
   return 'text-muted-foreground'
 }
 
+// Trend of one window's median vs the next-larger window's median.
+// 30d row → compares to 60d, 60d row → compares to 90d, 90d row → no
+// peer to compare against. Faster (smaller current median) = green.
+// Only the median is compared per the spec — p25/p75 aren't enough
+// signal on their own to flip the tone.
+function cycleTrend(t: CycleTransition, idx: number): { tone: string; arrow: string; text: string } {
+  const w = t.windows[idx]
+  const next = t.windows[idx + 1]
+  if (!w || !next) return { tone: 'text-muted-foreground/40', arrow: '·', text: '—' }
+  if (!w.current.n || !next.current.n) return { tone: 'text-muted-foreground/40', arrow: '·', text: '—' }
+  const delta = w.current.median - next.current.median
+  if (delta === 0) return { tone: 'text-muted-foreground', arrow: '·', text: 'flat' }
+  if (delta < 0) return { tone: 'text-emerald-600 font-semibold', arrow: '↓', text: `${Math.abs(delta)}d` }
+  return { tone: 'text-amber-600 font-semibold', arrow: '↑', text: `${delta}d` }
+}
+
+// ─── Cycle-time drill ───────────────────────────────────
+// Click a transition card → drill panel below the cycle section opens
+// with a per-dimension breakdown of medians for the selected stage.
+// Same dimension picker as the gap drill so the user gets identical
+// muscle memory.
+interface CycleDrillRow { name: string; n: number; min: number; p25: number; median: number; p75: number; max: number }
+const TRANSITION_COLS: Record<string, { from: string; to: string }> = {
+  'Booked → Installed':  { from: 'sales_date',        to: 'install_completed' },
+  'Installed → PTO':     { from: 'install_completed', to: 'pto_approved' },
+  'Install → M2 Funded': { from: 'install_completed', to: 'm2_deposit_date' },
+  'M2 → M3 Funded':      { from: 'm2_deposit_date',   to: 'm3_deposit_date' },
+  'Booked → M3 (full)':  { from: 'sales_date',        to: 'm3_deposit_date' },
+  'Booked → DCA':        { from: 'sales_date',        to: 'dca_actual_deposit' },
+}
+const cycleDrillStage = ref<string | null>(null)
+const cycleDrillDim = ref<Dimension>('state')
+const cycleDrillWindow = ref<'30d' | '60d' | '90d'>('90d')
+const cycleDrillRows = ref<CycleDrillRow[]>([])
+const cycleDrillLoading = ref(false)
+
+async function loadCycleDrill() {
+  if (!cycleDrillStage.value) { cycleDrillRows.value = []; return }
+  const cols = TRANSITION_COLS[cycleDrillStage.value]
+  if (!cols) return
+  cycleDrillLoading.value = true
+  const params = new URLSearchParams({
+    from: cols.from, to: cols.to,
+    dimension: cycleDrillDim.value,
+    window: cycleDrillWindow.value,
+  })
+  if (fState.value)  params.set('state', fState.value)
+  if (fCloser.value) params.set('closer', fCloser.value)
+  if (fLender.value) params.set('lender', fLender.value)
+  if (asOf.value && asOf.value !== localTodayIso()) params.set('asOf', asOf.value)
+  try {
+    const res = await fetch(`/api/reports/booked-and-boarded/cycle-drill?${params}`, { headers: hdrs() })
+    if (res.ok) cycleDrillRows.value = (await res.json()).rows as CycleDrillRow[]
+  } catch { /* non-fatal */ } finally { cycleDrillLoading.value = false }
+}
+async function selectTransition(stage: string) {
+  cycleDrillStage.value = cycleDrillStage.value === stage ? null : stage
+  if (cycleDrillStage.value) {
+    await loadCycleDrill()
+    setTimeout(() => document.getElementById('bb-cycle-drill')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
+  }
+}
+async function setCycleDrillDim(d: Dimension) { cycleDrillDim.value = d; await loadCycleDrill() }
+async function setCycleDrillWindow(w: '30d' | '60d' | '90d') { cycleDrillWindow.value = w; await loadCycleDrill() }
+function closeCycleDrill() { cycleDrillStage.value = null }
+
 // ─── Timeframe pills ─────────────────────────────────────
 const TIMEFRAMES: Array<{ key: Timeframe; label: string }> = [
   { key: 'yesterday', label: 'Yday' },
@@ -812,38 +878,57 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
       </section>
 
       <!-- ═══ Cycle Time deep-dive ═══
-           One sub-card per transition. Mobile shows a compact 90d
-           median + delta vs prior year. Desktop expands to the full
-           30/60/90d × min/p25/median/p75/max grid plus prior-year
-           median deltas. -->
+           One sub-card per transition. Each card is clickable — opens
+           the cycle drill panel below the section with per-dimension
+           medians for the selected transition. Trend column compares
+           each row's median to the next-larger window's median (30d
+           vs 60d, 60d vs 90d) so the user can see if cycles are
+           speeding up or slowing down recently. -->
       <section class="space-y-2">
         <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Cycle Time · 30 / 60 / 90d Rolling</h2>
+        <p class="text-[10px] text-muted-foreground italic">Click a transition to drill into per-dimension medians below.</p>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          <div
+          <button
+            type="button"
             v-for="t in data.cycleTime.transitions" :key="t.stage"
-            class="rounded-xl bg-card overflow-hidden"
-            :class="t.stage.startsWith('Booked → M3') ? 'ring-1 ring-foreground/10' : ''"
+            class="rounded-xl bg-card overflow-hidden text-left w-full transition-all active:scale-[0.998] hover:bg-muted/20"
+            :class="[
+              t.stage.startsWith('Booked → M3') ? 'ring-1 ring-foreground/10' : '',
+              cycleDrillStage === t.stage ? 'ring-2 ring-foreground/30' : '',
+            ]"
+            @click="selectTransition(t.stage)"
           >
             <div class="px-3 pt-2 pb-1 flex items-baseline justify-between">
               <p class="text-[11px] font-semibold" :class="t.stage.startsWith('Booked → M3') ? 'text-foreground' : 'text-muted-foreground'">{{ t.stage }}</p>
-              <p class="text-[9px] text-muted-foreground">days, n = sample size</p>
+              <p class="text-[9px] text-muted-foreground">days · n=samples · ↓=faster</p>
             </div>
             <table class="w-full text-[11px]" style="table-layout:fixed">
               <thead>
                 <tr class="text-muted-foreground bg-muted/30">
-                  <th class="text-left font-semibold p-1.5" style="width:14%">Win</th>
+                  <th class="text-left font-semibold p-1.5" style="width:32%">Window</th>
                   <th class="text-right font-semibold p-1.5">n</th>
                   <th class="text-right font-semibold p-1.5">Min</th>
                   <th class="text-right font-semibold p-1.5">P25</th>
-                  <th class="text-right font-semibold p-1.5">Median</th>
+                  <th class="text-right font-semibold p-1.5">Med</th>
                   <th class="text-right font-semibold p-1.5">P75</th>
                   <th class="text-right font-semibold p-1.5">Max</th>
-                  <th class="text-right font-semibold p-1.5">Δ vs PY</th>
+                  <th class="text-right font-semibold p-1.5">vs PY</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="w in t.windows" :key="w.window" class="border-t border-border/30">
-                  <td class="p-1.5 font-medium">{{ w.window }}</td>
+                <tr v-for="(w, i) in t.windows" :key="w.window" class="border-t border-border/30">
+                  <!-- Window cell holds the trend chip inline so it reads
+                       "30d · ↓3d vs 60d" instead of stealing a column. -->
+                  <td class="p-1.5">
+                    <span class="font-medium">{{ w.window }}</span>
+                    <template v-if="i < t.windows.length - 1">
+                      <span class="text-muted-foreground/60"> · </span>
+                      <span class="font-mono tabular-nums" :class="cycleTrend(t, i).tone">
+                        {{ cycleTrend(t, i).arrow }}{{ cycleTrend(t, i).text }}
+                      </span>
+                      <span class="text-muted-foreground/60"> vs {{ t.windows[i + 1]?.window }}</span>
+                    </template>
+                  </td>
                   <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ w.current.n }}</td>
                   <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ w.current.min }}</td>
                   <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ w.current.p25 }}</td>
@@ -854,7 +939,68 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                 </tr>
               </tbody>
             </table>
+          </button>
+        </div>
+      </section>
+
+      <!-- ═══ Cycle drill panel ═══ — appears below the cycle grid when
+           a transition is clicked. Shows per-dimension breakdown of
+           median + percentiles for the selected stage. -->
+      <section v-if="cycleDrillStage" id="bb-cycle-drill" class="space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-baseline gap-2 min-w-0">
+            <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground truncate">Cycle Drill · {{ cycleDrillStage }}</h2>
+            <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ cycleDrillRows.length }} rows</span>
           </div>
+          <button class="text-xs text-muted-foreground hover:text-foreground" @click="closeCycleDrill">Close</button>
+        </div>
+        <div class="flex items-center gap-1 flex-wrap">
+          <!-- Window picker — same 30/60/90d as the cycle cards. -->
+          <div class="flex gap-0.5 p-0.5 bg-muted rounded-lg">
+            <button
+              v-for="w in (['30d','60d','90d'] as const)" :key="w"
+              class="px-2.5 py-1 text-[10px] font-medium rounded transition-colors"
+              :class="cycleDrillWindow === w ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'"
+              @click="setCycleDrillWindow(w)"
+            >{{ w }}</button>
+          </div>
+          <!-- Same dimension picker as the gap drill so muscle memory carries over. -->
+          <button
+            v-for="d in DIMENSIONS" :key="d.key"
+            class="px-3 py-1 rounded-full text-[11px] font-semibold border whitespace-nowrap transition-colors"
+            :class="cycleDrillDim === d.key
+              ? 'bg-foreground text-background border-foreground'
+              : 'bg-card border-border text-muted-foreground hover:text-foreground'"
+            @click="setCycleDrillDim(d.key)"
+          >{{ d.label }}</button>
+        </div>
+        <div v-if="cycleDrillLoading" class="rounded-xl bg-card p-8 text-center text-xs text-muted-foreground">Loading…</div>
+        <div v-else-if="cycleDrillRows.length === 0" class="rounded-xl bg-card p-8 text-center text-xs text-muted-foreground">No samples for this dimension.</div>
+        <div v-else class="rounded-xl bg-card overflow-hidden">
+          <table class="w-full text-[11px]" style="table-layout:fixed">
+            <thead>
+              <tr class="text-muted-foreground bg-muted/30">
+                <th class="text-left font-semibold p-1.5" style="width:32%">{{ DIMENSIONS.find(d => d.key === cycleDrillDim)?.label }}</th>
+                <th class="text-right font-semibold p-1.5">n</th>
+                <th class="text-right font-semibold p-1.5">Min</th>
+                <th class="text-right font-semibold p-1.5">P25</th>
+                <th class="text-right font-semibold p-1.5">Med</th>
+                <th class="text-right font-semibold p-1.5">P75</th>
+                <th class="text-right font-semibold p-1.5">Max</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in cycleDrillRows" :key="r.name" class="border-t border-border/30">
+                <td class="p-1.5 font-medium truncate" :title="r.name">{{ r.name }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ r.n }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ r.min }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ r.p25 }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums font-bold">{{ r.median }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ r.p75 }}</td>
+                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ r.max }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
