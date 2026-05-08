@@ -6,6 +6,7 @@ import { useSmsThread, type ThreadSms, type ThreadCall, type ThreadItem } from '
 import { useAuthStore } from '@/stores/auth'
 import { useDialpadLive } from '@/lib/dialpadLive'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
+import AddContactDialog from '@/components/AddContactDialog.vue'
 
 interface Props {
   externalNumber: string
@@ -493,51 +494,17 @@ async function scheduleReminder(at: Date) {
   }
 }
 
-// ─── Save contact (inline form) ───────────────────────────
-const saveOpen = ref(false)
-const saveFirst = ref('')
-const saveLast = ref('')
-const saveBusy = ref(false)
-const saveError = ref<string | null>(null)
-const saveSuccess = ref(false)
+// ─── Save contact ───────────────────────────────────────────
+// Single shared dialog (AddContactDialog) — mounted below at the bottom of
+// this template. Both the header bookmark button and the action-menu
+// "Save contact…" item open it with the conversation phone pre-filled.
+const addContactOpen = ref(false)
+function openAddContact() {
+  addContactOpen.value = true
+}
 function startSaveFromMenu() {
   closeActionMenu()
-  // Best-effort name split from contactName prop.
-  const nm = (props.contactName || '').trim()
-  if (nm) {
-    const i = nm.indexOf(' ')
-    if (i > 0) { saveFirst.value = nm.slice(0, i); saveLast.value = nm.slice(i + 1) }
-    else { saveFirst.value = nm; saveLast.value = '' }
-  } else {
-    saveFirst.value = ''
-    saveLast.value = ''
-  }
-  saveError.value = null
-  saveSuccess.value = false
-  saveOpen.value = true
-}
-async function trySaveContact() {
-  if (!saveFirst.value.trim()) { saveError.value = 'First name required'; return }
-  saveError.value = null
-  saveBusy.value = true
-  try {
-    const res = await fetch('/api/dialpad/contact/save', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        phone: props.externalNumber,
-        first_name: saveFirst.value.trim(),
-        last_name: saveLast.value.trim() || undefined,
-      }),
-    })
-    const data = await res.json().catch(() => ({})) as { error?: string }
-    if (!res.ok) { saveError.value = data.error || 'Failed to save'; return }
-    saveSuccess.value = true
-    saveOpen.value = false
-    showToast('Contact saved to Dialpad')
-  } catch (e) {
-    saveError.value = e instanceof Error ? e.message : String(e)
-  } finally { saveBusy.value = false }
+  openAddContact()
 }
 
 // ─── Header derivations ────────────────────────────────────
@@ -668,6 +635,14 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
                 </p>
               </div>
 
+              <button
+                class="size-9 rounded-full hover:bg-foreground/5 active:bg-foreground/10 transition-colors flex items-center justify-center"
+                aria-label="Save contact"
+                title="Save contact"
+                @click="openAddContact"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+              </button>
               <button
                 class="size-9 rounded-full hover:bg-foreground/5 active:bg-foreground/10 transition-colors flex items-center justify-center"
                 aria-label="Call back"
@@ -1036,40 +1011,6 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
               </p>
             </footer>
 
-            <!-- Inline Save-contact form. Shown over the composer when the
-                 user picks "Save contact" from the long-press menu. -->
-            <div
-              v-if="saveOpen"
-              class="absolute inset-x-0 bottom-0 z-[5] p-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-card/95 backdrop-blur-xl border-t border-foreground/10 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.25)]"
-            >
-              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Save to Dialpad contacts</p>
-              <div class="grid grid-cols-2 gap-2 mb-2">
-                <input
-                  v-model="saveFirst"
-                  type="text"
-                  placeholder="First name"
-                  autocomplete="given-name"
-                  :disabled="saveBusy"
-                  class="h-8 px-2 rounded-md border bg-background text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  @keydown.enter.prevent="trySaveContact"
-                />
-                <input
-                  v-model="saveLast"
-                  type="text"
-                  placeholder="Last name"
-                  autocomplete="family-name"
-                  :disabled="saveBusy"
-                  class="h-8 px-2 rounded-md border bg-background text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  @keydown.enter.prevent="trySaveContact"
-                />
-              </div>
-              <div v-if="saveError" class="text-[11px] text-rose-700 dark:text-rose-300 mb-2">{{ saveError }}</div>
-              <div class="flex justify-end gap-2">
-                <button class="h-7 px-2.5 rounded-md text-[12px] text-muted-foreground hover:bg-foreground/5 cursor-pointer" :disabled="saveBusy" @click="saveOpen = false">Cancel</button>
-                <button class="h-7 px-3 rounded-md text-[12px] font-semibold text-white bg-gradient-to-br from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer" :disabled="saveBusy || !saveFirst.trim()" @click="trySaveContact">{{ saveBusy ? 'Saving…' : 'Save' }}</button>
-              </div>
-            </div>
-
             <!-- Custom reminder picker — shown when the user clicks Custom -->
             <div
               v-if="customPickerOpen"
@@ -1131,5 +1072,13 @@ function tel() { if (props.externalNumber) window.location.href = `tel:${props.e
       <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="scheduleTomorrow">Tomorrow</button>
       <button class="w-full px-3 py-1.5 text-left text-[13px] hover:bg-foreground/5 cursor-pointer" @click="closeActionMenu(); openCustomPicker()">Custom…</button>
     </div>
+
+    <!-- Save contact dialog — header bookmark + action-menu Save both open this -->
+    <AddContactDialog
+      :open="addContactOpen"
+      :prefill-phone="externalNumber"
+      :prefill-name="contactName"
+      @close="addContactOpen = false"
+    />
   </Teleport>
 </template>

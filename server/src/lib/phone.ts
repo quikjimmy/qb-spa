@@ -26,3 +26,16 @@ export function canonicalPhone(input: string | null | undefined): string {
   // Anything else — leave it. Could be int'l or short code.
   return digits
 }
+
+// E.164 with leading '+'. Dialpad's contacts/calls APIs require this exact
+// shape; canonicalPhone() above returns digits-only for join keys.
+export function toE164(input: string | null | undefined): string {
+  if (!input) return ''
+  const raw = String(input).trim().replace(/^tel:/i, '')
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return ''
+  if (raw.startsWith('+')) return '+' + digits
+  if (digits.length === 10) return '+1' + digits
+  if (digits.length === 11 && digits.startsWith('1')) return '+' + digits
+  return '+' + digits
+}

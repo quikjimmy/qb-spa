@@ -5,6 +5,14 @@ import { encryptSecret, decryptSecret, previewSecret } from '../lib/crypto'
 import { loadDialpadConfig, runStatsExport, fetchSmsRecords, DialpadError, type CsvRow } from '../lib/dialpad'
 import { attachSseStream, type DialpadEvent } from '../lib/dialpadEvents'
 import { decorateCommsItems } from '../lib/callerAttribution'
+import { toE164, canonicalPhone } from '../lib/phone'
+
+// Vocabulary the Add Contact dialog offers. Anything else is rejected.
+const CONTACT_KINDS = ['customer', 'employee', 'crew', 'supplier'] as const
+type ContactKind = typeof CONTACT_KINDS[number]
+function isContactKind(v: unknown): v is ContactKind {
+  return typeof v === 'string' && (CONTACT_KINDS as readonly string[]).includes(v)
+}
 
 const router = Router()
 
@@ -3276,38 +3284,100 @@ router.post('/contact/save', async (req: Request, res: Response): Promise<void> 
   if (!req.user) { res.status(401).end(); return }
   const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
     phone?: string; first_name?: string; last_name?: string;
-    type?: string; owner_id?: string | number
+    kind?: string; type?: string; owner_id?: string | number
   }
-  const phone = String(body.phone || '').trim()
+  const rawPhone = String(body.phone || '').trim()
   const firstName = String(body.first_name || '').trim()
-  const lastName = String(body.last_name || '').trim()
-  if (!phone) { res.status(400).json({ error: 'phone required' }); return }
+  const rawLast = String(body.last_name || '').trim()
+  if (!rawPhone) { res.status(400).json({ error: 'phone required' }); return }
   if (!firstName) { res.status(400).json({ error: 'first_name required' }); return }
+
+  // Dialpad requires E.164 ("+15555551212"). Display strings like "(555) 555-1212"
+  // or raw digits get rejected with a 400 from upstream.
+  const phoneE164 = toE164(rawPhone)
+  const phoneKey = canonicalPhone(rawPhone)
+  if (!phoneE164 || phoneKey.length < 10) {
+    res.status(400).json({ error: 'phone must be at least 10 digits' }); return
+  }
+
+  // Last name is optional in our UI. Dialpad requires it though, so we
+  // pass through the user's value or '—' so upstream stops 400'ing.
+  // Locally we keep last_name nullable so the hub renders just the first
+  // name when that's all we have.
+  const lastNameForDialpad = rawLast || '—'
+  const lastNameLocal = rawLast || null
+
+  const kind = isContactKind(body.kind) ? body.kind : null
+
+  // Local-first upsert. Source of truth lives here; Dialpad sync is a
+  // best-effort side effect below. If Dialpad fails we still have the
+  // contact for our own caller attribution.
+  const upsert = db.prepare(`
+    INSERT INTO dialpad_contacts (phone_canonical, phone_e164, first_name, last_name, kind, created_by_user_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(phone_canonical) DO UPDATE SET
+      phone_e164 = excluded.phone_e164,
+      first_name = excluded.first_name,
+      last_name = excluded.last_name,
+      kind = excluded.kind,
+      updated_at = datetime('now')
+    RETURNING id
+  `).get(phoneKey, phoneE164, firstName, lastNameLocal, kind, req.user.userId) as { id: number } | undefined
+
+  const localId = upsert?.id
+
   const cfg = loadDialpadConfig()
-  if (!cfg) { res.status(400).json({ error: 'Dialpad API not configured' }); return }
-  const contactType = body.type === 'local' ? 'local' : 'shared'
+  if (!cfg) {
+    // No Dialpad config: still ship the local row so the name shows in our
+    // hub. Don't error — partial success is the right behavior here.
+    res.json({ ok: true, local_id: localId, dialpad_synced: false, note: 'Saved locally (Dialpad not configured)' })
+    return
+  }
 
   const payload: Record<string, unknown> = {
     first_name: firstName,
-    phones: [phone],
-    type: contactType,
+    last_name: lastNameForDialpad,
+    phones: [phoneE164],
+    type: 'shared',
   }
-  if (lastName) payload['last_name'] = lastName
-  if (contactType === 'local' && body.owner_id) payload['owner_id'] = Number(body.owner_id)
 
   try {
     const r = await dialpadApi(cfg, 'POST', '/contacts', payload)
     if (!r.ok) {
-      res.status(r.status >= 400 ? r.status : 500).json({
-        error: 'Dialpad rejected the contact',
+      const errSummary = r.text.slice(0, 600)
+      console.error('[dialpad/contact/save] upstream rejected', {
+        status: r.status,
+        body: errSummary,
+        phone_sent: phoneE164,
+      })
+      if (localId) {
+        db.prepare(`UPDATE dialpad_contacts SET dialpad_sync_error = ?, dialpad_synced_at = NULL WHERE id = ?`)
+          .run(`HTTP ${r.status}: ${errSummary}`, localId)
+      }
+      // Local row is still good — return 200 with sync state so the UI can
+      // show "Saved (syncing to Dialpad…)" or surface the upstream error.
+      res.json({
+        ok: true,
+        local_id: localId,
+        dialpad_synced: false,
+        dialpad_error: errSummary,
         upstream_status: r.status,
-        upstream_body: r.text.slice(0, 600),
       })
       return
     }
-    res.json({ ok: true, contact: r.data })
+    const dpId = (r.data && typeof r.data === 'object' && 'id' in r.data) ? String((r.data as { id: unknown }).id) : null
+    if (localId) {
+      db.prepare(`UPDATE dialpad_contacts SET dialpad_contact_id = ?, dialpad_synced_at = datetime('now'), dialpad_sync_error = NULL WHERE id = ?`)
+        .run(dpId, localId)
+    }
+    res.json({ ok: true, local_id: localId, dialpad_synced: true, contact: r.data })
   } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+    console.error('[dialpad/contact/save] threw', e)
+    const msg = e instanceof Error ? e.message : String(e)
+    if (localId) {
+      db.prepare(`UPDATE dialpad_contacts SET dialpad_sync_error = ? WHERE id = ?`).run(msg, localId)
+    }
+    res.json({ ok: true, local_id: localId, dialpad_synced: false, dialpad_error: msg })
   }
 })
 

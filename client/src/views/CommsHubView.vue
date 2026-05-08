@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import AddContactDialog from '@/components/AddContactDialog.vue'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import CallActivityFeed from '@/components/CallActivityFeed.vue'
@@ -289,6 +290,11 @@ function toggleActivity(coord: string) {
   activityCoordinator.value = activityCoordinator.value === coord ? '' : coord
 }
 
+// Add Contact dialog — header button opens a blank form. Saves into Dialpad's
+// shared address book (so every coordinator + every Dialpad agent app sees
+// the name on future calls).
+const addContactOpen = ref(false)
+
 // Top-level tab: Inbox (actionable per-user view) or Reporting (KPIs +
 // drill-down). Default to Inbox — that's the "what do I need to do" view
 // most PCs will land on daily. localStorage persists the last choice.
@@ -325,6 +331,22 @@ function setMainTab(t: CommsTab) {
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'personal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'personal'; fCoordinator = ''">Me</button>
           <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'team' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'team'">Team</button>
         </div>
+        <button
+          type="button"
+          class="
+            inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md shrink-0
+            text-xs font-semibold text-white
+            bg-gradient-to-br from-sky-500 to-blue-600
+            hover:from-sky-400 hover:to-blue-500
+            active:scale-[0.98] transition-all
+            shadow-sm shadow-sky-500/20
+          "
+          aria-label="Add contact"
+          @click="addContactOpen = true"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+          <span class="hidden sm:inline">Add contact</span>
+        </button>
         <Button v-if="auth.isAdmin" variant="outline" class="h-8 text-xs px-2.5 shrink-0" :disabled="refreshing" @click="refreshAll">
           {{ refreshing ? 'Syncing…' : 'Sync' }}
         </Button>
@@ -613,6 +635,12 @@ function setMainTab(t: CommsTab) {
       :external-number="reminderThread.number"
       :contact-name="reminderThread.name"
       @close="reminderThread.open = false"
+    />
+
+    <!-- Header "Add contact" button mounts here -->
+    <AddContactDialog
+      :open="addContactOpen"
+      @close="addContactOpen = false"
     />
   </div>
 </template>

@@ -15,7 +15,7 @@ export interface CallerInfo {
   /** Arrivy role / type when matched against arrivy_users. */
   role: string | null
   /** Source of the match — useful for debugging unexpected attributions. */
-  source: 'arrivy' | 'app_user' | null
+  source: 'arrivy' | 'app_user' | 'contact' | null
 }
 
 const FIELD_ROLE_RX = /tech|crew|field|installer|surveyor|driver/i
@@ -23,6 +23,15 @@ const FIELD_ROLE_RX = /tech|crew|field|installer|surveyor|driver/i
 function classifyByRole(role: string | null): CallerKind {
   if (!role) return 'crew'
   return FIELD_ROLE_RX.test(role) ? 'crew' : 'internal'
+}
+
+// Map a saved-contact `kind` onto the existing chip vocabulary so the live
+// rail / inbox don't need a new color for every category.
+function classifyContactKind(kind: string | null): CallerKind {
+  if (kind === 'crew') return 'crew'
+  if (kind === 'employee') return 'internal'
+  // 'customer' and 'supplier' both render as plain external (no chip).
+  return 'external'
 }
 
 /** Bulk-lookup. Pass an array of raw phone strings; returns a Map keyed
@@ -49,6 +58,36 @@ export function lookupCallers(rawPhones: Array<string | null | undefined>): Map<
       role: r.role,
       source: 'arrivy',
     })
+  }
+
+  // Saved contacts (Add Contact dialog) — fill in any phones Arrivy didn't
+  // claim. A user explicitly saved this name, so trust it over the QB
+  // project-cache fallback that read paths consult downstream. Wrapped in
+  // a runtime guard because the table is freshly added and older deploys
+  // may not have run the schema bootstrap yet.
+  const afterArrivy = canonicals.filter(c => !out.has(c))
+  if (afterArrivy.length > 0 && hasContactsTable()) {
+    try {
+      const contactPlaceholders = afterArrivy.map(() => '?').join(',')
+      const contactRows = db.prepare(
+        `SELECT phone_canonical, first_name, last_name, kind
+         FROM dialpad_contacts WHERE phone_canonical IN (${contactPlaceholders})`
+      ).all(...afterArrivy) as Array<{
+        phone_canonical: string; first_name: string; last_name: string | null; kind: string | null
+      }>
+      for (const r of contactRows) {
+        if (!r.phone_canonical) continue
+        const fullName = [r.first_name, r.last_name].filter(p => p && p !== '—').join(' ').trim()
+        out.set(r.phone_canonical, {
+          kind: classifyContactKind(r.kind),
+          name: fullName || r.first_name,
+          role: r.kind,
+          source: 'contact',
+        })
+      }
+    } catch (e) {
+      logContactsFallbackError(e)
+    }
   }
 
   // qb-spa users — fill in any phones Arrivy didn't claim. The users table
@@ -103,6 +142,28 @@ function logUsersFallbackError(e: unknown): void {
   if (_loggedUsersFallbackError) return
   _loggedUsersFallbackError = true
   console.warn('[caller-attribution] users-fallback query failed (suppressing further):',
+    e instanceof Error ? e.message : String(e))
+}
+
+let _contactsTableChecked = false
+let _contactsTableExists = false
+function hasContactsTable(): boolean {
+  if (_contactsTableChecked) return _contactsTableExists
+  _contactsTableChecked = true
+  try {
+    const row = db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialpad_contacts'`
+    ).get()
+    _contactsTableExists = !!row
+  } catch { _contactsTableExists = false }
+  return _contactsTableExists
+}
+
+let _loggedContactsFallbackError = false
+function logContactsFallbackError(e: unknown): void {
+  if (_loggedContactsFallbackError) return
+  _loggedContactsFallbackError = true
+  console.warn('[caller-attribution] contacts-fallback query failed (suppressing further):',
     e instanceof Error ? e.message : String(e))
 }
 
