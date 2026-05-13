@@ -583,6 +583,64 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   })
 })
 
+// GET /api/chat/mcp-probe — one-shot diagnostic for the QuickBase MCP wiring.
+// Reports what the chatbot route sees: env config, tool list, and a small
+// live call against `describe_realm` (truncated). When something's off, this
+// is the fastest way to tell whether the issue is config, networking, or the
+// MCP server itself, without touching the chat flow.
+//
+// Auth-gated like everything under /api/chat — anyone signed into the portal
+// can hit it. Doesn't leak the token; only reports whether one is configured.
+router.get('/mcp-probe', async (_req: Request, res: Response): Promise<void> => {
+  const status = qbMcpStatus()
+  const out: Record<string, unknown> = {
+    status,
+    tools_count: 0,
+    tool_names: [] as string[],
+    sample_call: null as null | { tool: string; ok: boolean; excerpt?: string; error?: string },
+  }
+
+  if (!status.enabled) {
+    out['hint'] = 'QB_MCP_URL is not set on this service. Add it on Railway → qb-spa → Variables and redeploy.'
+    res.json(out)
+    return
+  }
+
+  try {
+    const tools = await getQbTools()
+    out['tools_count'] = tools.length
+    out['tool_names'] = tools.map(t => t.name)
+    if (tools.length === 0) {
+      out['hint'] = 'MCP is configured but listTools() returned empty — usually means the server is unreachable from this container (DNS / port / firewall), the bearer is wrong (401), or the server errored. Check Railway → qb-spa → Logs for "[qb-mcp]" lines.'
+      res.json(out)
+      return
+    }
+
+    // Pick `describe_realm` if present (cheapest discovery call); otherwise the
+    // first tool — just to confirm a real round-trip works end-to-end.
+    const probeTool = tools.find(t => t.name === 'describe_realm') || tools[0]!
+    try {
+      const result = await callQbTool(probeTool.name, {})
+      out['sample_call'] = {
+        tool: probeTool.name,
+        ok: true,
+        excerpt: result.slice(0, 400) + (result.length > 400 ? '…' : ''),
+      }
+    } catch (e) {
+      out['sample_call'] = {
+        tool: probeTool.name,
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      }
+    }
+  } catch (e) {
+    out['error'] = e instanceof Error ? e.message : String(e)
+    out['hint'] = 'Failed to list MCP tools. See message above; check Railway logs for a "[qb-mcp]" warning.'
+  }
+
+  res.json(out)
+})
+
 // GET /api/chat/quota — combined view of the user's monthly cap + per-provider rate-limit snapshots
 router.get('/quota', (req: Request, res: Response): void => {
   const userId = req.user!.userId
