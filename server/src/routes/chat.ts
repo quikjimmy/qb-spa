@@ -3,6 +3,7 @@ import db from '../db'
 import { callUserLlm, type ChatMessage } from '../lib/callUserLlm'
 import { getDefaultKeyFor, type ProviderId } from '../lib/userProviderKeys'
 import { getSnapshot } from '../lib/providerRateLimits'
+import { getQbTools, callQbTool, qbMcpStatus } from '../lib/qbMcp'
 
 const router = Router()
 
@@ -90,22 +91,22 @@ function shapeSpace(s: SpaceRow): Record<string, unknown> {
   }
 }
 
-// System-prompt builder. Anti-hallucination shape:
-//   1. Identify role + tone
-//   2. Enumerate EXACTLY what data is available
-//   3. Enumerate EXACTLY what is NOT available (so the model can't pretend)
-//   4. Provide a required refusal phrase to use when asked beyond scope
-//   5. Inject data block (or "no project attached" note)
+// System-prompt builder. Two modes:
 //
-// This seam is where MCP / tool injection plugs in later — append tool
-// descriptions / resources after the project block when ready.
+// (1) MCP-OFF (no QB tools available) — strict anti-hallucination mode:
+//     enumerate what's loaded, refuse anything else with a fixed phrase.
+//
+// (2) MCP-ON (QB tools available) — the model has read-only QuickBase tools
+//     it can call. The prompt directs it to USE the tools to answer instead
+//     of refusing, and stay grounded in what the tools return. We still
+//     forbid invention; the model must cite the tool/field it queried.
 //
 // Resolution order for project context:
 //   1. thread.space_id → space.project_id (Spaces model)
 //   2. thread.project_id (legacy/general thread with one-off attachment)
 const REFUSAL_PHRASE = `I don't have that information in this conversation. Try opening the project page directly, or ask an admin to wire that data into the chatbot.`
 
-function buildSystemContext(thread: ThreadRow): string {
+function buildSystemContext(thread: ThreadRow, mcpEnabled: boolean): string {
   let projectId: number | null = null
   let extraInstructions: string | null = null
   if (thread.space_id) {
@@ -117,21 +118,40 @@ function buildSystemContext(thread: ThreadRow): string {
   }
   if (!projectId && thread.project_id) projectId = thread.project_id
 
-  // Common preamble — shapes refusal behavior for ALL threads.
+  // Common preamble — branches on whether QB MCP tools are wired in.
   const preamble = [
     `You are a helpful assistant inside the Kin Home ops portal (a solar installation company's internal tool).`,
     ``,
     `# Critical rules`,
     `1. Be concise and direct. No filler phrases like "Great question!".`,
-    `2. ONLY use information explicitly provided in this prompt or in earlier conversation turns. Do NOT use prior knowledge about Kin Home, specific projects, customers, or solar industry specifics unless directly stated here.`,
-    `3. If asked about anything outside the data shown below, respond with EXACTLY this phrase and nothing else: "${REFUSAL_PHRASE}"`,
-    `4. Never fabricate dates, names, statuses, milestones, ticket details, notes, communications, financials, schedules, equipment specs, or any other field not explicitly listed.`,
-    `5. If you are uncertain whether information is in scope, refuse using the phrase above. Confident-sounding guesses are worse than refusals.`,
-    `6. When the available data IS sufficient to answer, cite the field by name (e.g., "According to the project's status field, ...").`,
+    mcpEnabled
+      ? `2. You have read-only QuickBase tools available. When the user asks about projects, notes, tickets, milestones, communications, or any other operational data, USE THE TOOLS to fetch real data rather than guessing or refusing. Start with \`describe_realm\` if you don't know the schema yet; use \`resolve_term\` when the user's wording is ambiguous (e.g. "install complete").`
+      : `2. ONLY use information explicitly provided in this prompt or in earlier conversation turns. Do NOT use prior knowledge about Kin Home, specific projects, customers, or solar industry specifics unless directly stated here.`,
+    mcpEnabled
+      ? `3. If a tool returns no results or errors, say so plainly. Do not invent values to fill gaps. If a question is genuinely outside QuickBase (e.g. private opinions, unrelated topics), say you can only answer from QuickBase data.`
+      : `3. If asked about anything outside the data shown below, respond with EXACTLY this phrase and nothing else: "${REFUSAL_PHRASE}"`,
+    `4. Never fabricate dates, names, statuses, milestones, ticket details, notes, communications, financials, schedules, equipment specs, or any other field. Cite the source (the field name${mcpEnabled ? ' and the tool you called' : ''}) when you answer.`,
+    mcpEnabled
+      ? `5. Quickbase has many near-duplicate field labels. When in doubt about which field the user means, call \`resolve_term\` before querying. Don't eyeball-match labels.`
+      : `5. If you are uncertain whether information is in scope, refuse using the phrase above. Confident-sounding guesses are worse than refusals.`,
+    `6. Be efficient with tool calls. Batch what you can; don't fetch entire tables when a filter or count would do.`,
   ].join('\n')
 
   if (!projectId) {
-    // GENERAL chat — virtually no data available.
+    if (mcpEnabled) {
+      const generalScope = [
+        ``,
+        `# Context`,
+        `No specific project is attached to this thread. The user can attach one via the "+ Add project context" button to scope your questions to a single record — until then, treat questions as realm-wide.`,
+        ``,
+        `Common starting points for general questions:`,
+        `- "How many projects are on hold?" → \`count_records\` on the projects table with a status filter.`,
+        `- "Show me recent intakes" → \`query_records\` on the projects table, ordered by sales date desc.`,
+        `- "What does <term> mean in our realm?" → \`resolve_term\` then describe the canonical field.`,
+      ].join('\n')
+      return preamble + '\n' + generalScope
+    }
+    // MCP-off general chat — virtually no data available.
     const generalScope = [
       ``,
       `# Available data`,
@@ -150,10 +170,10 @@ function buildSystemContext(thread: ThreadRow): string {
 
   const project = getProject(projectId)
   if (!project) {
-    return preamble + `\n\n# Available data\n- A project was attached to this conversation but its data could not be loaded.\n\nResponse: refuse using the phrase above and ask the user to reload the page.`
+    return preamble + `\n\n# Available data\n- A project was attached to this conversation but its data could not be loaded.\n\nResponse: tell the user to reload the page.`
   }
 
-  // PROJECT chat — enumerate exact fields.
+  // PROJECT chat — show what's pre-loaded (no tool call needed for these).
   const fields = [
     `- Customer name: ${project.customer_name ?? '(empty)'}`,
     `- QuickBase record ID: ${project.record_id}`,
@@ -166,25 +186,38 @@ function buildSystemContext(thread: ThreadRow): string {
     `- Lender: ${project.lender ?? '(empty)'}`,
   ]
 
-  const scope = [
-    ``,
-    `# Available data for this project`,
-    ...fields,
-    ``,
-    `# NOT available for this project (refuse if asked)`,
-    `- Notes, comments, or activity log entries`,
-    `- Tickets, issues, or open work items`,
-    `- Communications: SMS messages, calls, emails, voicemails`,
-    `- Milestone dates beyond what's listed above (intake, survey, design, NEM, permit, install, inspection, PTO submission/approval dates are NOT loaded into this conversation)`,
-    `- Equipment details: panel/inverter brand, count, production estimate`,
-    `- Financial details: system price, dealer fees, net cost, M1/M2/M3 funding status`,
-    `- Address or contact info (phone, email)`,
-    `- Crew assignments, install schedule, or calendar events`,
-    `- Inspection results, AHJ, utility company`,
-    `- Any data about other projects, even similar ones`,
-    ``,
-    `When asked about anything in the NOT available list, use the refusal phrase. Do NOT invent values.`,
-  ].join('\n')
+  let scope: string
+  if (mcpEnabled) {
+    scope = [
+      ``,
+      `# Pre-loaded project summary (no tool call needed for these)`,
+      ...fields,
+      ``,
+      `# Everything else about this project`,
+      `Fetch from QuickBase via the tools. The project's record ID is **${project.record_id}** — pass that as the project filter when querying notes, tickets, milestones, communications, equipment, financials, schedule, inspections, etc. on related tables.`,
+      `If you don't know which table or field a concept lives on, call \`resolve_term\` or \`search_fields\` first.`,
+    ].join('\n')
+  } else {
+    scope = [
+      ``,
+      `# Available data for this project`,
+      ...fields,
+      ``,
+      `# NOT available for this project (refuse if asked)`,
+      `- Notes, comments, or activity log entries`,
+      `- Tickets, issues, or open work items`,
+      `- Communications: SMS messages, calls, emails, voicemails`,
+      `- Milestone dates beyond what's listed above (intake, survey, design, NEM, permit, install, inspection, PTO submission/approval dates are NOT loaded into this conversation)`,
+      `- Equipment details: panel/inverter brand, count, production estimate`,
+      `- Financial details: system price, dealer fees, net cost, M1/M2/M3 funding status`,
+      `- Address or contact info (phone, email)`,
+      `- Crew assignments, install schedule, or calendar events`,
+      `- Inspection results, AHJ, utility company`,
+      `- Any data about other projects, even similar ones`,
+      ``,
+      `When asked about anything in the NOT available list, use the refusal phrase. Do NOT invent values.`,
+    ].join('\n')
+  }
 
   let context = preamble + '\n' + scope
   if (extraInstructions) context += '\n\n# Additional instructions for this project workspace\n' + extraInstructions
@@ -220,11 +253,18 @@ function shapeThread(t: ThreadRow): Record<string, unknown> {
 }
 
 function shapeMessage(m: MessageRow): Record<string, unknown> {
+  // Parse tool_calls_json defensively — if it ever ends up malformed we'd
+  // rather drop the field on the wire than 500 the whole thread fetch.
+  let toolCalls: unknown = null
+  if (m.tool_calls_json) {
+    try { toolCalls = JSON.parse(m.tool_calls_json) } catch { toolCalls = null }
+  }
   return {
     id: m.id, role: m.role, content: m.content,
     provider: m.provider, model: m.model,
     tokens_in: m.tokens_in, tokens_out: m.tokens_out, cost_cents: m.cost_cents,
     used_own_key: m.used_own_key === 1,
+    tool_calls: toolCalls,
     error: m.error, created_at: m.created_at,
   }
 }
@@ -411,12 +451,14 @@ router.get('/threads/:id/context-preview', (req: Request, res: Response): void =
   const id = parseInt(String(req.params['id']), 10)
   const thread = db.prepare(`SELECT * FROM chat_threads WHERE id = ? AND user_id = ?`).get(id, userId) as ThreadRow | undefined
   if (!thread) { res.status(404).json({ error: 'Thread not found' }); return }
+  const mcp = qbMcpStatus()
   res.json({
-    system: buildSystemContext(thread),
+    system: buildSystemContext(thread, mcp.enabled),
     space_id: thread.space_id,
     project_id: thread.project_id,
     preferred_provider: thread.preferred_provider,
     preferred_model: thread.preferred_model,
+    mcp,
   })
 })
 
@@ -467,13 +509,19 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   }
 
   // 3. Build the message payload: system context + recent history (already includes the new user msg).
+  // Fetch QB MCP tools up-front; if MCP isn't configured this returns [] and
+  // the call runs as a single-shot completion. Cached for ~5 min inside qbMcp,
+  // so this isn't a per-message round-trip after the first hit.
+  const qbTools = await getQbTools()
+  const mcpEnabled = qbTools.length > 0
+
   const history = db.prepare(
     `SELECT role, content FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT ?`
   ).all(id, MAX_HISTORY) as Array<{ role: string; content: string }>
   history.reverse()
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: buildSystemContext(thread) },
+    { role: 'system', content: buildSystemContext(thread, mcpEnabled) },
     ...history.map(h => ({ role: h.role as ChatMessage['role'], content: h.content })),
   ]
 
@@ -481,6 +529,8 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   // Body params override; otherwise fall back to the thread's stored preference.
   // Low temperature for chatbot — factual answers grounded in injected context
   // rather than creative completion. Drops hallucination rate noticeably on smaller models.
+  // When QB MCP is wired, the model gets read-only QuickBase tools and the call
+  // runs as an agentic loop (up to 5 tool round-trips).
   const llm = await callUserLlm({
     userId,
     feature: 'chatbot',
@@ -489,6 +539,7 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
     model: model || thread.preferred_model || undefined,
     maxOutputTokens: 800,
     temperature: 0.1,
+    ...(mcpEnabled ? { tools: qbTools, executeTool: callQbTool } : {}),
   })
 
   if (!llm.ok) {
@@ -509,11 +560,14 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
     return
   }
 
-  // 5. Persist the assistant reply with cost metadata.
+  // 5. Persist the assistant reply with cost metadata + any tool calls the model
+  //    made (for transparency / debugging — the context-preview endpoint and
+  //    future per-message UI can render these inline).
+  const toolCallsJson = llm.tool_calls.length ? JSON.stringify(llm.tool_calls) : null
   const assistantInsert = db.prepare(
-    `INSERT INTO chat_messages (thread_id, role, content, provider, model, tokens_in, tokens_out, cost_cents, used_own_key)
-     VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, llm.output, llm.provider, llm.model, llm.tokens_in, llm.tokens_out, llm.cost_cents, llm.used_own_key ? 1 : 0)
+    `INSERT INTO chat_messages (thread_id, role, content, provider, model, tokens_in, tokens_out, cost_cents, used_own_key, tool_calls_json)
+     VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, llm.output, llm.provider, llm.model, llm.tokens_in, llm.tokens_out, llm.cost_cents, llm.used_own_key ? 1 : 0, toolCallsJson)
   const assistantId = Number(assistantInsert.lastInsertRowid)
   db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
 
