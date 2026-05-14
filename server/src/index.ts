@@ -37,7 +37,7 @@ import { dialpadRouter } from './routes/dialpad'
 import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
 import { arrivyWebhookRouter, arrivyWebhookAdminRouter } from './routes/arrivy-webhooks'
 import { fieldRouter } from './routes/field'
-import { authenticate, requireRole } from './middleware/auth'
+import { authenticate, requireRole, requireViewPermission } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
 import { startUnreadSmsNotifier } from './lib/unreadSmsNotifier'
@@ -46,6 +46,7 @@ import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 import { reportsRouter } from './routes/reports'
+import { fundingRouter } from './routes/funding'
 import { qbWebhookRouter } from './routes/qb-webhooks'
 
 const app = express()
@@ -119,6 +120,7 @@ app.use('/api/admin/qb-sync', authenticate, requireRole('admin'), qbSyncRouter)
 app.use('/api/admin/feed', authenticate, requireRole('admin'), feedIngestRouter)
 // Booked & Boarded executive report. Sensitive financials → admin only.
 app.use('/api/reports', authenticate, requireRole('admin'), reportsRouter)
+app.use('/api/funding', authenticate, requireViewPermission('funding'), fundingRouter)
 
 if (isProd) {
   const clientDist = process.env['CLIENT_DIST']

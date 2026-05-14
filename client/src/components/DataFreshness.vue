@@ -36,6 +36,11 @@ const props = withDefaults(defineProps<Props>(), {
   compact: false,
 })
 
+// Fires after a manual refresh completes so parent views can refetch
+// their data (the tier pull is awaited server-side, so by the time we
+// emit, the cache has the new rows).
+const emit = defineEmits<{ (e: 'refreshed'): void }>()
+
 interface TierRun {
   tier: string
   last_started_at: string | null
@@ -82,6 +87,7 @@ async function refreshNow() {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     await load()
+    emit('refreshed')
   } finally {
     refreshing.value = false
   }

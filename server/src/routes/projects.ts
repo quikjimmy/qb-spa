@@ -418,6 +418,12 @@ interface TierInputs {
   qb_modified_at: string | null
   permit_rejected?: string | null
   nem_rejected?: string | null
+  // Funding pulse — bumps to hot when M1 is in flight but M2 hasn't
+  // landed yet, since the Booked & Boarded and M1 · Not M2 reports rely
+  // on these fields being fresh.
+  m1_requested_date?: string | null
+  m2_deposit_date?: string | null
+  m2_net_received?: number | string | null
 }
 
 // Date math anchored to Kin HQ's local calendar (America/Denver). The server
@@ -453,11 +459,16 @@ export function classifyTier(p: TierInputs): RefreshTier {
   const isActive = status === 'active'
   const hasReject = /reject/.test(status) || isSet(p.permit_rejected) || isSet(p.nem_rejected)
 
-  // Hot: imminent install, post-install QA gate, fresh rejects
+  // Hot: imminent install, post-install QA gate, fresh rejects, or
+  // funding-in-flight (M1 requested but M2 not yet received). The
+  // funding pulse keeps the B&B + M1·Not·M2 reports from showing stale
+  // false-negatives.
   const installSoon = isSet(p.install_scheduled) && p.install_scheduled! >= todayIso() && p.install_scheduled! <= daysFromNow(14) && !isSet(p.install_completed)
   const postInstallGate = isSet(p.install_completed) && !isSet(p.inspection_passed)
   const inspectionPassedGate = isSet(p.inspection_passed) && !isSet(p.pto_approved)
-  if (hasReject || installSoon || postInstallGate || inspectionPassedGate) return 'hot'
+  const m2Net = typeof p.m2_net_received === 'number' ? p.m2_net_received : Number(p.m2_net_received ?? 0)
+  const fundingPulse = isSet(p.m1_requested_date) && (!isSet(p.m2_deposit_date) || !Number.isFinite(m2Net) || m2Net <= 0)
+  if (hasReject || installSoon || postInstallGate || inspectionPassedGate || fundingPulse) return 'hot'
 
   // Cool override: PTO approved is in-service — Active but barely changes
   if (isActive && isSet(p.pto_approved)) return 'cool'
@@ -494,6 +505,9 @@ function tierInputsFromCacheRow(row: Record<string, unknown>): TierInputs {
     qb_modified_at: textOrNull(row['qb_modified_at']),
     permit_rejected: textOrNull(row['permit_rejected']),
     nem_rejected: textOrNull(row['nem_rejected']),
+    m1_requested_date: textOrNull(row['m1_requested_date']),
+    m2_deposit_date: textOrNull(row['m2_deposit_date']),
+    m2_net_received: typeof row['m2_net_received'] === 'number' ? row['m2_net_received'] : textOrNull(row['m2_net_received']),
   }
 }
 
@@ -502,7 +516,8 @@ function backfillMissingRefreshTiers(): void {
     const rows = db.prepare(`
       SELECT record_id, status, install_scheduled, install_completed,
              inspection_passed, pto_approved, qb_modified_at,
-             permit_rejected, nem_rejected
+             permit_rejected, nem_rejected,
+             m1_requested_date, m2_deposit_date, m2_net_received
       FROM project_cache
       WHERE refresh_tier IS NULL
          OR refresh_tier = ''
@@ -523,6 +538,25 @@ function backfillMissingRefreshTiers(): void {
 }
 
 backfillMissingRefreshTiers()
+
+// One-shot reclass after adding the fundingPulse rule to classifyTier:
+// any project with M1 requested + M2 not yet received gets its tier
+// cleared so the backfill helper above reassigns it (most will land in
+// 'hot', a small number — cancelled / completed — will stay cool/cold).
+try {
+  const result = db.prepare(`
+    UPDATE project_cache SET refresh_tier = NULL
+     WHERE m1_requested_date IS NOT NULL AND m1_requested_date != '' AND m1_requested_date != '0'
+       AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)
+       AND refresh_tier != 'hot'
+  `).run()
+  if (result.changes > 0) {
+    console.log(`[project-cache] funding-pulse reclass: cleared ${result.changes} rows for tier reassignment`)
+    backfillMissingRefreshTiers()
+  }
+} catch (e) {
+  console.error('[project-cache] funding-pulse reclass failed:', e instanceof Error ? e.message : e)
+}
 
 const TIER_CADENCE: Record<RefreshTier, string> = {
   hot: '*/5 * * * *',     // every 5 min
@@ -569,6 +603,9 @@ export async function fetchOneLive(recordId: number): Promise<Record<string, unk
     qb_modified_at: val(rec, 2) || null,
     permit_rejected: val(rec, 706) || null,
     nem_rejected: val(rec, 1878) || null,
+    m1_requested_date: val(rec, 2038) || null,
+    m2_deposit_date: val(rec, 1914) || null,
+    m2_net_received: val(rec, 1889) || null,
   })
   db.prepare(`
     INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
@@ -787,6 +824,9 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
         qb_modified_at: val(record, 2) || null,
         permit_rejected: val(record, 706) || null,
         nem_rejected: val(record, 1878) || null,
+        m1_requested_date: val(record, 2038) || null,
+        m2_deposit_date: val(record, 1914) || null,
+        m2_net_received: val(record, 1889) || null,
       })
       upsert.run(...mapRecordToValues(record), tier)
     }

@@ -69,6 +69,26 @@ export function requireRole(...roles: string[]) {
   }
 }
 
+// Middleware: allow admins, OR any user with permissions(view, viewId, read).
+// Anything else gets a 403. Used by sections (Funding, etc.) that need
+// to be visible beyond the admin role without becoming public.
+export function requireViewPermission(viewId: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) { res.status(401).json({ error: 'Not authenticated' }); return }
+    if (req.user.roles.includes('admin')) { next(); return }
+    const row = db.prepare(`
+      SELECT MAX(p.can_read) AS allowed
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ?
+        AND p.resource_type = 'view'
+        AND p.resource_id = ?
+    `).get(req.user.userId, viewId) as { allowed: number | null } | undefined
+    if (row?.allowed === 1) { next(); return }
+    res.status(403).json({ error: 'Insufficient permissions' })
+  }
+}
+
 // --- Permission checking utilities ---
 
 interface PermissionRow {
