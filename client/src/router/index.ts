@@ -188,6 +188,18 @@ const router = createRouter({
           meta: { requiresAdmin: true },
         },
         {
+          path: 'funding',
+          name: 'funding',
+          component: () => import('../views/FundingDashboardView.vue'),
+          meta: { requiresView: 'funding' },
+        },
+        {
+          path: 'funding/m1-not-m2',
+          name: 'funding-m1-not-m2',
+          component: () => import('../views/M1NotM2View.vue'),
+          meta: { requiresView: 'funding' },
+        },
+        {
           path: 'chat',
           name: 'chat',
           component: () => import('../views/ChatView.vue'),
@@ -256,6 +268,12 @@ router.beforeEach(async (to) => {
   // out of the bundle path for non-admins so they don't see "report
   // failed to load" flashes.
   if (to.meta['requiresAdmin'] && !auth.isAdmin) {
+    return { name: 'home' }
+  }
+  // requiresView: '<viewId>' — admins always pass; otherwise the user
+  // needs read access for that view (matches server's requireViewPermission).
+  const requiresView = to.meta['requiresView']
+  if (typeof requiresView === 'string' && !auth.hasViewPermission(requiresView)) {
     return { name: 'home' }
   }
 })
