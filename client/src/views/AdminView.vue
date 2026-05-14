@@ -1481,8 +1481,8 @@ onMounted(async () => {
                       : 'bg-muted/30 ring-foreground/5 hover:bg-muted/50'"
                   >
                     <Checkbox
-                      :checked="inviteRoles.has(role.name)"
-                      @update:checked="toggleInviteRole(role.name)"
+                      :model-value="inviteRoles.has(role.name)"
+                      @update:model-value="toggleInviteRole(role.name)"
                       class="mt-0.5"
                     />
                     <div class="grid gap-0.5">
@@ -1829,11 +1829,11 @@ onMounted(async () => {
 
               <div class="flex items-center gap-6">
                 <label class="flex items-center gap-2 cursor-pointer">
-                  <Checkbox :checked="permCanRead" @update:checked="(v: boolean) => permCanRead = v" />
+                  <Checkbox :model-value="permCanRead" @update:model-value="(v: boolean | 'indeterminate') => permCanRead = v === true" />
                   <span class="text-sm">Can read</span>
                 </label>
                 <label class="flex items-center gap-2 cursor-pointer">
-                  <Checkbox :checked="permCanWrite" @update:checked="(v: boolean) => permCanWrite = v" />
+                  <Checkbox :model-value="permCanWrite" @update:model-value="(v: boolean | 'indeterminate') => permCanWrite = v === true" />
                   <span class="text-sm">Can write</span>
                 </label>
                 <Button class="ml-auto" @click="addPermission" :disabled="!permRoleId || !permResourceId.trim()">

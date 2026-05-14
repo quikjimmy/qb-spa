@@ -392,10 +392,15 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_spaces_user_project ON chat_
 db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_spaces_recent ON chat_spaces(user_id, last_used_at DESC)`)
 
 // Bind chat_threads to a space. Nullable: NULL = general (project-less) thread.
+// Also bind to a stable OpenClaw / Ari session key — when set, project-attached
+// threads dispatch to Ari on the VPS (see docs/ari-chat-routing.md) and the
+// session key is what Claude Code uses via --session-id to keep memory across
+// turns. Nullable so legacy threads continue to run through the local LLM path.
 {
   const cols = db.prepare(`PRAGMA table_info(chat_threads)`).all() as Array<{ name: string }>
   const names = new Set(cols.map(c => c.name))
   if (!names.has('space_id')) db.exec(`ALTER TABLE chat_threads ADD COLUMN space_id INTEGER REFERENCES chat_spaces(id) ON DELETE SET NULL`)
+  if (!names.has('openclaw_session_key')) db.exec(`ALTER TABLE chat_threads ADD COLUMN openclaw_session_key TEXT`)
 }
 db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_threads_space ON chat_threads(space_id, last_message_at DESC)`)
 

@@ -51,6 +51,8 @@ interface AuditRow {
   state: string; status: string; closer: string; lender: string
   salesDate: string; installCompleted: string; m2Date: string; m3Date: string
   dcaDate: string; dcaStatus: string
+  m1RequestedDate: string; m2RequestedDate: string
+  m2RejectedDate: string; m2ApprovedDate: string; m2NetReceived: number
   systemPrice: number; systemSizeKw: number; cancelDate: string
 }
 interface SLA {
@@ -73,7 +75,7 @@ interface Report {
   }
   aging: Record<GapKey, AgingGap>
   cycleTime: { transitions: CycleTransition[] }
-  macd: { subject: string; points: MacdPoint[] }
+  macd: { subject: string; points: MacdPoint[]; high52w: { date: string; count: number } | null }
   audit: Record<GapKey, AuditRow[]>
   filterOptions: { states: string[]; closers: string[]; lenders: string[] }
   appliedFilters: { state?: string; closer?: string; lender?: string }
@@ -368,8 +370,16 @@ const TIMEFRAMES: Array<{ key: Timeframe; label: string }> = [
 const macdOption = computed(() => {
   if (!data.value) return {}
   const points = data.value.macd.points
+  const high52w = data.value.macd.high52w
   const dates = points.map(p => p.date)
-  const counts = points.map(p => p.count)
+  // Highlight the daily bar that matches the 52w high date (when it falls
+  // inside the visible window) by passing structured data instead of plain
+  // numbers — ECharts honors per-point itemStyle on bar series.
+  const highlightDate = high52w?.date
+  const counts = points.map(p => p.date === highlightDate
+    ? { value: p.count, itemStyle: { color: 'rgba(16,185,129,0.95)' } }
+    : p.count
+  )
   const ma30 = points.map(p => p.ma30)
   const ma60 = points.map(p => p.ma60)
   const macd = points.map(p => p.macd)
@@ -386,7 +396,11 @@ const macdOption = computed(() => {
     // conditionally green/red — a single legend swatch would mismatch
     // the bar colors and confuse the reader. Bars are still labeled
     // via tooltip on hover.
-    legend: { top: 4, right: 16, textStyle: { fontSize: 10 }, data: ['Daily', '30d MA', '60d MA', 'MACD', 'Signal'] },
+    // Legend swatches are forced to flat rects (no series point/circle).
+    // Each line series sets a top-level `color` so the swatch matches the
+    // actual line color — relying on `lineStyle.color` alone leaves the
+    // legend on ECharts' default palette and they diverge.
+    legend: { top: 4, right: 16, textStyle: { fontSize: 10 }, icon: 'rect', itemWidth: 14, itemHeight: 8, data: ['Daily', '30d MA', '60d MA', 'MACD', 'Signal'] },
     xAxis: [
       { type: 'category', data: dates, gridIndex: 0, axisLabel: { fontSize: 9, hideOverlap: true } },
       { type: 'category', data: dates, gridIndex: 1, axisLabel: { fontSize: 9, hideOverlap: true } },
@@ -397,15 +411,15 @@ const macdOption = computed(() => {
     ],
     series: [
       // Top panel — daily volume + 30d/60d moving averages.
-      { name: 'Daily', type: 'bar', data: counts, itemStyle: { color: 'rgba(100,116,139,0.45)' } },
-      { name: '30d MA', type: 'line', data: ma30, smooth: true, symbol: 'none', lineStyle: { color: '#3b82f6', width: 2.5 } },
-      { name: '60d MA', type: 'line', data: ma60, smooth: true, symbol: 'none', lineStyle: { color: '#f59e0b', width: 2.5 } },
+      { name: 'Daily', type: 'bar', data: counts, color: 'rgba(100,116,139,0.45)', itemStyle: { color: 'rgba(100,116,139,0.45)' } },
+      { name: '30d MA', type: 'line', data: ma30, smooth: true, symbol: 'none', color: '#3b82f6', lineStyle: { color: '#3b82f6', width: 2.5 } },
+      { name: '60d MA', type: 'line', data: ma60, smooth: true, symbol: 'none', color: '#f59e0b', lineStyle: { color: '#f59e0b', width: 2.5 } },
       // Bottom panel — MACD spread (purple, distinct from 30d MA blue),
       // signal line (red), histogram (conditional green/red).
       { name: 'MACD', type: 'line', data: macd, smooth: true, symbol: 'none',
-        xAxisIndex: 1, yAxisIndex: 1, lineStyle: { color: '#8b5cf6', width: 2 } },
+        xAxisIndex: 1, yAxisIndex: 1, color: '#8b5cf6', lineStyle: { color: '#8b5cf6', width: 2 } },
       { name: 'Signal', type: 'line', data: signal, smooth: true, symbol: 'none',
-        xAxisIndex: 1, yAxisIndex: 1, lineStyle: { color: '#ef4444', width: 2 } },
+        xAxisIndex: 1, yAxisIndex: 1, color: '#ef4444', lineStyle: { color: '#ef4444', width: 2 } },
       { name: 'Histogram', type: 'bar', data: histogram, xAxisIndex: 1, yAxisIndex: 1, itemStyle: {
         color: ({ data: v }: { data: number }) => v >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(239,68,68,0.7)',
       } },
@@ -516,6 +530,130 @@ function auditSummary(key: GapKey): Metric {
 // Tiny "(date)" label for an empty-string date — keeps the audit table
 // from showing blank cells while still being clear it's missing data.
 function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
+
+// "2025-07-26" → "Jul 26, 2025"
+function fmtPrettyDate(s: string): string {
+  if (!s) return '—'
+  const d = new Date(s.slice(0, 10) + 'T00:00:00')
+  if (!Number.isFinite(d.getTime())) return s
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// M2 cell: pick the most-advanced milestone date and a color that maps
+// to the current funding state. Priority: received > rejected > approved
+// > submitted. "Received" means a deposit date AND positive net (a
+// clawback shows as the deposit date but stays red-leaning via rejected).
+function m2Cell(r: AuditRow): { text: string; tone: string } {
+  const received = !!r.m2Date && r.m2NetReceived > 0
+  if (received) return { text: r.m2Date.slice(0, 10), tone: 'text-emerald-600' }
+  if (r.m2RejectedDate) return { text: `R ${r.m2RejectedDate.slice(0, 10)}`, tone: 'text-red-600' }
+  if (r.m2ApprovedDate) return { text: `A ${r.m2ApprovedDate.slice(0, 10)}`, tone: 'text-amber-600' }
+  if (r.m2RequestedDate) return { text: `S ${r.m2RequestedDate.slice(0, 10)}`, tone: 'text-blue-600' }
+  return { text: '—', tone: 'text-muted-foreground' }
+}
+
+function daysSinceNum(s: string): number | null {
+  if (!s) return null
+  const then = new Date(s.slice(0, 10) + 'T00:00:00').getTime()
+  if (!Number.isFinite(then)) return null
+  const now = new Date(localTodayIso() + 'T00:00:00').getTime()
+  const d = Math.floor((now - then) / 86400000)
+  return d >= 0 ? d : null
+}
+
+function daysSince(s: string): string {
+  const d = daysSinceNum(s)
+  return d === null ? '—' : `${d}d`
+}
+
+// Click-to-sort for the Installed · Not M2 audit only. Other dropdowns
+// keep their server-side default (kept simple per the ask).
+type AuditSortCol =
+  | 'recordId' | 'customerName' | 'state' | 'status' | 'closer' | 'lender'
+  | 'salesDate' | 'installCompleted' | 'm2' | 'm1d' | 'm2d' | 'systemPrice' | 'systemSizeKw'
+type SortDir = 'asc' | 'desc'
+// null = back to server default (install_completed asc — the unsorted view).
+// Numeric / days columns first-click descending (largest first); date/text
+// first-click ascending. Three clicks on the same header cycles back to null.
+const installedNotM2Sort = ref<{ col: AuditSortCol; dir: SortDir } | null>(null)
+const NUMERIC_DEFAULT_DESC: AuditSortCol[] = ['recordId', 'systemPrice', 'systemSizeKw', 'm1d', 'm2d']
+
+function toggleInm2Sort(col: AuditSortCol) {
+  const cur = installedNotM2Sort.value
+  const firstDir: SortDir = NUMERIC_DEFAULT_DESC.includes(col) ? 'desc' : 'asc'
+  if (!cur || cur.col !== col) {
+    installedNotM2Sort.value = { col, dir: firstDir }
+    return
+  }
+  if (cur.dir === firstDir) {
+    installedNotM2Sort.value = { col, dir: firstDir === 'asc' ? 'desc' : 'asc' }
+    return
+  }
+  installedNotM2Sort.value = null
+}
+
+function inm2SortArrow(col: AuditSortCol): string {
+  const cur = installedNotM2Sort.value
+  if (!cur || cur.col !== col) return ''
+  return cur.dir === 'asc' ? ' ↑' : ' ↓'
+}
+
+function inm2SortKey(r: AuditRow, col: AuditSortCol): string | number | null {
+  switch (col) {
+    case 'recordId':         return r.recordId
+    case 'customerName':     return (r.customerName || '').toLowerCase()
+    case 'state':            return (r.state || '').toLowerCase()
+    case 'status':           return (r.status || '').toLowerCase()
+    case 'closer':           return (r.closer || '').toLowerCase()
+    case 'lender':           return (r.lender || '').toLowerCase()
+    case 'salesDate':        return r.salesDate || ''
+    case 'installCompleted': return r.installCompleted || ''
+    case 'systemPrice':      return r.systemPrice
+    case 'systemSizeKw':     return r.systemSizeKw
+    case 'm1d':              return daysSinceNum(r.m1RequestedDate)
+    case 'm2d':              return daysSinceNum(r.m2RequestedDate)
+    case 'm2': {
+      // Composite key: status priority (4=received, 3=rejected, 2=approved,
+      // 1=submitted, 0=none) then the effective date, so rows cluster by
+      // funding state and tie-break by date.
+      const received = !!r.m2Date && r.m2NetReceived > 0
+      if (received)           return `4_${r.m2Date}`
+      if (r.m2RejectedDate)   return `3_${r.m2RejectedDate}`
+      if (r.m2ApprovedDate)   return `2_${r.m2ApprovedDate}`
+      if (r.m2RequestedDate)  return `1_${r.m2RequestedDate}`
+      return `0_`
+    }
+  }
+}
+
+// Stale-M1 highlight: installed projects with no M2 yet submitted and an
+// M1 request that's been sitting > 5 days. These are the rows the team
+// should be unblocking first.
+function isInm2Urgent(r: AuditRow): boolean {
+  if (r.m2RequestedDate) return false
+  const m1Age = daysSinceNum(r.m1RequestedDate)
+  return m1Age !== null && m1Age > 5
+}
+
+function sortedAuditRows(key: GapKey): AuditRow[] {
+  const rows = data.value?.audit[key] || []
+  if (key !== 'installedNotM2' || !installedNotM2Sort.value) return rows
+  const { col, dir } = installedNotM2Sort.value
+  const sign = dir === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const av = inm2SortKey(a, col)
+    const bv = inm2SortKey(b, col)
+    // null / empty always sort last regardless of direction so blank
+    // rows don't dominate the top of an asc sort.
+    const aEmpty = av === null || av === '' || av === undefined
+    const bEmpty = bv === null || bv === '' || bv === undefined
+    if (aEmpty && bEmpty) return 0
+    if (aEmpty) return 1
+    if (bEmpty) return -1
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sign
+    return String(av).localeCompare(String(bv)) * sign
+  })
+}
 </script>
 
 <template>
@@ -524,7 +662,7 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div class="flex flex-col gap-0.5 min-w-0">
         <h1 class="text-2xl font-semibold tracking-tight">Booked &amp; Boarded</h1>
-        <DataFreshness resource="projects" label="Data" />
+        <DataFreshness resource="projects" label="Data" @refreshed="load" />
       </div>
       <div class="flex items-center gap-2">
         <Input
@@ -1008,7 +1146,11 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
            it's a deeper analytical view, not a daily-glance number. ═══ -->
       <section class="space-y-2 hidden md:block">
         <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Sales Momentum · 180d</h2>
-        <div class="rounded-xl bg-card p-3">
+        <div class="rounded-xl bg-card p-3 relative">
+          <div v-if="data.macd.high52w" class="absolute top-2 left-4 text-[11px] text-muted-foreground z-10 pointer-events-none">
+            <span class="font-semibold text-emerald-700">52w high</span>
+            <span class="tabular-nums"> · {{ data.macd.high52w.count }} on {{ fmtPrettyDate(data.macd.high52w.date) }}</span>
+          </div>
           <VChart :option="macdOption" style="height:340px" autoresize />
           <p class="text-[9px] text-muted-foreground mt-1">
             Upper: daily Booked count + 30/60d moving averages. Lower: MACD spread (30d−60d) with 9d EMA signal and momentum histogram (green = positive momentum, red = negative).
@@ -1048,24 +1190,24 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
               <table class="w-full text-[10px] min-w-[840px]" style="table-layout:auto">
                 <thead class="sticky top-0">
                   <tr class="text-muted-foreground bg-muted">
-                    <th class="text-left font-semibold p-1.5">RID</th>
-                    <th class="text-left font-semibold p-1.5">Customer</th>
-                    <th class="text-left font-semibold p-1.5">State</th>
-                    <th class="text-left font-semibold p-1.5">Status</th>
-                    <th class="text-left font-semibold p-1.5">Closer</th>
-                    <th class="text-left font-semibold p-1.5">Lender</th>
-                    <th class="text-left font-semibold p-1.5">Sale</th>
-                    <th class="text-left font-semibold p-1.5">Inst</th>
-                    <th class="text-left font-semibold p-1.5">M2</th>
-                    <th class="text-left font-semibold p-1.5">M3</th>
-                    <th class="text-left font-semibold p-1.5">DCA</th>
-                    <th class="text-right font-semibold p-1.5">$</th>
-                    <th class="text-right font-semibold p-1.5">kW</th>
+                    <th v-if="key !== 'installedNotM2'" class="text-left font-semibold p-1.5">RID</th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('customerName')">Customer<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('customerName') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('state')">State<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('state') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('status')">Status<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('status') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('closer')">Closer<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('closer') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('lender')">Lender<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('lender') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('salesDate')">Sale<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('salesDate') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('installCompleted')">Inst<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('installCompleted') }}</span></th>
+                    <th class="text-left font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('m2')">M2<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('m2') }}</span></th>
+                    <th class="text-right font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" title="Days since M1 requested" @click="key === 'installedNotM2' && toggleInm2Sort('m1d')">M1d<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('m1d') }}</span></th>
+                    <th class="text-right font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" title="Days since M2 requested" @click="key === 'installedNotM2' && toggleInm2Sort('m2d')">M2d<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('m2d') }}</span></th>
+                    <th class="text-right font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('systemPrice')">$<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('systemPrice') }}</span></th>
+                    <th class="text-right font-semibold p-1.5" :class="key === 'installedNotM2' ? 'cursor-pointer select-none hover:text-foreground' : ''" @click="key === 'installedNotM2' && toggleInm2Sort('systemSizeKw')">kW<span v-if="key === 'installedNotM2'">{{ inm2SortArrow('systemSizeKw') }}</span></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in data.audit[key]" :key="`${key}-${r.recordId}`" class="border-t border-border/30 hover:bg-muted/30 cursor-pointer" @click="openProject(r.recordId, $event)" @auxclick.prevent="openProject(r.recordId, $event)">
-                    <td class="p-1.5 font-mono text-muted-foreground">{{ r.recordId }}</td>
+                  <tr v-for="r in sortedAuditRows(key)" :key="`${key}-${r.recordId}`" class="border-t border-border/30 cursor-pointer" :class="key === 'installedNotM2' && isInm2Urgent(r) ? 'bg-red-50/60 hover:bg-red-100/60 dark:bg-red-950/30 dark:hover:bg-red-950/50' : 'hover:bg-muted/30'" @click="openProject(r.recordId, $event)" @auxclick.prevent="openProject(r.recordId, $event)">
+                    <td v-if="key !== 'installedNotM2'" class="p-1.5 font-mono text-muted-foreground">{{ r.recordId }}</td>
                     <td class="p-1.5 font-medium truncate max-w-[160px]">{{ r.customerName || '—' }}</td>
                     <td class="p-1.5 truncate max-w-[80px]">{{ r.state || '—' }}</td>
                     <td class="p-1.5 truncate max-w-[100px]">{{ r.status || '—' }}</td>
@@ -1073,11 +1215,9 @@ function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
                     <td class="p-1.5 truncate max-w-[80px]">{{ r.lender || '—' }}</td>
                     <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.salesDate) }}</td>
                     <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.installCompleted) }}</td>
-                    <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.m2Date) }}</td>
-                    <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.m3Date) }}</td>
-                    <td class="p-1.5 max-w-[120px] truncate text-muted-foreground" :title="r.dcaStatus || fmtAuditDate(r.dcaDate)">
-                      {{ r.dcaStatus || fmtAuditDate(r.dcaDate) }}
-                    </td>
+                    <td class="p-1.5 font-mono font-semibold" :class="m2Cell(r).tone">{{ m2Cell(r).text }}</td>
+                    <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m1RequestedDate) }}</td>
+                    <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m2RequestedDate) }}</td>
                     <td class="p-1.5 text-right font-mono tabular-nums">{{ fmtMoney(r.systemPrice) }}</td>
                     <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
                   </tr>
