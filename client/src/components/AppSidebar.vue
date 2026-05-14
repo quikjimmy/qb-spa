@@ -90,6 +90,17 @@ const adminItems = [
   { label: 'Booked & Boarded', to: '/reports/booked-and-boarded', icon: 'chart' },
 ]
 
+// Funding department — collapsible nav item with a landing dashboard
+// and the M1·Not·M2 audit underneath. Visible to admins and anyone
+// granted `view='funding'` read permission; server gates the API the
+// same way so this is just a UX nicety.
+const fundingSubItems = [
+  { label: 'Dashboard',   to: '/funding' },
+  { label: 'M1 · Not M2', to: '/funding/m1-not-m2' },
+]
+const showFunding = computed(() => auth.hasViewPermission('funding'))
+const fundingOpen = computed(() => route.path.startsWith('/funding'))
+
 function isActive(path: string) {
   if (path === '/') return route.path === '/'
   return route.path.startsWith(path)
@@ -143,6 +154,28 @@ function isActive(path: string) {
                 <CollapsibleContent>
                   <SidebarMenuSub>
                     <SidebarMenuSubItem v-for="sub in projectSubItems" :key="sub.to">
+                      <SidebarMenuSubButton as-child :is-active="route.path === sub.to">
+                        <RouterLink :to="sub.to">{{ sub.label }}</RouterLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                  </SidebarMenuSub>
+                </CollapsibleContent>
+              </SidebarMenuItem>
+            </Collapsible>
+
+            <!-- Funding (collapsible department, dollar-sign icon) -->
+            <Collapsible v-if="showFunding" as-child :default-open="fundingOpen">
+              <SidebarMenuItem>
+                <CollapsibleTrigger as-child>
+                  <SidebarMenuButton :is-active="fundingOpen">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    <span class="flex-1">Funding</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform duration-200" :class="fundingOpen ? 'rotate-90' : ''"><path d="m9 18 6-6-6-6"/></svg>
+                  </SidebarMenuButton>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <SidebarMenuSub>
+                    <SidebarMenuSubItem v-for="sub in fundingSubItems" :key="sub.to">
                       <SidebarMenuSubButton as-child :is-active="route.path === sub.to">
                         <RouterLink :to="sub.to">{{ sub.label }}</RouterLink>
                       </SidebarMenuSubButton>

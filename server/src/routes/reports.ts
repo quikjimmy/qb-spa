@@ -921,10 +921,14 @@ function buildCycleTime(asOf: Date, f: Filters): { transitions: CycleTransition[
 // funding moment with its own dollars hitting the books.
 
 interface MacdPoint { date: string; count: number; ma30: number; ma60: number; macd: number; signal: number; histogram: number }
+interface MacdSeries { points: MacdPoint[]; high52w: { date: string; count: number } | null }
 
-function buildMacd(subject: string, asOf: Date, f: Filters): MacdPoint[] {
-  const days = 180
-  const start = shiftDays(asOf, -days + 1)
+function buildMacd(subject: string, asOf: Date, f: Filters): MacdSeries {
+  const days = 180         // visible window
+  const lookback = 60      // pre-padding so 60d SMA + 9d EMA(MACD) are warm at the start of the visible window
+  const highWindow = 364   // 52-week high lookback
+  const queryDays = Math.max(days + lookback, highWindow)
+  const start = shiftDays(asOf, -queryDays + 1)
   const startStr = fmtDate(start)
   const endStr = fmtDate(asOf)
   const base = applyFilters('WHERE 1=1', [], f)
@@ -953,14 +957,25 @@ function buildMacd(subject: string, asOf: Date, f: Filters): MacdPoint[] {
   for (const _ of cols) params.push(...base.params, startStr, endStr)
   const rows = db.prepare(sql).all(...params) as Array<{ d: string; c: number }>
 
-  // Dense fill — make sure every day in the window has a row, even if 0.
+  // Dense fill — make sure every day in the query window has a row, even if 0.
   const map = new Map<string, number>()
   for (const r of rows) map.set(r.d, r.c)
-  const dense: Array<{ date: string; count: number }> = []
-  for (let i = 0; i < days; i++) {
+  const denseAll: Array<{ date: string; count: number }> = []
+  for (let i = 0; i < queryDays; i++) {
     const d = fmtDate(shiftDays(start, i))
-    dense.push({ date: d, count: map.get(d) || 0 })
+    denseAll.push({ date: d, count: map.get(d) || 0 })
   }
+
+  // 52-week high — scan the trailing 364d of the dense series. On ties
+  // we keep the most recent date (>=) since "the latest peak" is more
+  // useful than the earliest one for trend reading.
+  const hiStart = Math.max(0, queryDays - highWindow)
+  let high52w: { date: string; count: number } | null = null
+  for (let i = hiStart; i < queryDays; i++) {
+    const p = denseAll[i]!
+    if (!high52w || p.count >= high52w.count) high52w = { date: p.date, count: p.count }
+  }
+  if (high52w && high52w.count === 0) high52w = null  // empty subject — don't annotate
 
   // MA helpers
   function sma(arr: number[], window: number, idx: number): number {
@@ -981,21 +996,33 @@ function buildMacd(subject: string, asOf: Date, f: Filters): MacdPoint[] {
     return out
   }
 
-  const counts = dense.map(p => p.count)
+  // Compute MAs over the (lookback + visible) span so the visible window
+  // starts with fully-warm averages. Trim to the visible window at the end.
+  const maSpanStart = queryDays - (days + lookback)
+  const denseMa = denseAll.slice(maSpanStart)
+  const counts = denseMa.map(p => p.count)
   const ma30 = counts.map((_, i) => sma(counts, 30, i))
   const ma60 = counts.map((_, i) => sma(counts, 60, i))
   const macdLine = ma30.map((v, i) => v - (ma60[i] ?? 0))
   const signal = ema(macdLine, 9)
 
-  return dense.map((p, i) => ({
-    date: p.date,
-    count: p.count,
-    ma30: Math.round((ma30[i] ?? 0) * 100) / 100,
-    ma60: Math.round((ma60[i] ?? 0) * 100) / 100,
-    macd: Math.round((macdLine[i] ?? 0) * 100) / 100,
-    signal: Math.round((signal[i] ?? 0) * 100) / 100,
-    histogram: Math.round(((macdLine[i] ?? 0) - (signal[i] ?? 0)) * 100) / 100,
-  }))
+  const visibleStart = lookback  // first index inside denseMa that's part of the visible window
+  const points: MacdPoint[] = []
+  for (let j = 0; j < days; j++) {
+    const i = visibleStart + j
+    const p = denseMa[i]!
+    points.push({
+      date: p.date,
+      count: p.count,
+      ma30: Math.round((ma30[i] ?? 0) * 100) / 100,
+      ma60: Math.round((ma60[i] ?? 0) * 100) / 100,
+      macd: Math.round((macdLine[i] ?? 0) * 100) / 100,
+      signal: Math.round((signal[i] ?? 0) * 100) / 100,
+      histogram: Math.round(((macdLine[i] ?? 0) - (signal[i] ?? 0)) * 100) / 100,
+    })
+  }
+
+  return { points, high52w }
 }
 
 // ─── Audit / cheat-table ─────────────────────────────────
@@ -1017,6 +1044,11 @@ interface AuditRow {
   m3Date: string
   dcaDate: string
   dcaStatus: string
+  m1RequestedDate: string
+  m2RequestedDate: string
+  m2RejectedDate: string
+  m2ApprovedDate: string
+  m2NetReceived: number
   systemPrice: number
   systemSizeKw: number
   cancelDate: string
@@ -1042,6 +1074,11 @@ function buildAudit(asOf: Date, timeframe: { from: string; to: string }, f: Filt
         COALESCE(m3_deposit_date, '') AS m3Date,
         COALESCE(dca_actual_deposit, '') AS dcaDate,
         COALESCE(dca_status, '') AS dcaStatus,
+        COALESCE(m1_requested_date, '') AS m1RequestedDate,
+        COALESCE(m2_requested_date, '') AS m2RequestedDate,
+        COALESCE(m2_rejected_date, '') AS m2RejectedDate,
+        COALESCE(m2_approved_date, '') AS m2ApprovedDate,
+        COALESCE(m2_net_received, 0) AS m2NetReceived,
         COALESCE(system_price, 0) AS systemPrice,
         COALESCE(system_size_kw, 0) AS systemSizeKw,
         COALESCE(cancel_date, '') AS cancelDate
@@ -1057,7 +1094,7 @@ function buildAudit(asOf: Date, timeframe: { from: string; to: string }, f: Filt
   )
   out.installedNotM2 = fetchSample(
     gapBase('installedNotM2', f),
-    `install_completed DESC`,
+    `install_completed ASC`,
   )
   out.m2NotM3 = fetchSample(
     gapBase('m2NotM3', f),
@@ -1149,7 +1186,7 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
       gaps,
       aging,
       cycleTime,
-      macd: { subject: macdSubject, points: macd },
+      macd: { subject: macdSubject, points: macd.points, high52w: macd.high52w },
       audit,
       filterOptions,
       appliedFilters: filters,
@@ -1158,6 +1195,43 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
+
+// M1 · Not M2 — standalone audit. Same row shape as the B&B audit, but
+// the filter is broader than installedNotM2: any project where M1 has
+// been requested and M2 hasn't been received yet (or was clawed back).
+// Active/Hold only; test_project + EPC defaults apply via applyFilters.
+// Exported so the funding router (mounted with its own permission gate)
+// can serve this without duplicating the SQL.
+export function buildM1NotM2(filters: Filters) {
+  const base = applyFilters(`WHERE ${ACTIVE_STATUS_FRAGMENT}`, [], filters)
+  const where = base.where +
+    ` AND m1_requested_date IS NOT NULL AND m1_requested_date != '' AND m1_requested_date != '0'` +
+    ` AND (m2_deposit_date IS NULL OR m2_deposit_date = '' OR m2_deposit_date = '0' OR COALESCE(m2_net_received, 0) <= 0)`
+  const sql = `SELECT
+      record_id AS recordId,
+      customer_name AS customerName,
+      COALESCE(state, '') AS state,
+      COALESCE(status, '') AS status,
+      COALESCE(closer, '') AS closer,
+      COALESCE(lender, '') AS lender,
+      COALESCE(sales_date, '') AS salesDate,
+      COALESCE(install_completed, '') AS installCompleted,
+      COALESCE(install_scheduled, '') AS installScheduled,
+      COALESCE(m2_deposit_date, '') AS m2Date,
+      COALESCE(m1_requested_date, '') AS m1RequestedDate,
+      COALESCE(m2_requested_date, '') AS m2RequestedDate,
+      COALESCE(m2_rejected_date, '') AS m2RejectedDate,
+      COALESCE(m2_approved_date, '') AS m2ApprovedDate,
+      COALESCE(m2_net_received, 0) AS m2NetReceived,
+      COALESCE(system_price, 0) AS systemPrice,
+      COALESCE(system_size_kw, 0) AS systemSizeKw
+    FROM project_cache ${where}
+    ORDER BY install_completed ASC
+    LIMIT 5000`
+  const rows = db.prepare(sql).all(...base.params)
+  return { asOf: fmtDate(new Date()), rows, filterOptions: buildFilterOptions(), appliedFilters: filters }
+}
+export type { Filters }
 
 router.get('/booked-and-boarded/drill', (req: Request, res: Response): void => {
   const gap = (req.query['gap'] as string) as DrillGap

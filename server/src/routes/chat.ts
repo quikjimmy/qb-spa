@@ -4,6 +4,7 @@ import { callUserLlm, type ChatMessage } from '../lib/callUserLlm'
 import { getDefaultKeyFor, type ProviderId } from '../lib/userProviderKeys'
 import { getSnapshot } from '../lib/providerRateLimits'
 import { getQbTools, callQbTool, qbMcpStatus } from '../lib/qbMcp'
+import { dispatchToAri, ariStatus, workspaceForProjectThread } from '../lib/ariClient'
 
 const router = Router()
 
@@ -15,6 +16,7 @@ interface ThreadRow {
   space_id: number | null
   preferred_provider: string | null
   preferred_model: string | null
+  openclaw_session_key: string | null
   archived: number
   created_at: string
   updated_at: string
@@ -452,13 +454,16 @@ router.get('/threads/:id/context-preview', (req: Request, res: Response): void =
   const thread = db.prepare(`SELECT * FROM chat_threads WHERE id = ? AND user_id = ?`).get(id, userId) as ThreadRow | undefined
   if (!thread) { res.status(404).json({ error: 'Thread not found' }); return }
   const mcp = qbMcpStatus()
+  const ari = ariStatus()
   res.json({
     system: buildSystemContext(thread, mcp.enabled),
     space_id: thread.space_id,
     project_id: thread.project_id,
     preferred_provider: thread.preferred_provider,
     preferred_model: thread.preferred_model,
+    openclaw_session_key: thread.openclaw_session_key,
     mcp,
+    ari,
   })
 })
 
@@ -508,10 +513,73 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
     db.prepare(`UPDATE chat_spaces SET last_used_at = datetime('now') WHERE id = ?`).run(thread.space_id)
   }
 
-  // 3. Build the message payload: system context + recent history (already includes the new user msg).
-  // Fetch QB MCP tools up-front; if MCP isn't configured this returns [] and
-  // the call runs as a single-shot completion. Cached for ~5 min inside qbMcp,
-  // so this isn't a per-message round-trip after the first hit.
+  // 2b. Resolve which project (if any) this thread is bound to. Project-attached
+  //     threads are eligible for Ari dispatch; general threads stay on the
+  //     local-LLM + QB MCP path.
+  let projectIdForThread: number | null = null
+  if (thread.space_id) {
+    const space = db.prepare(`SELECT project_id FROM chat_spaces WHERE id = ?`).get(thread.space_id) as { project_id: number } | undefined
+    if (space) projectIdForThread = space.project_id
+  }
+  if (!projectIdForThread && thread.project_id) projectIdForThread = thread.project_id
+
+  // 3. Ari path — project-attached threads dispatch to the OpenClaw VPS shim
+  //    (see docs/ari-chat-routing.md). Per-user identity flows through. On
+  //    success we persist Ari's reply as the assistant message and return
+  //    early. On failure (shim down, misconfigured, timeout) we fall through
+  //    to the local LLM + QB MCP path so the user still gets an answer.
+  if (projectIdForThread && ariStatus().enabled) {
+    // Session key is stable per thread. We deliberately don't bake the
+    // user_id in — same thread should resume the same Ari session across
+    // page reloads or device switches.
+    let sessionKey = thread.openclaw_session_key
+    if (!sessionKey) {
+      sessionKey = `qbspa-thread-${id}`
+      db.prepare(`UPDATE chat_threads SET openclaw_session_key = ? WHERE id = ?`).run(sessionKey, id)
+    }
+
+    const ari = await dispatchToAri({
+      workspace: workspaceForProjectThread(projectIdForThread),
+      content: text,
+      sessionKey,
+      actor: {
+        email: req.user!.email,
+        roles: req.user!.roles,
+        project_id: projectIdForThread,
+      },
+    })
+
+    if (ari.ok) {
+      // Persist with provider='ari' so we can tell at a glance in chat_messages
+      // (and on the API) which path served each turn.
+      const assistantInsert = db.prepare(
+        `INSERT INTO chat_messages (thread_id, role, content, provider, model, tokens_in, tokens_out, cost_cents, used_own_key)
+         VALUES (?, 'assistant', ?, 'ari', ?, ?, ?, 0, 0)`
+      ).run(id, ari.content, workspaceForProjectThread(projectIdForThread), ari.tokens_in ?? 0, ari.tokens_out ?? 0)
+      const assistantId = Number(assistantInsert.lastInsertRowid)
+      db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
+
+      const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
+      const assistantMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(assistantId) as MessageRow
+      const updatedThread = db.prepare(`SELECT * FROM chat_threads WHERE id = ?`).get(id) as ThreadRow
+
+      res.json({
+        ok: true,
+        user_message: shapeMessage(userMsg),
+        assistant_message: shapeMessage(assistantMsg),
+        thread: shapeThread(updatedThread),
+      })
+      return
+    }
+    // Ari path failed — log and fall through. We don't surface the error to
+    // the user because the local path is about to try; a "(provider_error)"
+    // bubble appearing only when BOTH paths fail keeps the UX clean.
+    console.warn('[ari] dispatch failed, falling back to local LLM:', ari.reason, ari.error)
+  }
+
+  // 4. Local fallback path — same code that handles general (project-less)
+  //    threads. Build system context, fetch QB MCP tools, call the LLM with
+  //    an agentic tool loop.
   const qbTools = await getQbTools()
   const mcpEnabled = qbTools.length > 0
 
@@ -525,7 +593,6 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
     ...history.map(h => ({ role: h.role as ChatMessage['role'], content: h.content })),
   ]
 
-  // 4. Call the LLM (handles BYOK selection + budget enforcement + ledger write).
   // Body params override; otherwise fall back to the thread's stored preference.
   // Low temperature for chatbot — factual answers grounded in injected context
   // rather than creative completion. Drops hallucination rate noticeably on smaller models.

@@ -25,6 +25,15 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.roles.includes('admin') ?? false)
 
+  // True if the user is an admin OR has a per-view read permission for
+  // `resourceId`. Mirrors `requireViewPermission` on the server so the
+  // sidebar / router guard can hide entries the API would 403 anyway.
+  function hasViewPermission(resourceId: string): boolean {
+    if (isAdmin.value) return true
+    return permissions.value.some(p =>
+      p.resource_type === 'view' && p.resource_id === resourceId && p.can_read === 1)
+  }
+
   function setAuth(newToken: string, newUser: User) {
     token.value = newToken
     user.value = newUser
@@ -97,5 +106,5 @@ export const useAuthStore = defineStore('auth', () => {
     setAuth(data.token, data.user)
   }
 
-  return { token, user, permissions, isAuthenticated, isAdmin, setAuth, login, register, logout, fetchUser }
+  return { token, user, permissions, isAuthenticated, isAdmin, hasViewPermission, setAuth, login, register, logout, fetchUser }
 })
