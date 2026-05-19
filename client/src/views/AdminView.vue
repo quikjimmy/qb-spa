@@ -2440,7 +2440,7 @@ onMounted(async () => {
                       </button>
                     </div>
                     <pre
-                      v-if="qbWebhookExpanded.has(event.id)"
+                      v-if="qbWebhookExpanded.has(event.id) || event.status === 'ignored' || event.status === 'failed'"
                       class="text-[10px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-64"
                     >{{ JSON.stringify(event.payload, null, 2) }}</pre>
                   </div>
