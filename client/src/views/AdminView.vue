@@ -1100,6 +1100,58 @@ async function loadWebhookDeliveries() {
   } finally { deliveriesBusy.value = false }
 }
 
+// QuickBase project-refresh webhook events — lets admins verify milestone
+// webhooks without Railway log access.
+interface QbWebhookEvent {
+  id: number
+  kind: string
+  source: string | null
+  source_table: string | null
+  source_record_id: number | null
+  project_record_id: number | null
+  changed_field_ids: string | null
+  status: string
+  error: string | null
+  received_at: string
+  processed_at: string | null
+  payload: unknown
+}
+const qbWebhookEvents = ref<QbWebhookEvent[]>([])
+const qbWebhookBusy = ref(false)
+const qbWebhookSource = ref('')
+const qbWebhookStatus = ref('')
+const qbWebhookProject = ref('')
+const qbWebhookExpanded = ref<Set<number>>(new Set())
+
+async function loadQbWebhookEvents() {
+  qbWebhookBusy.value = true
+  try {
+    const params = new URLSearchParams({ limit: '50' })
+    if (qbWebhookSource.value.trim()) params.set('source', qbWebhookSource.value.trim())
+    if (qbWebhookStatus.value.trim()) params.set('status', qbWebhookStatus.value.trim())
+    if (qbWebhookProject.value.trim()) params.set('project_record_id', qbWebhookProject.value.trim())
+    const res = await fetch(`/api/admin/qb-webhooks/recent?${params}`, { headers: hdrs() })
+    if (res.ok) {
+      const body = await res.json()
+      qbWebhookEvents.value = body.events || []
+    }
+  } finally { qbWebhookBusy.value = false }
+}
+
+function toggleQbWebhookPayload(id: number) {
+  const next = new Set(qbWebhookExpanded.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  qbWebhookExpanded.value = next
+}
+
+function statusTone(status: string): string {
+  if (status === 'processed') return 'bg-emerald-100 text-emerald-700'
+  if (status === 'queued' || status === 'coalesced') return 'bg-blue-100 text-blue-700'
+  if (status === 'failed' || status === 'not_found') return 'bg-red-100 text-red-700'
+  return 'bg-muted text-muted-foreground'
+}
+
 // ─── Dev mirror token (paste into local .env to replay prod events) ───
 const mirrorToken = ref('')
 const mirrorUrl = ref('')
@@ -1405,7 +1457,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadFeedback(), loadProposals(), loadTriageRuns(), loadTriageKeys(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadQbWebhookEvents(), loadFeedback(), loadProposals(), loadTriageRuns(), loadTriageKeys(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -2306,6 +2358,97 @@ onMounted(async () => {
                   </TableRow>
                 </TableBody>
               </Table>
+            </CardContent>
+          </Card>
+
+          <!-- QuickBase Project Refresh Webhooks -->
+          <Card>
+            <CardHeader>
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <CardTitle>QuickBase Project Refresh Webhooks</CardTitle>
+                  <CardDescription>
+                    Recent milestone webhook events that asked the app to refresh a project's cached QuickBase data.
+                  </CardDescription>
+                </div>
+                <Button variant="outline" size="sm" :disabled="qbWebhookBusy" @click="loadQbWebhookEvents">
+                  {{ qbWebhookBusy ? 'Loading...' : 'Refresh' }}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent class="grid gap-4">
+              <div class="grid gap-2 sm:grid-cols-4">
+                <div class="space-y-1.5">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Source</Label>
+                  <Input v-model="qbWebhookSource" placeholder="permit, intake, pto..." @keyup.enter="loadQbWebhookEvents" />
+                </div>
+                <div class="space-y-1.5">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Status</Label>
+                  <Select v-model="qbWebhookStatus">
+                    <SelectTrigger><SelectValue placeholder="Any status" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Any status</SelectItem>
+                      <SelectItem value="processed">Processed</SelectItem>
+                      <SelectItem value="queued">Queued</SelectItem>
+                      <SelectItem value="coalesced">Coalesced</SelectItem>
+                      <SelectItem value="failed">Failed</SelectItem>
+                      <SelectItem value="not_found">Not found</SelectItem>
+                      <SelectItem value="ignored">Ignored</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-1.5">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Project RID</Label>
+                  <Input v-model="qbWebhookProject" placeholder="12345" @keyup.enter="loadQbWebhookEvents" />
+                </div>
+                <div class="flex items-end gap-2">
+                  <Button size="sm" class="h-10" :disabled="qbWebhookBusy" @click="loadQbWebhookEvents">Apply</Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    class="h-10"
+                    :disabled="qbWebhookBusy"
+                    @click="qbWebhookSource = ''; qbWebhookStatus = ''; qbWebhookProject = ''; loadQbWebhookEvents()"
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div class="rounded-md border bg-background">
+                <div v-if="qbWebhookEvents.length > 0" class="divide-y">
+                  <div v-for="event in qbWebhookEvents" :key="event.id" class="p-3 grid gap-2">
+                    <div class="flex flex-wrap items-center gap-2 text-xs">
+                      <span class="font-mono text-muted-foreground">#{{ event.id }}</span>
+                      <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="statusTone(event.status)">
+                        {{ event.status }}
+                      </span>
+                      <span class="font-semibold">{{ event.source || event.kind }}</span>
+                      <span class="text-muted-foreground">project</span>
+                      <span class="font-mono">{{ event.project_record_id || 'missing' }}</span>
+                      <span class="text-muted-foreground">source row</span>
+                      <span class="font-mono">{{ event.source_record_id || 'missing' }}</span>
+                      <span class="ml-auto text-muted-foreground">{{ fmtCacheTime(event.received_at) }}</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <span v-if="event.source_table">table <span class="font-mono">{{ event.source_table }}</span></span>
+                      <span v-if="event.changed_field_ids">fields <span class="font-mono">{{ event.changed_field_ids }}</span></span>
+                      <span v-if="event.processed_at">processed {{ fmtCacheTime(event.processed_at) }}</span>
+                      <span v-if="event.error" class="text-red-600 truncate">error: {{ event.error }}</span>
+                      <button class="ml-auto hover:text-foreground" @click="toggleQbWebhookPayload(event.id)">
+                        {{ qbWebhookExpanded.has(event.id) ? 'Hide payload' : 'Show payload' }}
+                      </button>
+                    </div>
+                    <pre
+                      v-if="qbWebhookExpanded.has(event.id)"
+                      class="text-[10px] leading-snug bg-muted/40 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-64"
+                    >{{ JSON.stringify(event.payload, null, 2) }}</pre>
+                  </div>
+                </div>
+                <p v-else class="text-sm text-muted-foreground text-center py-8">
+                  {{ qbWebhookBusy ? 'Loading webhook events...' : 'No QuickBase webhook events found.' }}
+                </p>
+              </div>
             </CardContent>
           </Card>
 
