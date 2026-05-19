@@ -4,9 +4,29 @@
 // secret is the simplest auth surface to configure on their side.
 
 import { Router, type Request, type Response } from 'express'
+import db from '../db'
 import { invalidateIntakeCaches } from './intake'
+import { fetchOneLive } from './projects'
 
 const router = Router()
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS qb_webhook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    source_table TEXT,
+    source_record_id INTEGER,
+    project_record_id INTEGER,
+    changed_field_ids TEXT,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now')),
+    processed_at TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_qb_wh_project ON qb_webhook_events(project_record_id, received_at DESC)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_qb_wh_status ON qb_webhook_events(status, received_at DESC)`)
 
 function verifySecret(req: Request): boolean | null {
   const expected = process.env['QB_WEBHOOK_SECRET']
@@ -38,6 +58,124 @@ function pickRecordId(body: unknown): number | null {
   return null
 }
 
+function pickProjectRecordId(body: unknown): number | null {
+  if (!body || typeof body !== 'object') return null
+  const b = body as Record<string, unknown>
+  const candidates = [
+    b['project_record_id'], b['projectRecordId'], b['project_rid'], b['projectRid'],
+    b['related_project'], b['relatedProject'], b['related_project_id'], b['relatedProjectId'],
+    b['project_id'], b['projectId'],
+    (b['record'] as Record<string, unknown> | undefined)?.['project_record_id'],
+    (b['record'] as Record<string, unknown> | undefined)?.['project_rid'],
+    (b['record'] as Record<string, unknown> | undefined)?.['related_project'],
+    (b['record'] as Record<string, unknown> | undefined)?.['relatedProject'],
+    (b['data'] as Record<string, unknown> | undefined)?.['project_record_id'],
+    (b['data'] as Record<string, unknown> | undefined)?.['project_rid'],
+    (b['data'] as Record<string, unknown> | undefined)?.['related_project'],
+    (b['data'] as Record<string, unknown> | undefined)?.['relatedProject'],
+  ]
+  for (const v of candidates) {
+    if (v == null) continue
+    const n = Number(v)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return null
+}
+
+function pickSourceTable(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null
+  const b = body as Record<string, unknown>
+  const v = b['source_table'] ?? b['sourceTable'] ?? b['table_id'] ?? b['tableId']
+    ?? (b['record'] as Record<string, unknown> | undefined)?.['source_table']
+    ?? (b['data'] as Record<string, unknown> | undefined)?.['source_table']
+  return v == null ? null : String(v)
+}
+
+function pickChangedFieldIds(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null
+  const b = body as Record<string, unknown>
+  const v = b['changed_field_ids'] ?? b['changedFieldIds'] ?? b['changed_fields'] ?? b['changedFields']
+  if (Array.isArray(v)) return v.map(x => String(x)).filter(Boolean).join(',')
+  return v == null ? null : String(v)
+}
+
+const queuedProjectRefreshes = new Set<number>()
+
+function enqueueProjectRefresh(projectRecordId: number, eventId: number): 'queued' | 'coalesced' {
+  if (queuedProjectRefreshes.has(projectRecordId)) {
+    db.prepare(`
+      UPDATE qb_webhook_events
+      SET status = 'coalesced', processed_at = datetime('now')
+      WHERE id = ?
+    `).run(eventId)
+    return 'coalesced'
+  }
+  queuedProjectRefreshes.add(projectRecordId)
+  setImmediate(async () => {
+    try {
+      const fresh = await fetchOneLive(projectRecordId)
+      if (!fresh) {
+        db.prepare(`
+          UPDATE qb_webhook_events
+          SET status = 'not_found', error = 'Project not found in QuickBase or filtered out', processed_at = datetime('now')
+          WHERE id = ?
+        `).run(eventId)
+        return
+      }
+      db.prepare(`
+        UPDATE qb_webhook_events
+        SET status = 'processed', error = NULL, processed_at = datetime('now')
+        WHERE id = ?
+      `).run(eventId)
+      console.log(`[qb-webhook] refreshed project ${projectRecordId} from event ${eventId}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      db.prepare(`
+        UPDATE qb_webhook_events
+        SET status = 'failed', error = ?, processed_at = datetime('now')
+        WHERE id = ?
+      `).run(msg, eventId)
+      console.error(`[qb-webhook] refresh project ${projectRecordId} failed:`, msg)
+    } finally {
+      queuedProjectRefreshes.delete(projectRecordId)
+    }
+  })
+  return 'queued'
+}
+
+function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
+  const verdict = verifySecret(req)
+  if (verdict === false) {
+    console.warn(`[qb-webhook] ${kind} — bad/missing secret, dropping`)
+    res.json({ ok: false, reason: 'auth' })
+    return
+  }
+  if (verdict === null) {
+    console.warn(`[qb-webhook] ${kind} — QB_WEBHOOK_SECRET not set, accepting anonymously (dev mode)`)
+  }
+
+  const projectRecordId = pickProjectRecordId(req.body)
+  const sourceRecordId = pickRecordId(req.body)
+  const sourceTable = pickSourceTable(req.body)
+  const changedFieldIds = pickChangedFieldIds(req.body)
+  const payloadJson = JSON.stringify(req.body ?? {})
+
+  const result = db.prepare(`
+    INSERT INTO qb_webhook_events
+      (kind, source_table, source_record_id, project_record_id, changed_field_ids, payload_json, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(kind, sourceTable, sourceRecordId, projectRecordId, changedFieldIds, payloadJson, projectRecordId ? 'queued' : 'ignored')
+  const eventId = Number(result.lastInsertRowid)
+
+  if (!projectRecordId) {
+    res.json({ ok: false, reason: 'missing_project_record_id', eventId })
+    return
+  }
+
+  const queueStatus = enqueueProjectRefresh(projectRecordId, eventId)
+  res.json({ ok: true, eventId, projectRecordId, sourceRecordId, queued: queueStatus === 'queued', status: queueStatus })
+}
+
 // POST /api/webhooks/qb/project-created
 //
 // Fired by a QB Pipeline whenever a new row lands in the Projects table.
@@ -66,6 +204,28 @@ router.post('/project-created', (req: Request, res: Response): void => {
   invalidateIntakeCaches(`qb-webhook project-created rid=${recordId ?? 'unknown'}`)
 
   res.json({ ok: true, recordId, invalidated: ['failedRunsCache', 'intakeManagerCache'] })
+})
+
+// POST /api/webhooks/qb/project-refresh
+//
+// Generic "a child milestone row changed" signal. The payload only needs
+// the related project RID; the server pulls the canonical project row
+// from QB and updates project_cache. Use this for every milestone table.
+router.post('/project-refresh', (req: Request, res: Response): void => {
+  acceptProjectRefresh('project-refresh', req, res)
+})
+
+// Temporary backwards-compatible alias for any test payloads configured
+// before the endpoint name was finalized.
+router.post('/project-dirty', (req: Request, res: Response): void => {
+  acceptProjectRefresh('project-refresh', req, res)
+})
+
+// Permit-specific alias for the first QB pilot. Same behavior as the
+// generic project-refresh endpoint, but the event kind makes the audit
+// table easier to read.
+router.post('/permit', (req: Request, res: Response): void => {
+  acceptProjectRefresh('permit', req, res)
 })
 
 export { router as qbWebhookRouter }
