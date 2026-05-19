@@ -1122,11 +1122,12 @@ const qbWebhookSource = ref('')
 const qbWebhookStatus = ref('')
 const qbWebhookProject = ref('')
 const qbWebhookExpanded = ref<Set<number>>(new Set())
+const qbWebhookLimit = 20
 
 async function loadQbWebhookEvents() {
   qbWebhookBusy.value = true
   try {
-    const params = new URLSearchParams({ limit: '50' })
+    const params = new URLSearchParams({ limit: String(qbWebhookLimit) })
     if (qbWebhookSource.value.trim()) params.set('source', qbWebhookSource.value.trim())
     if (qbWebhookStatus.value.trim()) params.set('status', qbWebhookStatus.value.trim())
     if (qbWebhookProject.value.trim()) params.set('project_record_id', qbWebhookProject.value.trim())
@@ -2416,13 +2417,14 @@ onMounted(async () => {
               </div>
 
               <div class="rounded-md border bg-background">
-                <div v-if="qbWebhookEvents.length > 0" class="divide-y">
+                <div v-if="qbWebhookEvents.length > 0" class="max-h-[640px] overflow-y-auto divide-y">
                   <div v-for="event in qbWebhookEvents" :key="event.id" class="p-3 grid gap-2">
                     <div class="flex flex-wrap items-center gap-2 text-xs">
                       <span class="font-mono text-muted-foreground">#{{ event.id }}</span>
                       <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="statusTone(event.status)">
                         {{ event.status }}
                       </span>
+                      <span class="text-muted-foreground">milestone</span>
                       <span class="font-semibold">{{ event.source || event.kind }}</span>
                       <span class="text-muted-foreground">project</span>
                       <span class="font-mono">{{ event.project_record_id || 'missing' }}</span>
