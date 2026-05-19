@@ -1002,6 +1002,24 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_user_departments_user ON user_departments(user_id)`)
 
+// --- Department <-> Permission (department-level view/table/field grants) ---
+// Mirrors the (role)-permissions table shape so the existing helpers
+// can union the two with minimal code. A user's effective permission
+// for a resource = max(role-grants, dept-grants).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS department_permissions (
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('view', 'table', 'field')),
+    resource_id TEXT NOT NULL,
+    can_read INTEGER NOT NULL DEFAULT 0,
+    can_write INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (department_id, resource_type, resource_id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_perms_dept ON department_permissions(department_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_perms_resource ON department_permissions(resource_type, resource_id)`)
+
 // --- Production agent org model ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS agent_roles (
@@ -1291,8 +1309,24 @@ const seedDeptTxn = db.transaction(() => {
   seedDept.run('Operations', 'General ops / admin')
   seedDept.run('Engineering', 'Design & engineering')
   seedDept.run('Sales', 'Sales & rep support')
+  seedDept.run('Funding', 'Cash collection · M1/M2/M3/DCA milestone tracking')
+  seedDept.run('Field Ops', 'Crew dispatch · install + inspection field workflows')
+  seedDept.run('Customer Support', 'Comms hub · inbound calls/SMS/voicemail triage')
 })
 seedDeptTxn()
+
+// --- Seed department view permissions (idempotent) ---
+// Departments confer view-level access to the matching app sections.
+// Resource IDs match the strings the client / server route gates use.
+const seedDeptPerm = db.prepare(`
+  INSERT OR IGNORE INTO department_permissions (department_id, resource_type, resource_id, can_read, can_write)
+  SELECT id, ?, ?, ?, ? FROM departments WHERE name = ?
+`)
+const seedDeptPermTxn = db.transaction(() => {
+  // Funding department → read access to the Funding section (/funding).
+  seedDeptPerm.run('view', 'funding', 1, 0, 'Funding')
+})
+seedDeptPermTxn()
 
 // --- Seed default roles if they don't exist ---
 const seedRoles = db.prepare(`

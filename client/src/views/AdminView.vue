@@ -85,6 +85,7 @@ const allPermissions = ref<Permission[]>([])
 // Invite user
 const inviteForm = ref({ name: '', email: '' })
 const inviteRoles = ref<Set<string>>(new Set())
+const inviteDepts = ref<Set<number>>(new Set())
 const inviteError = ref('')
 const inviteEmailError = ref('')
 const inviteEmailTouched = ref(false)
@@ -98,10 +99,12 @@ const basicRoleOptions = ['Internal Ops', 'Customer Support', 'Field Ops', 'Cust
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const isValidEmail = (v: string) => EMAIL_RE.test(v.trim())
 
+// Department membership now confers view permissions, so a department
+// pick is a valid substitute for a role pick. Either is enough.
 const canSubmitInvite = computed(() =>
   inviteForm.value.name.trim().length > 0
   && isValidEmail(inviteForm.value.email)
-  && inviteRoles.value.size > 0
+  && (inviteRoles.value.size > 0 || inviteDepts.value.size > 0)
 )
 
 function onInviteEmailBlur() {
@@ -209,8 +212,8 @@ async function inviteUser() {
     inviteEmailError.value = 'Enter a valid email (e.g. name@company.com)'
     return
   }
-  if (inviteRoles.value.size === 0) {
-    inviteError.value = 'Pick at least one role'
+  if (inviteRoles.value.size === 0 && inviteDepts.value.size === 0) {
+    inviteError.value = 'Pick at least one department or role'
     return
   }
 
@@ -223,6 +226,7 @@ async function inviteUser() {
         email: inviteForm.value.email.trim().toLowerCase(),
         name: inviteForm.value.name.trim(),
         roles: [...inviteRoles.value],
+        department_ids: [...inviteDepts.value],
       }),
     })
     const data = await res.json()
@@ -233,12 +237,20 @@ async function inviteUser() {
     lastInviteLink.value = `${window.location.origin}${data.inviteLink}`
     inviteForm.value = { name: '', email: '' }
     inviteRoles.value = new Set()
+    inviteDepts.value = new Set()
     inviteEmailTouched.value = false
     inviteEmailError.value = ''
     await loadUsers()
   } finally {
     inviteSubmitting.value = false
   }
+}
+
+function toggleInviteDept(id: number) {
+  const next = new Set(inviteDepts.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  inviteDepts.value = next
 }
 
 function toggleInviteRole(name: string) {
@@ -1468,9 +1480,45 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <!-- Role checkboxes — no default selection; admin must pick deliberately. -->
+              <!-- Department picker — department membership confers view
+                   permissions (e.g. Funding → /funding). Picking a
+                   department is enough on its own; roles are optional
+                   extra grants for cross-cutting access. -->
               <div class="space-y-3">
-                <Label>Assign roles</Label>
+                <Label>Assign departments</Label>
+                <p class="text-xs text-muted-foreground">
+                  Department membership grants access to that team's dashboards. Pick the primary department this person belongs to.
+                </p>
+                <div v-if="departments.length === 0" class="text-xs text-muted-foreground py-3 italic">
+                  No departments yet — create them in the Departments tab first.
+                </div>
+                <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label
+                    v-for="d in departments"
+                    :key="`invite-dept-${d.id}`"
+                    class="flex items-start gap-3 rounded-lg p-3 cursor-pointer transition-colors ring-1"
+                    :class="inviteDepts.has(Number(d.id))
+                      ? 'bg-primary/8 ring-primary/30'
+                      : 'bg-muted/30 ring-foreground/5 hover:bg-muted/50'"
+                  >
+                    <Checkbox
+                      :model-value="inviteDepts.has(Number(d.id))"
+                      @update:model-value="toggleInviteDept(Number(d.id))"
+                      class="mt-0.5"
+                    />
+                    <div class="grid gap-0.5">
+                      <span class="text-sm font-medium leading-none">{{ d.name }}</span>
+                      <span class="text-xs text-muted-foreground">{{ d.description || 'No description' }}</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Role checkboxes — optional now that departments confer
+                   most access. Keep available for cross-cutting roles
+                   (admin elsewhere, customer support agent, etc.). -->
+              <div class="space-y-3">
+                <Label>Assign roles <span class="text-xs font-normal text-muted-foreground">(optional)</span></Label>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <label
                     v-for="role in roles"
@@ -1491,8 +1539,8 @@ onMounted(async () => {
                     </div>
                   </label>
                 </div>
-                <p v-if="inviteRoles.size === 0" class="text-xs text-muted-foreground">
-                  Pick at least one role.
+                <p v-if="inviteRoles.size === 0 && inviteDepts.size === 0" class="text-xs text-muted-foreground">
+                  Pick at least one department or role.
                 </p>
               </div>
 

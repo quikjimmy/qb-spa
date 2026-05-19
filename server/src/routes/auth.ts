@@ -132,7 +132,7 @@ router.get('/me', (req: Request, res: Response): void => {
 
   try {
     const payload = jwt.verify(header.slice(7), getJwtSecret()) as {
-      userId: number
+      userId: number; actAsDepartmentId?: number
     }
     const user = db.prepare('SELECT id, email, name, is_active FROM users WHERE id = ?').get(payload.userId) as DbUser | undefined
 
@@ -141,7 +141,15 @@ router.get('/me', (req: Request, res: Response): void => {
       return
     }
 
-    res.json({ user: buildUserResponse(user) })
+    // Surface the active View-as scope so the client can render the
+    // banner + dropdown state without a separate request.
+    let scope: { departmentId: number; departmentName: string } | null = null
+    if (payload.actAsDepartmentId != null) {
+      const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(payload.actAsDepartmentId) as { id: number; name: string } | undefined
+      if (dept) scope = { departmentId: dept.id, departmentName: dept.name }
+    }
+
+    res.json({ user: buildUserResponse(user), scope })
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' })
   }
@@ -156,20 +164,135 @@ router.get('/my-permissions', (req: Request, res: Response): void => {
   }
 
   try {
-    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number; actAsDepartmentId?: number }
 
+    // View-as scope: return only the active department's grants so the
+    // client behaves exactly as a department member would.
+    if (payload.actAsDepartmentId != null) {
+      const perms = db.prepare(`
+        SELECT resource_type, resource_id, can_read, can_write
+        FROM department_permissions
+        WHERE department_id = ?
+        ORDER BY resource_type, resource_id
+      `).all(payload.actAsDepartmentId)
+      res.json({ permissions: perms })
+      return
+    }
+
+    // Effective permissions = union of role-grants + dept-grants for the
+    // user. MAX(can_read|can_write) across both sources, grouped by
+    // (resource_type, resource_id). Matches the union logic in
+    // checkPermission / requireViewPermission so the client and server
+    // agree on what's allowed.
     const perms = db.prepare(`
-      SELECT p.resource_type, p.resource_id,
-        MAX(p.can_read) as can_read,
-        MAX(p.can_write) as can_write
-      FROM permissions p
-      JOIN user_roles ur ON ur.role_id = p.role_id
-      WHERE ur.user_id = ?
-      GROUP BY p.resource_type, p.resource_id
-      ORDER BY p.resource_type, p.resource_id
-    `).all(payload.userId)
+      SELECT resource_type, resource_id,
+        MAX(can_read) AS can_read,
+        MAX(can_write) AS can_write
+      FROM (
+        SELECT p.resource_type, p.resource_id, p.can_read, p.can_write
+        FROM permissions p
+        JOIN user_roles ur ON ur.role_id = p.role_id
+        WHERE ur.user_id = ?
+        UNION ALL
+        SELECT dp.resource_type, dp.resource_id, dp.can_read, dp.can_write
+        FROM department_permissions dp
+        JOIN user_departments ud ON ud.department_id = dp.department_id
+        WHERE ud.user_id = ?
+      )
+      GROUP BY resource_type, resource_id
+      ORDER BY resource_type, resource_id
+    `).all(payload.userId, payload.userId)
 
     res.json({ permissions: perms })
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+})
+
+// ─── Admin "View-as department" scope ────────────────────────
+// Issues a new JWT with an actAsDepartmentId claim so an admin can
+// browse the app as if they belonged only to that department.
+// Caller must have admin role in the DB (checked here, not via the
+// requireRole middleware, so this endpoint stays callable when the
+// caller is already scoped and wants to switch / exit).
+function callerIsDbAdmin(userId: number): boolean {
+  const row = db.prepare(`
+    SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+    WHERE ur.user_id = ? AND r.name = 'admin'
+  `).get(userId)
+  return !!row
+}
+
+// List departments available to the scope picker. Admin-only at the
+// DB-role level so a scoped admin can still see the list to exit/
+// switch (the regular /api/admin/departments would 403 in scope mode).
+router.get('/scope/departments', (req: Request, res: Response): void => {
+  const header = req.headers['authorization']
+  if (!header?.startsWith('Bearer ')) { res.status(401).json({ error: 'Not authenticated' }); return }
+  try {
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    if (!callerIsDbAdmin(payload.userId)) {
+      res.status(403).json({ error: 'View-as is admin-only' })
+      return
+    }
+    const departments = db.prepare(
+      `SELECT id, name, description FROM departments ORDER BY name`
+    ).all()
+    res.json({ departments })
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+})
+
+router.post('/scope', (req: Request, res: Response): void => {
+  const header = req.headers['authorization']
+  if (!header?.startsWith('Bearer ')) { res.status(401).json({ error: 'Not authenticated' }); return }
+  try {
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    if (!callerIsDbAdmin(payload.userId)) {
+      res.status(403).json({ error: 'View-as is admin-only' })
+      return
+    }
+    const deptId = Number((req.body as { department_id?: unknown })?.department_id)
+    if (!Number.isFinite(deptId)) { res.status(400).json({ error: 'department_id is required' }); return }
+    const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(deptId) as { id: number; name: string } | undefined
+    if (!dept) { res.status(404).json({ error: 'Department not found' }); return }
+
+    const user = db.prepare('SELECT id, email, name, is_active FROM users WHERE id = ?').get(payload.userId) as DbUser | undefined
+    if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+    const roles = getUserRoles(user.id)
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, roles, actAsDepartmentId: dept.id },
+      getJwtSecret(),
+      { expiresIn: '8h' }, // shorter than a normal session — View-as is for testing, not living in
+    )
+    res.json({
+      token,
+      user: buildUserResponse(user),
+      scope: { departmentId: dept.id, departmentName: dept.name },
+    })
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+})
+
+router.post('/scope/clear', (req: Request, res: Response): void => {
+  const header = req.headers['authorization']
+  if (!header?.startsWith('Bearer ')) { res.status(401).json({ error: 'Not authenticated' }); return }
+  try {
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    const user = db.prepare('SELECT id, email, name, is_active FROM users WHERE id = ?').get(payload.userId) as DbUser | undefined
+    if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+    // Re-issue a normal JWT reflecting current DB roles, no scope claim.
+    const roles = getUserRoles(user.id)
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, roles },
+      getJwtSecret(),
+      { expiresIn: '7d' },
+    )
+    res.json({ token, user: buildUserResponse(user), scope: null })
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' })
   }
