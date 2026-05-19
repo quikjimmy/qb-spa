@@ -13,6 +13,8 @@ import {
 } from '@/components/ui/breadcrumb'
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
+import ScopeAsDepartment from '@/components/ScopeAsDepartment.vue'
+import ScopeAsBanner from '@/components/ScopeAsBanner.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
 import CommsLiveRail from '@/components/CommsLiveRail.vue'
@@ -145,6 +147,9 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           </BreadcrumbList>
         </Breadcrumb>
         <div class="ml-auto flex items-center gap-1">
+          <!-- View-as-department picker — admin only. Issues a scoped
+               JWT so the rest of the app behaves as that department. -->
+          <ScopeAsDepartment />
           <!-- Global ⌘K project search — page-agnostic jump-to. Lives in the
                topbar so coordinators can switch projects from anywhere. -->
           <ProjectJumpSearch />
@@ -167,6 +172,7 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           <NotificationBell />
         </div>
       </header>
+      <ScopeAsBanner />
       <main ref="mainEl" class="flex-1 overflow-auto px-3 py-4 sm:p-6 relative">
         <!-- Pull-to-refresh indicator. Opacity ramps up only after the
              dead zone (handled in the composable) — by the time the user

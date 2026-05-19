@@ -11,6 +11,12 @@ export interface AuthPayload {
   userId: number
   email: string
   roles: string[]
+  // Admin-only impersonation: when set, the bearer is "acting as" a
+  // member of this department. Admin role bypass is suppressed and
+  // every permission check is restricted to this single department's
+  // grants — so a scoped admin sees exactly what a Funding-team
+  // member would see, app-wide. Cleared by issuing a fresh JWT.
+  actAsDepartmentId?: number
 }
 
 declare global {
@@ -48,16 +54,23 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   }
 }
 
-// Require at least one of the specified roles
+// Require at least one of the specified roles. Admin always passes —
+// unless they're scoped to a department (View-as mode), in which case
+// the admin bypass is suppressed so the test session reflects reality.
 export function requireRole(...roles: string[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ error: 'Not authenticated' })
       return
     }
-    // Admin always passes
-    if (req.user.roles.includes('admin')) {
+    const scoped = req.user.actAsDepartmentId != null
+    if (!scoped && req.user.roles.includes('admin')) {
       next()
+      return
+    }
+    if (scoped) {
+      // Scoped admins act as department members — no role bypass.
+      res.status(403).json({ error: 'Not available while scoped to a department' })
       return
     }
     const hasRole = req.user.roles.some(r => roles.includes(r))
@@ -69,21 +82,40 @@ export function requireRole(...roles: string[]) {
   }
 }
 
-// Middleware: allow admins, OR any user with permissions(view, viewId, read).
+// Middleware: allow admins, OR any user with read access to (view, viewId)
+// from EITHER their role-permissions OR their department-permissions.
 // Anything else gets a 403. Used by sections (Funding, etc.) that need
 // to be visible beyond the admin role without becoming public.
 export function requireViewPermission(viewId: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) { res.status(401).json({ error: 'Not authenticated' }); return }
+    const scopeId = req.user.actAsDepartmentId
+    // Scoped mode: ONLY the active department's perms count.
+    if (scopeId != null) {
+      const row = db.prepare(`
+        SELECT MAX(can_read) AS allowed
+        FROM department_permissions
+        WHERE department_id = ? AND resource_type = 'view' AND resource_id = ?
+      `).get(scopeId, viewId) as { allowed: number | null } | undefined
+      if (row?.allowed === 1) { next(); return }
+      res.status(403).json({ error: 'Insufficient permissions (scoped)' })
+      return
+    }
+    // Normal admin bypass.
     if (req.user.roles.includes('admin')) { next(); return }
     const row = db.prepare(`
-      SELECT MAX(p.can_read) AS allowed
-      FROM permissions p
-      JOIN user_roles ur ON ur.role_id = p.role_id
-      WHERE ur.user_id = ?
-        AND p.resource_type = 'view'
-        AND p.resource_id = ?
-    `).get(req.user.userId, viewId) as { allowed: number | null } | undefined
+      SELECT MAX(allowed) AS allowed FROM (
+        SELECT MAX(p.can_read) AS allowed
+        FROM permissions p
+        JOIN user_roles ur ON ur.role_id = p.role_id
+        WHERE ur.user_id = ? AND p.resource_type = 'view' AND p.resource_id = ?
+        UNION ALL
+        SELECT MAX(dp.can_read) AS allowed
+        FROM department_permissions dp
+        JOIN user_departments ud ON ud.department_id = dp.department_id
+        WHERE ud.user_id = ? AND dp.resource_type = 'view' AND dp.resource_id = ?
+      )
+    `).get(req.user.userId, viewId, req.user.userId, viewId) as { allowed: number | null } | undefined
     if (row?.allowed === 1) { next(); return }
     res.status(403).json({ error: 'Insufficient permissions' })
   }
@@ -100,8 +132,22 @@ export function checkPermission(
   userId: number,
   resourceType: 'view' | 'table' | 'field',
   resourceId: string,
-  action: 'read' | 'write'
+  action: 'read' | 'write',
+  scopeDeptId?: number,
 ): boolean {
+  const column = action === 'read' ? 'can_read' : 'can_write'
+
+  // Scoped mode: ignore the user's actual roles/depts entirely and
+  // resolve permission as if they belonged only to scopeDeptId.
+  if (scopeDeptId != null) {
+    const row = db.prepare(`
+      SELECT MAX(${column}) AS allowed
+      FROM department_permissions
+      WHERE department_id = ? AND resource_type = ? AND resource_id = ?
+    `).get(scopeDeptId, resourceType, resourceId) as { allowed: number | null } | undefined
+    return row?.allowed === 1
+  }
+
   // Admin bypass — check if user has admin role
   const adminCheck = db.prepare(`
     SELECT 1 FROM user_roles ur
@@ -110,21 +156,41 @@ export function checkPermission(
   `).get(userId)
   if (adminCheck) return true
 
-  const column = action === 'read' ? 'can_read' : 'can_write'
   const row = db.prepare(`
-    SELECT MAX(p.${column}) as allowed
-    FROM permissions p
-    JOIN user_roles ur ON ur.role_id = p.role_id
-    WHERE ur.user_id = ?
-      AND p.resource_type = ?
-      AND p.resource_id = ?
-  `).get(userId, resourceType, resourceId) as { allowed: number | null } | undefined
+    SELECT MAX(allowed) AS allowed FROM (
+      SELECT MAX(p.${column}) AS allowed
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ? AND p.resource_type = ? AND p.resource_id = ?
+      UNION ALL
+      SELECT MAX(dp.${column}) AS allowed
+      FROM department_permissions dp
+      JOIN user_departments ud ON ud.department_id = dp.department_id
+      WHERE ud.user_id = ? AND dp.resource_type = ? AND dp.resource_id = ?
+    )
+  `).get(userId, resourceType, resourceId, userId, resourceType, resourceId) as { allowed: number | null } | undefined
 
   return row?.allowed === 1
 }
 
-// Get all readable field IDs for a user on a given table
-export function getReadableFields(userId: number, tableId: string): number[] | 'all' {
+// Get all readable field IDs for a user on a given table. When
+// `scopeDeptId` is set, ignore the user's actual grants and resolve
+// solely against that department's permissions (admin View-as mode).
+export function getReadableFields(userId: number, tableId: string, scopeDeptId?: number): number[] | 'all' {
+  if (scopeDeptId != null) {
+    const tableAccess = db.prepare(`
+      SELECT MAX(can_read) AS allowed FROM department_permissions
+      WHERE department_id = ? AND resource_type = 'table' AND resource_id = ?
+    `).get(scopeDeptId, tableId) as { allowed: number | null } | undefined
+    if (!tableAccess || tableAccess.allowed !== 1) return []
+    const fp = db.prepare(`
+      SELECT resource_id, can_read FROM department_permissions
+      WHERE department_id = ? AND resource_type = 'field' AND resource_id LIKE ?
+    `).all(scopeDeptId, `${tableId}.%`) as Array<{ resource_id: string; can_read: number }>
+    if (fp.length === 0) return 'all'
+    return fp.filter(f => f.can_read === 1).map(f => parseInt(f.resource_id.split('.')[1]!, 10))
+  }
+
   // Admin gets everything
   const adminCheck = db.prepare(`
     SELECT 1 FROM user_roles ur
@@ -133,27 +199,39 @@ export function getReadableFields(userId: number, tableId: string): number[] | '
   `).get(userId)
   if (adminCheck) return 'all'
 
-  // Check table-level read access first
+  // Check table-level read access first — across BOTH role and dept perms.
   const tableAccess = db.prepare(`
-    SELECT MAX(p.can_read) as allowed
-    FROM permissions p
-    JOIN user_roles ur ON ur.role_id = p.role_id
-    WHERE ur.user_id = ?
-      AND p.resource_type = 'table'
-      AND p.resource_id = ?
-  `).get(userId, tableId) as { allowed: number | null } | undefined
+    SELECT MAX(allowed) AS allowed FROM (
+      SELECT MAX(p.can_read) AS allowed
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ? AND p.resource_type = 'table' AND p.resource_id = ?
+      UNION ALL
+      SELECT MAX(dp.can_read) AS allowed
+      FROM department_permissions dp
+      JOIN user_departments ud ON ud.department_id = dp.department_id
+      WHERE ud.user_id = ? AND dp.resource_type = 'table' AND dp.resource_id = ?
+    )
+  `).get(userId, tableId, userId, tableId) as { allowed: number | null } | undefined
 
   if (!tableAccess || tableAccess.allowed !== 1) return []
 
-  // Check if there are any field-level restrictions
+  // Field-level restrictions — union role-grants and dept-grants. A field
+  // is readable if either grant says so (MAX over both sources).
   const fieldPerms = db.prepare(`
-    SELECT p.resource_id, p.can_read
-    FROM permissions p
-    JOIN user_roles ur ON ur.role_id = p.role_id
-    WHERE ur.user_id = ?
-      AND p.resource_type = 'field'
-      AND p.resource_id LIKE ?
-  `).all(userId, `${tableId}.%`) as Array<{ resource_id: string; can_read: number }>
+    SELECT resource_id, MAX(can_read) AS can_read FROM (
+      SELECT p.resource_id, p.can_read
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ? AND p.resource_type = 'field' AND p.resource_id LIKE ?
+      UNION ALL
+      SELECT dp.resource_id, dp.can_read
+      FROM department_permissions dp
+      JOIN user_departments ud ON ud.department_id = dp.department_id
+      WHERE ud.user_id = ? AND dp.resource_type = 'field' AND dp.resource_id LIKE ?
+    )
+    GROUP BY resource_id
+  `).all(userId, `${tableId}.%`, userId, `${tableId}.%`) as Array<{ resource_id: string; can_read: number }>
 
   // No field-level permissions defined = all fields readable (table-level grants all)
   if (fieldPerms.length === 0) return 'all'
@@ -164,8 +242,23 @@ export function getReadableFields(userId: number, tableId: string): number[] | '
     .map(f => parseInt(f.resource_id.split('.')[1]!, 10))
 }
 
-// Get all writable field IDs for a user on a given table
-export function getWritableFields(userId: number, tableId: string): number[] | 'all' {
+// Get all writable field IDs for a user on a given table. Honors the
+// optional scopeDeptId like getReadableFields().
+export function getWritableFields(userId: number, tableId: string, scopeDeptId?: number): number[] | 'all' {
+  if (scopeDeptId != null) {
+    const tableAccess = db.prepare(`
+      SELECT MAX(can_write) AS allowed FROM department_permissions
+      WHERE department_id = ? AND resource_type = 'table' AND resource_id = ?
+    `).get(scopeDeptId, tableId) as { allowed: number | null } | undefined
+    if (!tableAccess || tableAccess.allowed !== 1) return []
+    const fp = db.prepare(`
+      SELECT resource_id, can_write FROM department_permissions
+      WHERE department_id = ? AND resource_type = 'field' AND resource_id LIKE ?
+    `).all(scopeDeptId, `${tableId}.%`) as Array<{ resource_id: string; can_write: number }>
+    if (fp.length === 0) return 'all'
+    return fp.filter(f => f.can_write === 1).map(f => parseInt(f.resource_id.split('.')[1]!, 10))
+  }
+
   const adminCheck = db.prepare(`
     SELECT 1 FROM user_roles ur
     JOIN roles r ON r.id = ur.role_id
@@ -174,24 +267,35 @@ export function getWritableFields(userId: number, tableId: string): number[] | '
   if (adminCheck) return 'all'
 
   const tableAccess = db.prepare(`
-    SELECT MAX(p.can_write) as allowed
-    FROM permissions p
-    JOIN user_roles ur ON ur.role_id = p.role_id
-    WHERE ur.user_id = ?
-      AND p.resource_type = 'table'
-      AND p.resource_id = ?
-  `).get(userId, tableId) as { allowed: number | null } | undefined
+    SELECT MAX(allowed) AS allowed FROM (
+      SELECT MAX(p.can_write) AS allowed
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ? AND p.resource_type = 'table' AND p.resource_id = ?
+      UNION ALL
+      SELECT MAX(dp.can_write) AS allowed
+      FROM department_permissions dp
+      JOIN user_departments ud ON ud.department_id = dp.department_id
+      WHERE ud.user_id = ? AND dp.resource_type = 'table' AND dp.resource_id = ?
+    )
+  `).get(userId, tableId, userId, tableId) as { allowed: number | null } | undefined
 
   if (!tableAccess || tableAccess.allowed !== 1) return []
 
   const fieldPerms = db.prepare(`
-    SELECT p.resource_id, p.can_write
-    FROM permissions p
-    JOIN user_roles ur ON ur.role_id = p.role_id
-    WHERE ur.user_id = ?
-      AND p.resource_type = 'field'
-      AND p.resource_id LIKE ?
-  `).all(userId, `${tableId}.%`) as Array<{ resource_id: string; can_write: number }>
+    SELECT resource_id, MAX(can_write) AS can_write FROM (
+      SELECT p.resource_id, p.can_write
+      FROM permissions p
+      JOIN user_roles ur ON ur.role_id = p.role_id
+      WHERE ur.user_id = ? AND p.resource_type = 'field' AND p.resource_id LIKE ?
+      UNION ALL
+      SELECT dp.resource_id, dp.can_write
+      FROM department_permissions dp
+      JOIN user_departments ud ON ud.department_id = dp.department_id
+      WHERE ud.user_id = ? AND dp.resource_type = 'field' AND dp.resource_id LIKE ?
+    )
+    GROUP BY resource_id
+  `).all(userId, `${tableId}.%`, userId, `${tableId}.%`) as Array<{ resource_id: string; can_write: number }>
 
   if (fieldPerms.length === 0) return 'all'
 
@@ -201,15 +305,20 @@ export function getWritableFields(userId: number, tableId: string): number[] | '
 }
 
 // Get the record filter WHERE clause for a user on a given table
-// Returns null if no filter needed (admin or no rules configured)
-export function getRecordFilter(userId: number, tableId: string): string | null {
-  // Admin bypass
-  const adminCheck = db.prepare(`
-    SELECT 1 FROM user_roles ur
-    JOIN roles r ON r.id = ur.role_id
-    WHERE ur.user_id = ? AND r.name = 'admin'
-  `).get(userId)
-  if (adminCheck) return null
+// Returns null if no filter needed (admin or no rules configured).
+// When scoped to a department, admin bypass is suppressed but record
+// filters still resolve against the real user's email + roles —
+// departments don't (yet) carry record filters of their own.
+export function getRecordFilter(userId: number, tableId: string, scopeDeptId?: number): string | null {
+  // Admin bypass — only when NOT scoped.
+  if (scopeDeptId == null) {
+    const adminCheck = db.prepare(`
+      SELECT 1 FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = ? AND r.name = 'admin'
+    `).get(userId)
+    if (adminCheck) return null
+  }
 
   // Get user email
   const user = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined

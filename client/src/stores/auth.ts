@@ -16,18 +16,28 @@ interface Permission {
   can_write: number
 }
 
+interface Scope { departmentId: number; departmentName: string }
+
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem('token'))
   const user = ref<User | null>(null)
   const permissions = ref<Permission[]>([])
+  // View-as scope: when set, the bearer JWT is scoped to a department
+  // and the admin role bypass is suppressed app-wide. Mirrored from
+  // /api/auth/me so the banner + dropdown stay in sync after refreshes.
+  const scope = ref<Scope | null>(null)
   const router = useRouter()
 
   const isAuthenticated = computed(() => !!token.value)
-  const isAdmin = computed(() => user.value?.roles.includes('admin') ?? false)
+  // Admin in the underlying account — used to gate the "View as" picker.
+  const isAccountAdmin = computed(() => user.value?.roles.includes('admin') ?? false)
+  // "Effective" admin — bypasses permission gates app-wide. False while
+  // scoped so the test session reflects what a department member sees.
+  const isAdmin = computed(() => isAccountAdmin.value && !scope.value)
+  const isScoped = computed(() => scope.value != null)
 
-  // True if the user is an admin OR has a per-view read permission for
-  // `resourceId`. Mirrors `requireViewPermission` on the server so the
-  // sidebar / router guard can hide entries the API would 403 anyway.
+  // True if the user has a per-view read permission. Admin bypass when
+  // not scoped. Mirrors `requireViewPermission` on the server.
   function hasViewPermission(resourceId: string): boolean {
     if (isAdmin.value) return true
     return permissions.value.some(p =>
@@ -44,6 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     user.value = null
     permissions.value = []
+    scope.value = null
     localStorage.removeItem('token')
     router.push('/login')
   }
@@ -60,11 +71,46 @@ export const useAuthStore = defineStore('auth', () => {
       }
       const data = await res.json()
       user.value = data.user
+      scope.value = data.scope || null
       // Load permissions after user is set
       await fetchPermissions()
     } catch {
       logout()
     }
+  }
+
+  // Admin-only: scope the current session to a department. Server issues
+  // a new JWT carrying the scope claim; we swap it in atomically and
+  // refresh permissions so sidebar/router gates rebind to the dept's view.
+  async function scopeToDepartment(departmentId: number) {
+    if (!token.value) return
+    const res = await fetch('/api/auth/scope', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ department_id: departmentId }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Failed to set scope')
+    token.value = data.token
+    localStorage.setItem('token', data.token)
+    user.value = data.user
+    scope.value = data.scope
+    await fetchPermissions()
+  }
+
+  async function clearScope() {
+    if (!token.value) return
+    const res = await fetch('/api/auth/scope/clear', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Failed to clear scope')
+    token.value = data.token
+    localStorage.setItem('token', data.token)
+    user.value = data.user
+    scope.value = null
+    await fetchPermissions()
   }
 
   async function fetchPermissions() {
@@ -106,5 +152,10 @@ export const useAuthStore = defineStore('auth', () => {
     setAuth(data.token, data.user)
   }
 
-  return { token, user, permissions, isAuthenticated, isAdmin, hasViewPermission, setAuth, login, register, logout, fetchUser }
+  return {
+    token, user, permissions, scope,
+    isAuthenticated, isAdmin, isAccountAdmin, isScoped,
+    hasViewPermission, setAuth, login, register, logout, fetchUser,
+    scopeToDepartment, clearScope,
+  }
 })

@@ -74,14 +74,18 @@ router.post('/query', async (req: Request, res: Response): Promise<void> => {
     return
   }
 
+  // Honor admin View-as scope: when set, all perm checks resolve as if
+  // the caller were a member of that department only.
+  const scopeDeptId = req.user?.actAsDepartmentId
+
   // Check table-level read permission
-  if (!checkPermission(userId, 'table', tableId, 'read')) {
+  if (!checkPermission(userId, 'table', tableId, 'read', scopeDeptId)) {
     res.status(403).json({ error: `No read access to table ${tableId}` })
     return
   }
 
   // Filter select list to only readable fields
-  const readable = getReadableFields(userId, tableId)
+  const readable = getReadableFields(userId, tableId, scopeDeptId)
   let filteredSelect = select
   if (readable !== 'all' && Array.isArray(select)) {
     filteredSelect = select.filter((fid: number) => readable.includes(fid))
@@ -92,7 +96,7 @@ router.post('/query', async (req: Request, res: Response): Promise<void> => {
   }
 
   // Apply record-level filter based on user email
-  const recordFilter = getRecordFilter(userId, tableId)
+  const recordFilter = getRecordFilter(userId, tableId, scopeDeptId)
   let where = rest.where || ''
   if (recordFilter) {
     where = where ? `(${where})AND${recordFilter}` : recordFilter
@@ -128,14 +132,16 @@ router.post('/upsert', async (req: Request, res: Response): Promise<void> => {
     return
   }
 
+  const scopeDeptId = req.user?.actAsDepartmentId
+
   // Check table-level write permission
-  if (!checkPermission(userId, 'table', tableId, 'write')) {
+  if (!checkPermission(userId, 'table', tableId, 'write', scopeDeptId)) {
     res.status(403).json({ error: `No write access to table ${tableId}` })
     return
   }
 
   // Check field-level write permissions
-  const writable = getWritableFields(userId, tableId)
+  const writable = getWritableFields(userId, tableId, scopeDeptId)
   if (writable !== 'all' && Array.isArray(records)) {
     for (const record of records) {
       const fieldIds = Object.keys(record).map(Number)

@@ -46,8 +46,8 @@ function ensureAppRoles(): void {
 
 router.post('/users', (req: Request, res: Response): void => {
   ensureAppRoles()
-  const { email, name, roles } = req.body as {
-    email?: string; name?: string; roles?: string[]
+  const { email, name, roles, department_ids } = req.body as {
+    email?: string; name?: string; roles?: string[]; department_ids?: number[]
   }
 
   const cleanEmail = String(email || '').trim().toLowerCase()
@@ -61,9 +61,26 @@ router.post('/users', (req: Request, res: Response): void => {
     res.status(400).json({ error: 'Enter a valid email address (e.g. name@company.com)' })
     return
   }
-  if (!Array.isArray(roles) || roles.length === 0) {
-    res.status(400).json({ error: 'Pick at least one role' })
+  // Department-first invite: either a department OR a role is enough.
+  // The role list stays optional because department membership now
+  // confers its own view permissions via department_permissions.
+  const cleanDepts = Array.isArray(department_ids)
+    ? [...new Set(department_ids.filter(id => typeof id === 'number' && Number.isFinite(id)))]
+    : []
+  const cleanRoles = Array.isArray(roles) ? roles : []
+  if (cleanRoles.length === 0 && cleanDepts.length === 0) {
+    res.status(400).json({ error: 'Pick at least one department or role' })
     return
+  }
+
+  // Validate department IDs upfront so we don't half-create the user.
+  if (cleanDepts.length > 0) {
+    const placeholders = cleanDepts.map(() => '?').join(',')
+    const found = db.prepare(`SELECT id FROM departments WHERE id IN (${placeholders})`).all(...cleanDepts) as Array<{ id: number }>
+    if (found.length !== cleanDepts.length) {
+      res.status(400).json({ error: 'One or more departments do not exist' })
+      return
+    }
   }
 
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(cleanEmail)
@@ -81,12 +98,23 @@ router.post('/users', (req: Request, res: Response): void => {
     ).run(cleanEmail, cleanName, inviteToken, expiresAt)
     const userId = result.lastInsertRowid as number
 
-    const assignRole = db.prepare(
-      'INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = ?'
-    )
-    const roleList = [...new Set(roles.map(normalizeAppRoleName))]
-    for (const roleName of roleList) {
-      assignRole.run(userId, roleName)
+    if (cleanRoles.length > 0) {
+      const assignRole = db.prepare(
+        'INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = ?'
+      )
+      const roleList = [...new Set(cleanRoles.map(normalizeAppRoleName))]
+      for (const roleName of roleList) {
+        assignRole.run(userId, roleName)
+      }
+    }
+
+    if (cleanDepts.length > 0) {
+      const assignDept = db.prepare(
+        'INSERT OR IGNORE INTO user_departments (user_id, department_id) VALUES (?, ?)'
+      )
+      for (const deptId of cleanDepts) {
+        assignDept.run(userId, deptId)
+      }
     }
 
     return userId
@@ -96,9 +124,16 @@ router.post('/users', (req: Request, res: Response): void => {
   const assignedRoles = db.prepare(`
     SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?
   `).all(userId) as Array<{ name: string }>
+  const assignedDepts = db.prepare(`
+    SELECT d.id, d.name FROM departments d JOIN user_departments ud ON ud.department_id = d.id WHERE ud.user_id = ?
+  `).all(userId) as Array<{ id: number; name: string }>
 
   res.status(201).json({
-    user: { id: userId, email: cleanEmail, name: cleanName, roles: assignedRoles.map(r => r.name) },
+    user: {
+      id: userId, email: cleanEmail, name: cleanName,
+      roles: assignedRoles.map(r => r.name),
+      departments: assignedDepts,
+    },
     inviteLink: `/invite/${inviteToken}`,
   })
 })
