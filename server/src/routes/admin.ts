@@ -7,6 +7,11 @@ const router = Router()
 
 const APP_ROLE_NAMES = ['admin', 'Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep']
 
+function tableExists(name: string): boolean {
+  const row = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name)
+  return !!row
+}
+
 function normalizeAppRoleName(role: string): string {
   const trimmed = String(role || '').trim()
   const legacy: Record<string, string> = {
@@ -41,6 +46,70 @@ function ensureAppRoles(): void {
   )
   for (const name of APP_ROLE_NAMES) stmt.run(name, descriptions[name] || '')
 }
+
+router.get('/qb-webhooks/recent', (req: Request, res: Response): void => {
+  if (!tableExists('qb_webhook_events')) {
+    res.json({ events: [], total: 0 })
+    return
+  }
+
+  const limit = Math.min(Math.max(parseInt(String(req.query['limit'] || '50'), 10) || 50, 1), 200)
+  const projectRecordId = Number(req.query['project_record_id'] || req.query['projectRecordId'] || 0)
+  const status = String(req.query['status'] || '').trim()
+  const source = String(req.query['source'] || '').trim()
+
+  let where = 'WHERE 1=1'
+  const params: unknown[] = []
+  if (Number.isFinite(projectRecordId) && projectRecordId > 0) {
+    where += ' AND project_record_id = ?'
+    params.push(projectRecordId)
+  }
+  if (status) {
+    where += ' AND status = ?'
+    params.push(status)
+  }
+  if (source) {
+    where += ` AND (
+      kind = ?
+      OR json_extract(payload_json, '$.source') = ?
+      OR json_extract(payload_json, '$.event_type') = ?
+    )`
+    params.push(source, source, source)
+  }
+
+  const rows = db.prepare(`
+    SELECT id, kind, source_table, source_record_id, project_record_id,
+           changed_field_ids, payload_json, status, error, received_at, processed_at
+    FROM qb_webhook_events
+    ${where}
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(...params, limit) as Array<Record<string, unknown>>
+
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM qb_webhook_events ${where}`).get(...params) as { c: number }).c
+
+  const events = rows.map(row => {
+    let payload: unknown = null
+    try { payload = JSON.parse(String(row['payload_json'] || '{}')) }
+    catch { payload = null }
+    return {
+      id: row['id'],
+      kind: row['kind'],
+      source: payload && typeof payload === 'object' ? (payload as Record<string, unknown>)['source'] ?? null : null,
+      source_table: row['source_table'],
+      source_record_id: row['source_record_id'],
+      project_record_id: row['project_record_id'],
+      changed_field_ids: row['changed_field_ids'],
+      status: row['status'],
+      error: row['error'],
+      received_at: row['received_at'],
+      processed_at: row['processed_at'],
+      payload,
+    }
+  })
+
+  res.json({ events, total, limit })
+})
 
 // --- Create user (admin invite flow) ---
 
