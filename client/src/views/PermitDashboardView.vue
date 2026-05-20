@@ -247,10 +247,11 @@ function throughputMetric(seriesName: string): string {
   return 'permitSubmitted'
 }
 
-function onThroughputClick(p: { dataIndex: number; name: string; seriesName: string }) {
+function onThroughputClick(p: { dataIndex: number; name: string; seriesName?: string }) {
   const row = data.value.charts?.throughput?.[p.dataIndex]
   if (!row?.period) return
-  drillPeriod(throughputMetric(p.seriesName), row.period, `${p.seriesName} · ${p.name}`)
+  const seriesName = p.seriesName || ''
+  drillPeriod(throughputMetric(seriesName), row.period, `${seriesName} · ${p.name}`)
 }
 
 function onAgingClick(p: { name: string }) {

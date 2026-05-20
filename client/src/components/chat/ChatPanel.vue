@@ -279,7 +279,8 @@ async function attachProject(p: ProjectHit) {
     const updated = await res.json() as Thread
     activeThread.value = updated
     // Single emit at the end with final state — wasNew distinguishes path.
-    emit(wasNew ? 'thread-created' : 'thread-updated', updated)
+    if (wasNew) emit('thread-created', updated)
+    else emit('thread-updated', updated)
   }
   closePicker()
 }

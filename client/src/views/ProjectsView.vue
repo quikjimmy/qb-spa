@@ -351,7 +351,7 @@ onMounted(() => {
   loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() })
   loadHoldClassifications()
   loadCancellations()
-  registerRefresh?.(() => { loadProjects(); loadCancellations() })
+  registerRefresh?.(async () => { await Promise.all([loadProjects(), loadCancellations()]) })
   // Initial freshness read (no list refetch — just establishes the baseline),
   // then poll every 30s. Same cadence as the DataFreshness badge.
   pollFreshness()

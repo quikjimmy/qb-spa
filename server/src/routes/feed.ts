@@ -145,7 +145,7 @@ router.get('/:id/comments', (req: Request, res: Response): void => {
 
 // Add a comment
 router.post('/:id/comments', (req: Request, res: Response): void => {
-  const feedItemId = parseInt(req.params['id']!, 10)
+  const feedItemId = parseInt(String(req.params['id'] || ''), 10)
   const { body } = req.body
 
   if (!body?.trim()) {
@@ -175,7 +175,7 @@ router.post('/:id/comments', (req: Request, res: Response): void => {
 
 // Toggle a reaction (add if not exists, remove if exists)
 router.post('/:id/reactions', (req: Request, res: Response): void => {
-  const feedItemId = parseInt(req.params['id']!, 10)
+  const feedItemId = parseInt(String(req.params['id'] || ''), 10)
   const userId = req.user!.userId
   const { emoji } = req.body
 
@@ -268,8 +268,8 @@ router.post('/', upload.array('media', 10), async (req: Request, res: Response):
 
   // Return the created item with media
   const item = db.prepare('SELECT * FROM feed_items WHERE id = ?').get(feedItemId) as Record<string, unknown>
-  const media = db.prepare('SELECT * FROM media_attachments WHERE feed_item_id = ?').all(feedItemId)
-    .map((m: Record<string, unknown>) => ({
+  const media = (db.prepare('SELECT * FROM media_attachments WHERE feed_item_id = ?').all(feedItemId) as Array<Record<string, unknown>>)
+    .map(m => ({
       id: m.id,
       url: `/uploads/${m.file_name}`,
       thumbUrl: m.thumb_file_name ? `/uploads/thumbs/${m.thumb_file_name}` : `/uploads/${m.file_name}`,
