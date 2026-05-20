@@ -163,7 +163,7 @@ const drillColumns: ColumnDef[] = [
   { key: 'inspection_passed',      label: 'Passed',    align: 'right' },
   { key: 'coordinator',            label: 'PC' },
 ]
-const selectedProject = ref<Record<string, unknown> | null>(null)
+const selectedProject = ref<(Record<string, unknown> & { record_id: number; customer_name: string }) | null>(null)
 
 async function drill(label: string, pipeline: string) {
   drillLabel.value = label; drillLoading.value = true; drillProjects.value = []
@@ -245,7 +245,7 @@ async function fetchSchedDrill(period: string, label: string, segment?: string) 
   await nextTick()
   document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
 }
-async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName: string; event?: { target?: { type?: string } } }) {
+async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName?: string; event?: { target?: { type?: string } } }) {
   const row = scheduledFor.value[p.dataIndex]
   if (!row) return
   // Total-label clicks land on a 'text' graphic; segment clicks land
@@ -255,7 +255,7 @@ async function onSchedBarClick(p: { dataIndex: number; name: string; seriesName:
     fetchSchedDrill(row.period, `Inspx Scheduled · All · ${p.name}`)
     return
   }
-  const seg = SCHED_SERIES_MAP[p.seriesName]
+  const seg = p.seriesName ? SCHED_SERIES_MAP[p.seriesName] : undefined
   if (!seg) return
   fetchSchedDrill(row.period, `Inspx Scheduled · ${seg.label} · ${p.name}`, seg.key)
 }
@@ -306,8 +306,8 @@ const OUTCOME_SERIES_MAP: Record<string, { key: string; label: string }> = {
   'Fail':      { key: 'fail',       label: 'Failed, not yet passed' },
   'N/A':       { key: 'na',         label: 'No inspection scheduled' },
 }
-async function onOutcomesBarClick(p: { dataIndex: number; name: string; seriesName: string }) {
-  const seg = OUTCOME_SERIES_MAP[p.seriesName]
+async function onOutcomesBarClick(p: { dataIndex: number; name: string; seriesName?: string }) {
+  const seg = p.seriesName ? OUTCOME_SERIES_MAP[p.seriesName] : undefined
   const row = outcomesSlice.value[p.dataIndex] as { month?: string } | undefined
   if (!seg || !row?.month) return
   drillLabel.value = `${seg.label} · ${p.name}`

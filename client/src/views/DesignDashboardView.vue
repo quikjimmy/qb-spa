@@ -120,6 +120,10 @@ function slaTone(summary: any) {
   if (pct >= 75) return 'warning' as const
   return 'danger' as const
 }
+function tileTone(summary: any): 'success' | 'danger' | 'neutral' {
+  const tone = slaTone(summary)
+  return tone === 'warning' ? 'neutral' : tone
+}
 
 function fmtSlaPct(summary: any): string {
   return summary?.count ? `${summary.pctMet}%` : '—'
@@ -165,9 +169,19 @@ function queueByKey(key: string) {
   return (data.value.queues || []).find((q: any) => q.key === key)
 }
 
+interface KpiTile {
+  key: string
+  label: string
+  value: string | number
+  sub?: string
+  tone?: 'info' | 'success' | 'warning' | 'danger' | 'teal' | 'neutral'
+  drill?: boolean
+  bg?: 'card' | 'danger-soft'
+}
+
 const kpiTiles = computed(() => {
   const k = data.value.kpi || {}
-  const tiles = [
+  const tiles: KpiTile[] = [
     { key: 'open', label: 'Open', value: k.open ?? 0, sub: `${k.avgAge ?? 0}d avg`, tone: 'neutral' as const, drill: true },
     { key: 'stuck', label: 'Stuck', value: k.stale ?? 0, sub: `${k.oldest ?? 0}d oldest`, tone: 'danger' as const, drill: true, bg: k.stale ? 'danger-soft' as const : 'card' as const },
     { key: 'completed', label: 'Complete', value: k.completed ?? 0, sub: 'in window', tone: 'success' as const },
@@ -192,7 +206,7 @@ const kpiTiles = computed(() => {
       label: metric.short,
       value: fmtSlaPct(s),
       sub: fmtSlaSub(s),
-      tone: slaTone(s),
+      tone: tileTone(s),
       drill: !!(s.misses || s.openMisses),
       bg: s.openMisses ? 'danger-soft' as const : 'card' as const,
     })

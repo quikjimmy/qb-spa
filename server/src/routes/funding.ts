@@ -121,6 +121,7 @@ router.get('/m1-not-m2', (req: Request, res: Response): void => {
     epc: (req.query['epc'] as string) || undefined,
   }
   try {
+    res.set('Cache-Control', 'no-store')
     res.json(buildM1NotM2(filters))
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

@@ -314,11 +314,11 @@ watch([tab, scope], load)
                  audio from /api/dialpad/call/:id/audio via our proxy. -->
             <button v-if="r.was_voicemail || r.was_recorded"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors"
-              :class="audioOpen[r.call_id] ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
-              @click="toggleAudio(r.call_id)"
+              :class="r.call_id && audioOpen[r.call_id] ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+              @click="r.call_id && toggleAudio(r.call_id)"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-              {{ audioOpen[r.call_id] ? 'Hide' : (r.was_voicemail ? 'Listen VM' : 'Recording') }}
+              {{ r.call_id && audioOpen[r.call_id] ? 'Hide' : (r.was_voicemail ? 'Listen VM' : 'Recording') }}
             </button>
             <button v-if="!r.is_read"
               class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium hover:bg-muted transition-colors"

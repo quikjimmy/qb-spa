@@ -248,7 +248,7 @@ const drillColumns: ColumnDef[] = [
   { key: 'pto_approved',      label: 'PTO Appr',   align: 'right' },
   { key: 'coordinator',       label: 'PC' },
 ]
-const selectedProject = ref<Record<string, unknown> | null>(null)
+const selectedProject = ref<(Record<string, unknown> & { record_id: number; customer_name: string }) | null>(null)
 
 // SLA Miss / Stale drills consume the analytics-supplied lists
 // (kpi.fireCount and kpi.staleCount drive whether the tiles render).

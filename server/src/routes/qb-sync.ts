@@ -128,7 +128,7 @@ router.post('/roles', async (_req: Request, res: Response): Promise<void> => {
 // Sync field-level permissions for a specific table
 router.post('/permissions/:tableId', async (req: Request, res: Response): Promise<void> => {
   const { realm, token } = getQbConfig()
-  const tableId = req.params['tableId']!
+  const tableId = String(req.params['tableId'] || '')
 
   if (!token) {
     res.status(500).json({ error: 'QB_USER_TOKEN not configured' })

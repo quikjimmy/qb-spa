@@ -105,7 +105,7 @@ function selectProject(s: Space) {
   mobileDrawerOpen.value = false
 }
 
-function selectThread(t: Thread) {
+function selectThread(t: { id: number; space_id: number | null }) {
   activeThreadId.value = t.id
   activeSpaceId.value = t.space_id
   mobileDrawerOpen.value = false

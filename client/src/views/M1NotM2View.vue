@@ -3,7 +3,7 @@
 // from BookedBoardedView but lives on its own page with no surrounding
 // metrics — just the row list, colored M2 cell, days-since columns,
 // click-sort headers, and the stale-M1 urgency highlight.
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import DataFreshness from '@/components/DataFreshness.vue'
@@ -30,24 +30,64 @@ const router = useRouter()
 const data = ref<Response | null>(null)
 const loading = ref(true)
 const err = ref('')
+let loadSeq = 0
+let inFlight: AbortController | null = null
+let lastLoadStartedAt = 0
+const RETURN_REFRESH_DEBOUNCE_MS = 750
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
 
-async function load() {
-  loading.value = true
+async function load(opts: { showLoading?: boolean } = {}) {
+  const showLoading = opts.showLoading ?? !data.value
+  const seq = ++loadSeq
+  inFlight?.abort()
+  inFlight = new AbortController()
+  lastLoadStartedAt = Date.now()
+  loading.value = showLoading
   err.value = ''
   try {
-    const res = await fetch('/api/funding/m1-not-m2', { headers: hdrs() })
+    const res = await fetch('/api/funding/m1-not-m2', {
+      headers: hdrs(),
+      cache: 'no-store',
+      signal: inFlight.signal,
+    })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    data.value = await res.json() as Response
+    const next = await res.json() as Response
+    if (seq === loadSeq) data.value = next
   } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') return
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+      inFlight = null
+    }
   }
 }
 
-onMounted(load)
+function refreshOnReturn() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+  if (Date.now() - lastLoadStartedAt < RETURN_REFRESH_DEBOUNCE_MS) return
+  void load({ showLoading: false })
+}
+
+onMounted(() => {
+  void load()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', refreshOnReturn)
+    window.addEventListener('pageshow', refreshOnReturn)
+    document.addEventListener('visibilitychange', refreshOnReturn)
+  }
+})
+
+onBeforeUnmount(() => {
+  inFlight?.abort()
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('focus', refreshOnReturn)
+    window.removeEventListener('pageshow', refreshOnReturn)
+    document.removeEventListener('visibilitychange', refreshOnReturn)
+  }
+})
 
 function openProject(rid: number, e?: MouseEvent) { openProjectWithEvent(router, rid, e) }
 

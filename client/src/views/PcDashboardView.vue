@@ -468,8 +468,8 @@ function daysUntil(d: string | null): number | null {
   if (!d) return null
   const dateKey = localDateKey(d)
   if (!dateKey) return null
-  const [y, m, day] = dateKey.split('-').map(Number)
-  const target = new Date(y, (m || 1) - 1, day || 1, 12, 0, 0, 0)
+  const [y = 1970, m = 1, day = 1] = dateKey.split('-').map(Number)
+  const target = new Date(y, m - 1, day, 12, 0, 0, 0)
   const today = new Date()
   today.setHours(12, 0, 0, 0)
   return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
@@ -570,6 +570,7 @@ const volumeChart = computed(() => {
   return {
     tooltip: { trigger: 'axis' as const, formatter: (ps: any) => {
       const d = ps[0]; const bucket = v[d.dataIndex]
+      if (!bucket) return ''
       return `${d.name}<br/>Volume: <b>${bucket.count}</b><br/>Avg: <b>${bucket.avg}</b> ${dayUnit.value}<br/>P90: <b>${bucket.p90}</b> ${dayUnit.value}`
     }},
     grid: { left: 40, right: 20, top: 10, bottom: 60 },
@@ -583,7 +584,7 @@ const volumeChart = computed(() => {
       type: 'bar' as const, data: v.map(b => b.count),
       itemStyle: { color: '#3b82f6', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 28,
       label: { show: true, position: 'top' as const, fontSize: 9, formatter: (p: any) => {
-        const bucket = v[p.dataIndex]; return `${bucket.avg}d`
+        const bucket = v[p.dataIndex]; return bucket ? `${bucket.avg}d` : ''
       }},
       labelLayout: { hideOverlap: true },
     }, {
@@ -592,7 +593,7 @@ const volumeChart = computed(() => {
       itemStyle: { color: 'transparent' },
       label: {
         show: true, position: 'insideBottom' as const, fontSize: 9, fontWeight: 600,
-        color: '#fff', formatter: (p: any) => `${v[p.dataIndex].count}`,
+        color: '#fff', formatter: (p: any) => `${v[p.dataIndex]?.count ?? ''}`,
       },
     }],
     graphic: v.length > 0 ? [{
@@ -639,7 +640,8 @@ function onChartClick(params: any) {
   if (!analytics.value?.drillData) return
   const coordData = analytics.value.byCoordinator
   if (params.componentType === 'series' && coordData?.[params.dataIndex]) {
-    const coord = coordData[params.dataIndex].coordinator
+    const coord = coordData[params.dataIndex]?.coordinator
+    if (!coord) return
     const rows = analytics.value.drillData.filter(r => r.coordinator === coord)
     drillInto(`${coord} — ${activePerfMilestone.value}`, rows)
   }
