@@ -349,6 +349,48 @@
   .scoreboard-celebration.is-leaving { animation: none; }
 }
 
+/* ─── Sports-style 7-day win/loss strip ──────────────────
+   Tight row of small color-squares with a single day-letter centered.
+   Color carries the signal:
+     green = hit · red = miss · light gray = weekend / no target ·
+     ink = today (in progress, not graded yet).
+   A hairline divider sits between the 6 prior days and today so the
+   eye lands on the "current" cell. */
+.scoreboard-history-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.scoreboard-history-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--sb-hairline);
+  margin: 2px 4px;
+}
+
+.scoreboard-history-cell {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.scoreboard-history-cell[data-state="hit"]      { background: var(--sb-success);        color: var(--sb-on-primary); }
+.scoreboard-history-cell[data-state="miss"]     { background: var(--sb-sale);           color: var(--sb-on-primary); }
+.scoreboard-history-cell[data-state="weekend"]  { background: var(--sb-soft-cloud);     color: var(--sb-stone); }
+.scoreboard-history-cell[data-state="no-target"]{ background: var(--sb-soft-cloud);     color: var(--sb-stone); }
+.scoreboard-history-cell[data-state="today"]    { background: var(--sb-ink);            color: var(--sb-on-primary); }
+
 /* ─── Tier 2 — increment pulse + "+N" floating tag ─────── */
 .scoreboard-number.is-bumped {
   animation: scoreboard-bump 1s ease-out;
