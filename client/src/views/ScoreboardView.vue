@@ -23,21 +23,53 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import type { ScoreboardSummary } from '@/lib/dailyGoals'
+import type { ScoreboardGoal, ScoreboardSummary } from '@/lib/dailyGoals'
 import { formatLongDate, groupByDepartment, paceFor } from '@/lib/dailyGoals'
 import ScoreboardPulse from '@/components/scoreboard/ScoreboardPulse.vue'
 import ScoreboardGoalCard from '@/components/scoreboard/ScoreboardGoalCard.vue'
+import ScoreboardMarquee, { type TickerItem } from '@/components/scoreboard/ScoreboardMarquee.vue'
+import ScoreboardCelebration from '@/components/scoreboard/ScoreboardCelebration.vue'
 
 import '@/assets/scoreboard.css'
 
 const POLL_MS = 60_000
 const ROTATE_MS = 12_000
+const BANNER_POLL_MS = 120_000      // admin messages — slower poll
+const CELEBRATION_HOLD_MS = 4_000   // Tier-1 takeover lifetime
+const CELEBRATION_FADE_MS = 400     // overlap with fade-out CSS
+const TICKER_CELEBRATION_TTL_MS = 30_000
 
 const auth = useAuthStore()
 const summary = ref<ScoreboardSummary | null>(null)
 const errorMsg = ref('')
 const activeSlide = ref(0)
 const clock = ref(new Date())
+
+// Tier-1 celebration plumbing: previousPaceStatus tracks each goal's
+// pace from poll N-1 so we can detect the "just hit met" edge. When
+// that edge fires, the goal is pushed onto celebrationQueue; one
+// at a time is hoisted into activeCelebration for ~4s.
+const previousPaceStatus = ref<Map<number, string>>(new Map())
+const celebrationQueue = ref<ScoreboardGoal[]>([])
+const activeCelebration = ref<ScoreboardGoal | null>(null)
+const celebrationLeaving = ref(false)
+
+// Marquee plumbing: admin-curated items (server) merged with ephemeral
+// celebration entries that auto-expire after 30s.
+const bannerItems = ref<Array<{ id: number; text: string }>>([])
+const tickerCelebrations = ref<Array<{ id: string; text: string; expiresAt: number }>>([])
+// Ticked once a second so the computed below re-evaluates expirations.
+const tickerClock = ref(Date.now())
+
+const tickerItems = computed<TickerItem[]>(() => {
+  const now = tickerClock.value
+  const live = tickerCelebrations.value
+    .filter(t => t.expiresAt > now)
+    .map<TickerItem>(t => ({ id: t.id, text: t.text, kind: 'celebration' }))
+  const persistent = bannerItems.value
+    .map<TickerItem>(b => ({ id: `b-${b.id}`, text: b.text, kind: 'admin' }))
+  return [...live, ...persistent]
+})
 
 const slides = computed(() => {
   if (!summary.value) return []
@@ -96,6 +128,7 @@ async function fetchSummary(): Promise<void> {
       return
     }
     const data = (await res.json()) as ScoreboardSummary
+    detectGoalHits(data)
     summary.value = data
     errorMsg.value = ''
     if (slides.value.length > 0 && activeSlide.value >= slides.value.length) {
@@ -106,24 +139,82 @@ async function fetchSummary(): Promise<void> {
   }
 }
 
+// Diff this poll's pace status against the previous one. The first
+// poll seeds previousPaceStatus without firing anything (we can't
+// tell if a goal was already met before we started watching).
+function detectGoalHits(next: ScoreboardSummary): void {
+  const isFirstPoll = previousPaceStatus.value.size === 0
+  for (const g of next.goals) {
+    const newStatus = paceFor(g, next.dayProgress).status
+    const oldStatus = previousPaceStatus.value.get(g.id)
+    if (!isFirstPoll && oldStatus && oldStatus !== 'met' && newStatus === 'met') {
+      // Edge: this goal just hit its target for the first time today.
+      celebrationQueue.value.push(g)
+      tickerCelebrations.value.push({
+        id: `c-${g.id}-${Date.now()}`,
+        text: `🎯 ${g.label} just hit today's target — ${g.current}/${g.target}`,
+        expiresAt: Date.now() + TICKER_CELEBRATION_TTL_MS,
+      })
+    }
+    previousPaceStatus.value.set(g.id, newStatus)
+  }
+  if (!activeCelebration.value && celebrationQueue.value.length > 0) {
+    showNextCelebration()
+  }
+}
+
+function showNextCelebration(): void {
+  const next = celebrationQueue.value.shift()
+  if (!next) return
+  activeCelebration.value = next
+  celebrationLeaving.value = false
+  // Start fade-out a beat before unmount so the CSS transition plays.
+  window.setTimeout(() => { celebrationLeaving.value = true }, CELEBRATION_HOLD_MS - CELEBRATION_FADE_MS)
+  window.setTimeout(() => {
+    activeCelebration.value = null
+    if (celebrationQueue.value.length > 0) showNextCelebration()
+  }, CELEBRATION_HOLD_MS)
+}
+
+async function fetchBanner(): Promise<void> {
+  if (!auth.token) return
+  try {
+    const res = await fetch('/api/daily-goals/banner', {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    if (!res.ok) return
+    const data = (await res.json()) as { items: Array<{ id: number; text: string }> }
+    bannerItems.value = data.items
+  } catch {
+    // Soft fail — marquee just shows whatever's already cached + celebrations.
+  }
+}
+
 let pollTimer: number | null = null
+let bannerTimer: number | null = null
 let rotateTimer: number | null = null
 let clockTimer: number | null = null
+let tickerExpiryTimer: number | null = null
 
 onMounted(async () => {
-  await fetchSummary()
+  await Promise.all([fetchSummary(), fetchBanner()])
   pollTimer = window.setInterval(fetchSummary, POLL_MS)
+  bannerTimer = window.setInterval(fetchBanner, BANNER_POLL_MS)
   rotateTimer = window.setInterval(() => {
     if (slides.value.length === 0) return
     activeSlide.value = (activeSlide.value + 1) % slides.value.length
   }, ROTATE_MS)
   clockTimer = window.setInterval(() => { clock.value = new Date() }, 15_000)
+  // 1s tick prunes expired celebration entries from the marquee.
+  tickerExpiryTimer = window.setInterval(() => { tickerClock.value = Date.now() }, 1_000)
 })
 
 onBeforeUnmount(() => {
   if (pollTimer != null) window.clearInterval(pollTimer)
+  if (bannerTimer != null) window.clearInterval(bannerTimer)
   if (rotateTimer != null) window.clearInterval(rotateTimer)
   if (clockTimer != null) window.clearInterval(clockTimer)
+  if (tickerExpiryTimer != null) window.clearInterval(tickerExpiryTimer)
 })
 </script>
 
@@ -131,9 +222,12 @@ onBeforeUnmount(() => {
   <div class="scoreboard-root">
     <div class="scoreboard-stage">
       <div class="scoreboard-frame">
-        <!-- Header — Bebas day-name lockup -->
+        <!-- Header — Kin mark + Bebas day-name lockup -->
         <header class="hdr">
-          <p class="scoreboard-eyebrow">Kin · Daily Goals</p>
+          <div class="brand">
+            <img src="/img/Kin - Square Profile-blake-white.png" alt="Kin Home" class="brand-mark" />
+            <p class="scoreboard-eyebrow brand-tag">Daily Goals</p>
+          </div>
           <h1 class="scoreboard-display campaign">{{ dayName }}</h1>
           <p class="range">{{ dateLabel }}</p>
           <p class="day">{{ paceLabel }}</p>
@@ -192,14 +286,41 @@ onBeforeUnmount(() => {
           </div>
           <p class="clock">{{ clockLabel }}</p>
         </footer>
+
+        <!-- Scrolling ticker pinned to the very bottom of the frame -->
+        <ScoreboardMarquee :items="tickerItems" />
       </div>
     </div>
+
+    <!-- Tier-1 celebration overlay — sits above the entire frame -->
+    <ScoreboardCelebration
+      v-if="activeCelebration"
+      :goal="activeCelebration"
+      :leaving="celebrationLeaving"
+    />
   </div>
 </template>
 
 <style scoped>
 .hdr {
   padding: 32px 28px 18px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  /* Nike-style: image sits flat on canvas, no shadow or border. */
+}
+
+.brand-tag {
+  margin: 0;
 }
 
 .campaign {
