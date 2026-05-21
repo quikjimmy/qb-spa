@@ -27,17 +27,14 @@ import type { ScoreboardGoal, ScoreboardSummary } from '@/lib/dailyGoals'
 import { formatLongDate, groupByDepartment, paceFor } from '@/lib/dailyGoals'
 import ScoreboardPulse from '@/components/scoreboard/ScoreboardPulse.vue'
 import ScoreboardGoalCard from '@/components/scoreboard/ScoreboardGoalCard.vue'
-import ScoreboardMarquee, { type TickerItem } from '@/components/scoreboard/ScoreboardMarquee.vue'
 import ScoreboardCelebration from '@/components/scoreboard/ScoreboardCelebration.vue'
 
 import '@/assets/scoreboard.css'
 
 const POLL_MS = 60_000
 const ROTATE_MS = 12_000
-const BANNER_POLL_MS = 120_000      // admin messages — slower poll
 const CELEBRATION_HOLD_MS = 4_000   // Tier-1 takeover lifetime
 const CELEBRATION_FADE_MS = 400     // overlap with fade-out CSS
-const TICKER_CELEBRATION_TTL_MS = 30_000
 
 const auth = useAuthStore()
 const summary = ref<ScoreboardSummary | null>(null)
@@ -56,22 +53,12 @@ const celebrationQueue = ref<ScoreboardGoal[]>([])
 const activeCelebration = ref<ScoreboardGoal | null>(null)
 const celebrationLeaving = ref(false)
 
-// Marquee plumbing: admin-curated items (server) merged with ephemeral
-// celebration entries that auto-expire after 30s.
-const bannerItems = ref<Array<{ id: number; text: string }>>([])
-const tickerCelebrations = ref<Array<{ id: string; text: string; expiresAt: number }>>([])
-// Ticked once a second so the computed below re-evaluates expirations.
-const tickerClock = ref(Date.now())
-
-const tickerItems = computed<TickerItem[]>(() => {
-  const now = tickerClock.value
-  const live = tickerCelebrations.value
-    .filter(t => t.expiresAt > now)
-    .map<TickerItem>(t => ({ id: t.id, text: t.text, kind: 'celebration' }))
-  const persistent = bannerItems.value
-    .map<TickerItem>(b => ({ id: `b-${b.id}`, text: b.text, kind: 'admin' }))
-  return [...live, ...persistent]
-})
+// Mobile responsive mode — on narrow viewports (phones), drop the
+// fixed-position letterbox + auto-rotation and let the user scroll
+// through all department slides under a sticky header. TV mode
+// (above the breakpoint) keeps the current 9:16 letterbox.
+const MOBILE_BREAKPOINT_PX = 640
+const isMobile = ref(false)
 
 const slides = computed(() => {
   if (!summary.value) return []
@@ -158,11 +145,6 @@ function detectGoalHits(next: ScoreboardSummary): void {
     if (celebratedKeys.value.has(key)) continue
     celebratedKeys.value.add(key)
     celebrationQueue.value.push(g)
-    tickerCelebrations.value.push({
-      id: `c-${g.id}-${hitMs}`,
-      text: `🎯 ${g.label} just hit today's target — ${g.current}/${g.target}`,
-      expiresAt: now + TICKER_CELEBRATION_TTL_MS,
-    })
   }
   if (!activeCelebration.value && celebrationQueue.value.length > 0) {
     showNextCelebration()
@@ -182,53 +164,44 @@ function showNextCelebration(): void {
   }, CELEBRATION_HOLD_MS)
 }
 
-async function fetchBanner(): Promise<void> {
-  if (!auth.token) return
-  try {
-    const res = await fetch('/api/daily-goals/banner', {
-      headers: { Authorization: `Bearer ${auth.token}` },
-    })
-    if (!res.ok) return
-    const data = (await res.json()) as { items: Array<{ id: number; text: string }> }
-    bannerItems.value = data.items
-  } catch {
-    // Soft fail — marquee just shows whatever's already cached + celebrations.
-  }
-}
-
 let pollTimer: number | null = null
-let bannerTimer: number | null = null
 let rotateTimer: number | null = null
 let clockTimer: number | null = null
-let tickerExpiryTimer: number | null = null
+
+function syncIsMobile(): void {
+  isMobile.value = typeof window !== 'undefined'
+    && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches
+}
 
 onMounted(async () => {
-  await Promise.all([fetchSummary(), fetchBanner()])
+  syncIsMobile()
+  window.addEventListener('resize', syncIsMobile)
+  await fetchSummary()
   pollTimer = window.setInterval(fetchSummary, POLL_MS)
-  bannerTimer = window.setInterval(fetchBanner, BANNER_POLL_MS)
+  // Rotation is TV-mode only; mobile renders all slides stacked and
+  // scrollable, so cycling activeSlide would just move state nobody
+  // sees. Skip the timer in that case.
   rotateTimer = window.setInterval(() => {
-    if (slides.value.length === 0) return
+    if (isMobile.value || slides.value.length === 0) return
     activeSlide.value = (activeSlide.value + 1) % slides.value.length
   }, ROTATE_MS)
   clockTimer = window.setInterval(() => { clock.value = new Date() }, 15_000)
-  // 1s tick prunes expired celebration entries from the marquee.
-  tickerExpiryTimer = window.setInterval(() => { tickerClock.value = Date.now() }, 1_000)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncIsMobile)
   if (pollTimer != null) window.clearInterval(pollTimer)
-  if (bannerTimer != null) window.clearInterval(bannerTimer)
   if (rotateTimer != null) window.clearInterval(rotateTimer)
   if (clockTimer != null) window.clearInterval(clockTimer)
-  if (tickerExpiryTimer != null) window.clearInterval(tickerExpiryTimer)
 })
 </script>
 
 <template>
-  <div class="scoreboard-root">
+  <div class="scoreboard-root" :class="{ 'is-mobile': isMobile }">
     <div class="scoreboard-stage">
       <div class="scoreboard-frame">
-        <!-- Header — Kin mark + Bebas day-name lockup -->
+        <!-- Header — Kin mark + Bebas day-name lockup. Sticky on
+             mobile so it stays anchored while the user scrolls. -->
         <header class="hdr">
           <div class="brand">
             <img src="/img/Kin - Square Profile-blake-white.png" alt="Kin Home" class="brand-mark" />
@@ -258,9 +231,33 @@ onBeforeUnmount(() => {
           </ul>
         </section>
 
-        <!-- Department slide — rotating -->
+        <!-- Department slides. TV mode (>640px): one slide visible,
+             auto-rotating every 12s. Mobile: all slides stacked +
+             scrollable under the sticky header. -->
         <main class="slide-shell">
-          <Transition name="slide" mode="out-in">
+          <template v-if="isMobile">
+            <section v-if="slides.length === 0" class="slide empty">
+              <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
+              <p v-else class="scoreboard-eyebrow">Loading…</p>
+            </section>
+            <section
+              v-for="s in slides"
+              :key="s.department"
+              class="slide"
+            >
+              <div class="slide-hdr">
+                <h2 class="scoreboard-display dept">{{ s.department }}</h2>
+                <p class="slide-count">{{ s.goals.length }} goals</p>
+              </div>
+              <ScoreboardGoalCard
+                v-for="g in s.goals"
+                :key="g.id"
+                :goal="g"
+                :day-progress="summary?.dayProgress ?? 0"
+              />
+            </section>
+          </template>
+          <Transition v-else name="slide" mode="out-in">
             <section v-if="currentSlide" :key="currentSlide.department" class="slide">
               <div class="slide-hdr">
                 <h2 class="scoreboard-display dept">{{ currentSlide.department }}</h2>
@@ -280,8 +277,9 @@ onBeforeUnmount(() => {
           </Transition>
         </main>
 
-        <!-- Footer — slide indicator + clock -->
-        <footer class="ftr">
+        <!-- Footer — TV-only. Hidden on mobile since rotation doesn't
+             run and dots/clock would just be clutter. -->
+        <footer v-if="!isMobile" class="ftr">
           <div class="dots">
             <span
               v-for="(s, i) in slides"
@@ -292,9 +290,6 @@ onBeforeUnmount(() => {
           </div>
           <p class="clock">{{ clockLabel }}</p>
         </footer>
-
-        <!-- Scrolling ticker pinned to the very bottom of the frame -->
-        <ScoreboardMarquee :items="tickerItems" />
       </div>
     </div>
 
@@ -470,5 +465,49 @@ onBeforeUnmount(() => {
   color: var(--sb-mute);
   letter-spacing: 0.04em;
   margin: 0;
+}
+
+/* ─── Mobile mode (phones) ─────────────────────────────────
+   Sticky header anchors the brand + day name + date + pace line at
+   the top. Everything below scrolls in document flow. Display sizes
+   shrink so the layout fits a typical 360-430px phone width.    */
+.scoreboard-root.is-mobile .hdr {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--sb-canvas);
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--sb-hairline);
+}
+
+.scoreboard-root.is-mobile .campaign {
+  font-size: 56px;
+}
+
+.scoreboard-root.is-mobile .range {
+  font-size: 16px;
+  margin-top: 6px;
+}
+
+.scoreboard-root.is-mobile .day {
+  font-size: 12px;
+}
+
+.scoreboard-root.is-mobile .focus {
+  padding: 14px 18px 6px;
+}
+
+.scoreboard-root.is-mobile .slide-shell {
+  padding: 0 18px;
+  flex: none;
+  overflow: visible;
+}
+
+.scoreboard-root.is-mobile .slide {
+  flex: none;
+}
+
+.scoreboard-root.is-mobile .dept {
+  font-size: 48px;
 }
 </style>
