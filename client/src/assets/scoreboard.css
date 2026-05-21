@@ -164,3 +164,156 @@
 @media (prefers-reduced-motion: reduce) {
   .slide-enter-active, .slide-leave-active { transition: none; }
 }
+
+/* ─── Scrolling marquee (ticker) ─────────────────────────
+   Nike "Just In" / utility-bar style: pure black bar, single
+   line of caps-text scrolling continuously. Content is rendered
+   twice so the loop is seamless. */
+.scoreboard-marquee {
+  background: var(--sb-ink);
+  color: var(--sb-on-primary);
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.scoreboard-marquee-track {
+  display: inline-flex;
+  animation: scoreboard-marquee-scroll var(--marquee-duration, 60s) linear infinite;
+  will-change: transform;
+}
+
+.scoreboard-marquee-content {
+  display: inline-block;
+  padding-right: 56px;
+  flex: none;
+}
+
+.scoreboard-marquee-content > .sep {
+  display: inline-block;
+  padding: 0 14px;
+  color: var(--sb-mute);
+}
+
+.scoreboard-marquee-content > .live {
+  color: var(--sb-success-bright);
+  font-weight: 700;
+}
+
+@keyframes scoreboard-marquee-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scoreboard-marquee-track { animation: none; }
+}
+
+/* ─── Celebration takeover (Tier 1 — goal hit) ────────────
+   Full-screen inversion: canvas flips to ink for ~4s with the
+   achievement in towering Bebas. The contrast change is the
+   attention grab — no particles, no sound. */
+.scoreboard-celebration {
+  position: fixed;
+  inset: 0;
+  background: var(--sb-ink);
+  color: var(--sb-on-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 48px;
+  z-index: 200;
+  animation: scoreboard-takeover-in 0.35s ease-out;
+}
+
+.scoreboard-celebration.is-leaving {
+  animation: scoreboard-takeover-out 0.4s ease-in forwards;
+}
+
+.scoreboard-celebration-eyebrow {
+  font-family: 'Inter', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sb-stone);
+  margin: 0;
+}
+
+.scoreboard-celebration-label {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 64px;
+  text-transform: uppercase;
+  line-height: 0.9;
+  letter-spacing: 0;
+  text-align: center;
+  margin: 0;
+  max-width: 92%;
+}
+
+.scoreboard-celebration-number {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 240px;
+  line-height: 0.85;
+  margin: 0;
+  color: var(--sb-success-bright);
+}
+
+.scoreboard-celebration-caption {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 56px;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+@keyframes scoreboard-takeover-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes scoreboard-takeover-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scoreboard-celebration,
+  .scoreboard-celebration.is-leaving { animation: none; }
+}
+
+/* ─── Tier 2 — increment pulse + "+N" floating tag ─────── */
+.scoreboard-number.is-bumped {
+  animation: scoreboard-bump 1s ease-out;
+}
+
+@keyframes scoreboard-bump {
+  0%   { color: var(--sb-success-bright); transform: scale(1); }
+  20%  { color: var(--sb-success-bright); transform: scale(1.08); }
+  100% { color: inherit; transform: scale(1); }
+}
+
+.scoreboard-bump-tag {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--sb-success-bright);
+  pointer-events: none;
+  animation: scoreboard-bump-float 1.4s ease-out forwards;
+}
+
+@keyframes scoreboard-bump-float {
+  0%   { opacity: 0; transform: translateY(0); }
+  20%  { opacity: 1; transform: translateY(-6px); }
+  100% { opacity: 0; transform: translateY(-44px); }
+}
