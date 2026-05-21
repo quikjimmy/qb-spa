@@ -45,11 +45,13 @@ const errorMsg = ref('')
 const activeSlide = ref(0)
 const clock = ref(new Date())
 
-// Tier-1 celebration plumbing: previousPaceStatus tracks each goal's
-// pace from poll N-1 so we can detect the "just hit met" edge. When
-// that edge fires, the goal is pushed onto celebrationQueue; one
-// at a time is hoisted into activeCelebration for ~4s.
-const previousPaceStatus = ref<Map<number, string>>(new Map())
+// Tier-1 celebration plumbing. The server stamps firstHitAt the
+// moment it first sees a goal hit 'met' today. We celebrate when
+// that timestamp is recent (within 2 min) AND this session hasn't
+// already shown the celebration. This survives page refreshes and
+// works on a TV that just opened mid-day.
+const CELEBRATION_RECENT_WINDOW_MS = 2 * 60 * 1000
+const celebratedKeys = ref<Set<string>>(new Set())  // goalId + date
 const celebrationQueue = ref<ScoreboardGoal[]>([])
 const activeCelebration = ref<ScoreboardGoal | null>(null)
 const celebrationLeaving = ref(false)
@@ -139,24 +141,28 @@ async function fetchSummary(): Promise<void> {
   }
 }
 
-// Diff this poll's pace status against the previous one. The first
-// poll seeds previousPaceStatus without firing anything (we can't
-// tell if a goal was already met before we started watching).
+// Look at the server's firstHitAt timestamp on each goal. If it's
+// recent AND we haven't already celebrated this hit in this session,
+// fire. This correctly handles all the "missed the edge" cases:
+//   - TV opened after the hit happened earlier today
+//   - Page refreshed mid-day
+//   - Two TVs both catching the same hit a poll apart
 function detectGoalHits(next: ScoreboardSummary): void {
-  const isFirstPoll = previousPaceStatus.value.size === 0
+  const now = Date.now()
   for (const g of next.goals) {
-    const newStatus = paceFor(g, next.dayProgress).status
-    const oldStatus = previousPaceStatus.value.get(g.id)
-    if (!isFirstPoll && oldStatus && oldStatus !== 'met' && newStatus === 'met') {
-      // Edge: this goal just hit its target for the first time today.
-      celebrationQueue.value.push(g)
-      tickerCelebrations.value.push({
-        id: `c-${g.id}-${Date.now()}`,
-        text: `🎯 ${g.label} just hit today's target — ${g.current}/${g.target}`,
-        expiresAt: Date.now() + TICKER_CELEBRATION_TTL_MS,
-      })
-    }
-    previousPaceStatus.value.set(g.id, newStatus)
+    if (!g.firstHitAt) continue
+    const hitMs = Date.parse(g.firstHitAt)
+    if (!Number.isFinite(hitMs)) continue
+    if (now - hitMs > CELEBRATION_RECENT_WINDOW_MS) continue
+    const key = `${g.id}-${next.date}`
+    if (celebratedKeys.value.has(key)) continue
+    celebratedKeys.value.add(key)
+    celebrationQueue.value.push(g)
+    tickerCelebrations.value.push({
+      id: `c-${g.id}-${hitMs}`,
+      text: `🎯 ${g.label} just hit today's target — ${g.current}/${g.target}`,
+      expiresAt: now + TICKER_CELEBRATION_TTL_MS,
+    })
   }
   if (!activeCelebration.value && celebrationQueue.value.length > 0) {
     showNextCelebration()
