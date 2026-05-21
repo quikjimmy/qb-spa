@@ -480,16 +480,18 @@ async function loadArrivy() {
       else if (tpl.includes('install')) byKind.install.push(rec)
       else if (tpl.includes('inspect')) byKind.inspection.push(rec)
     }
-    function latest(kind: 'survey' | 'install' | 'inspection'): ArrivyTaskInfo | null {
-      const recs = byKind[kind]
-      if (!recs.length) return null
-      // Pick the most recently scheduled (scheduled-DT field on Arrivy task).
-      recs.sort((a, b) => {
-        const av = String(qbVal(a, F['scheduledDateTime']!) ?? '')
-        const bv = String(qbVal(b, F['scheduledDateTime']!) ?? '')
-        return bv.localeCompare(av)
-      })
-      const rec = recs[0]!
+    function statusRank(status: ArrivyStatusKey): number {
+      switch (status) {
+        case 'onsite': return 80
+        case 'enroute': return 70
+        case 'submitted':
+        case 'approved': return 60
+        case 'cancelled':
+        case 'rejected': return 50
+        case 'scheduled': return 10
+      }
+    }
+    function taskStatus(rec: QbRecord): { status: ArrivyStatusKey; cancelInfo: CancelInfo | null } {
       const taskRid = String(qbVal(rec, 3) ?? '')
       const logCancelled = !!taskRid && cancelled.has(taskRid)
       const status = logCancelled ? 'cancelled' : classifyArrivyTask({
@@ -498,7 +500,25 @@ async function loadArrivy() {
         enroute: qbStrField(rec, F['enrouteStatus']!) || null,
         submitted: qbStrField(rec, F['submittedDateTime']!) || null,
       })
-      const cinfo = logCancelled ? cancelInfoMap[taskRid] : null
+      return { status, cancelInfo: logCancelled ? cancelInfoMap[taskRid] ?? null : null }
+    }
+    function latest(kind: 'survey' | 'install' | 'inspection'): ArrivyTaskInfo | null {
+      const recs = byKind[kind]
+      if (!recs.length) return null
+      // Pick the most meaningful task first. A completed/on-site/en-route
+      // task should not be hidden behind a future scheduled follow-up just
+      // because that follow-up has a later scheduled date.
+      recs.sort((a, b) => {
+        const as = taskStatus(a).status
+        const bs = taskStatus(b).status
+        const rankDelta = statusRank(bs) - statusRank(as)
+        if (rankDelta !== 0) return rankDelta
+        const av = String(qbVal(a, F['scheduledDateTime']!) ?? '')
+        const bv = String(qbVal(b, F['scheduledDateTime']!) ?? '')
+        return bv.localeCompare(av)
+      })
+      const rec = recs[0]!
+      const { status, cancelInfo: cinfo } = taskStatus(rec)
       return {
         status,
         taskUrl: qbStrField(rec, F['taskUrl']!),

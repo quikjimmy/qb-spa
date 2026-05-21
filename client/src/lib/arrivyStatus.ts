@@ -47,10 +47,10 @@ export function normalizeRawStatus(raw: string | null | undefined): ArrivyStatus
   if (/cancel|exception|notdone|not\s*done/i.test(s)) return 'cancelled'
   if (/reject/i.test(s)) return 'rejected'
   if (/approv/i.test(s)) return 'approved'
-  if (/submit|formcomplete|form\s*complete|sitework|site\s*work\s*complete|complete/i.test(s)) return 'submitted'
-  if (/onsite|on\s*site|started|start|arrived/i.test(s)) return 'onsite'
-  if (/enroute|en\s*route/i.test(s)) return 'enroute'
-  if (/scheduled|notstarted|not\s*started|pending/i.test(s)) return 'scheduled'
+  if (/scheduled|not[_\s-]*started|pending/i.test(s)) return 'scheduled'
+  if (/submit|form[_\s-]*complete|site[_\s-]*work[_\s-]*complete|tech[_\s-]*complete|complete|completed/i.test(s)) return 'submitted'
+  if (/onsite|on[_\s-]*site|started|start|arrived/i.test(s)) return 'onsite'
+  if (/en[_\s-]*route|enroute/i.test(s)) return 'enroute'
   return null
 }
 
@@ -72,6 +72,7 @@ export function classifyArrivyTask(opts: {
   if (opts.submitted) return 'submitted'
   if (opts.arrived) return 'onsite'
   if (opts.enroute) return 'enroute'
+  if (norm) return norm
   return 'scheduled'
 }
 
