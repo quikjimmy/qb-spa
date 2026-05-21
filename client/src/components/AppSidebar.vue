@@ -88,6 +88,7 @@ const projectsOpen = computed(() => route.path.startsWith('/projects'))
 const adminItems = [
   { label: 'Users & Roles', to: '/admin', icon: 'users' },
   { label: 'Booked & Boarded', to: '/reports/booked-and-boarded', icon: 'chart' },
+  { label: 'Daily Goals', to: '/admin/daily-goals', icon: 'chart' },
 ]
 
 // Funding department — collapsible nav item with a landing dashboard
