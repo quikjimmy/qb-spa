@@ -102,6 +102,28 @@ function chunk<T>(items: T[], size: number): T[][] {
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
 }
+function fieldValue(rec: QbRecord, fieldId: number): unknown {
+  return rec[String(fieldId)]?.value
+}
+function taskMergeKey(rec: QbRecord): string {
+  return [
+    String(fieldValue(rec, F.relatedProject) || ''),
+    String(fieldValue(rec, F.templateName) || '').toLowerCase(),
+  ].join('|')
+}
+function cloneRecord(rec: QbRecord): QbRecord {
+  const out: QbRecord = {}
+  for (const [key, value] of Object.entries(rec)) out[key] = { value: value.value }
+  return out
+}
+function overlayActiveSignals(base: QbRecord, active: QbRecord): QbRecord {
+  const out = cloneRecord(base)
+  for (const fieldId of [F.enrouteStatus, F.startedStatus, F.submittedDateTime, F.techCompleteDateTime, F.enrouteName]) {
+    const value = fieldValue(active, fieldId)
+    if (value) out[String(fieldId)] = { value }
+  }
+  return out
+}
 function dateRange(preset: string): { from: Date; to: Date } {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -189,8 +211,30 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
       }).catch(() => [] as QbRecord[])
       activeRecords.push(...rows)
     }
+    const scheduledByMergeKey = new Map<string, QbRecord>()
+    for (const rec of scheduledRecords) {
+      const key = taskMergeKey(rec)
+      if (!key.startsWith('|')) scheduledByMergeKey.set(key, rec)
+    }
+    const mergedRecords = [...scheduledRecords]
+    for (const active of activeRecords) {
+      const scheduled = String(fieldValue(active, F.scheduledDateTime) || '')
+      if (!scheduled) continue
+      if (scheduled && scheduled < fromStr) continue
+      const match = scheduledByMergeKey.get(taskMergeKey(active))
+      if (match && scheduled > toStr) {
+        const idx = mergedRecords.indexOf(match)
+        if (idx >= 0) {
+          const merged = overlayActiveSignals(match, active)
+          mergedRecords[idx] = merged
+          scheduledByMergeKey.set(taskMergeKey(merged), merged)
+        }
+      } else {
+        mergedRecords.push(active)
+      }
+    }
     const byRid = new Map<string, QbRecord>()
-    for (const rec of [...scheduledRecords, ...activeRecords]) {
+    for (const rec of mergedRecords) {
       const rid = String(rec['3']?.value || '')
       if (rid) byRid.set(rid, rec)
     }
