@@ -1,0 +1,166 @@
+/*
+ * Nike-inspired tokens for the Weekly Goals scoreboard ONLY.
+ * Everything here is scoped under `.scoreboard-root` so the rest of
+ * the app's theme (calm palette, glassmorphism, Inter) is untouched.
+ *
+ * Source: client/DESIGN.md (npx getdesign@latest add nike).
+ * Display tier substitutes Bebas Neue (free, open-source) for Nike
+ * Futura ND. Body uses Inter — already loaded by the app shell.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;700;900&display=swap');
+
+.scoreboard-root {
+  /* Nike palette */
+  --sb-ink:           #111111;
+  --sb-on-primary:    #ffffff;
+  --sb-canvas:        #ffffff;
+  --sb-soft-cloud:    #f5f5f5;
+  --sb-charcoal:      #39393b;
+  --sb-mute:          #707072;
+  --sb-stone:         #9e9ea0;
+  --sb-hairline:      #cacacb;
+  --sb-hairline-soft: #e5e5e5;
+  --sb-sale:          #d30005;
+  --sb-sale-deep:     #780700;
+  --sb-success:       #007d48;
+  --sb-success-bright:#1eaa52;
+
+  /* Pace tones — Nike-compliant: only sale red on "Behind/Critical",
+     only success green on "On Pace/Met". "At Risk" stays charcoal
+     (the system never invents a third semantic color). */
+  --sb-pace-met:      var(--sb-success);
+  --sb-pace-on:       var(--sb-success);
+  --sb-pace-risk:     var(--sb-charcoal);
+  --sb-pace-behind:   var(--sb-sale);
+  --sb-pace-critical: var(--sb-sale);
+
+  --sb-rounded-md:    24px;
+  --sb-rounded-lg:    30px;
+  --sb-rounded-full:  9999px;
+
+  --sb-space-xs:  4px;
+  --sb-space-sm:  8px;
+  --sb-space-md:  12px;
+  --sb-space-lg:  18px;
+  --sb-space-xl:  24px;
+  --sb-space-xxl: 30px;
+  --sb-space-section: 48px;
+
+  background: var(--sb-canvas);
+  color: var(--sb-ink);
+  font-family: 'Inter', 'Helvetica Now Text', Helvetica, Arial, sans-serif;
+  font-feature-settings: 'tnum' 1;
+
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.scoreboard-display {
+  font-family: 'Bebas Neue', 'Helvetica Now Display Medium', Impact, sans-serif;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  line-height: 0.9;
+}
+
+.scoreboard-eyebrow {
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sb-mute);
+}
+
+.scoreboard-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: var(--sb-rounded-full);
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.scoreboard-pill[data-pace="on_pace"],
+.scoreboard-pill[data-pace="met"] {
+  background: var(--sb-pace-on);
+  color: var(--sb-on-primary);
+}
+
+.scoreboard-pill[data-pace="at_risk"] {
+  background: var(--sb-canvas);
+  color: var(--sb-pace-risk);
+  box-shadow: inset 0 0 0 1px var(--sb-hairline);
+}
+
+.scoreboard-pill[data-pace="behind"],
+.scoreboard-pill[data-pace="critical"] {
+  background: var(--sb-pace-behind);
+  color: var(--sb-on-primary);
+}
+
+/* Flat card. Nike system has zero card elevation — only the 1px
+   hairline as separator. */
+.scoreboard-card {
+  background: var(--sb-canvas);
+  border-radius: 0;
+  border-top: 1px solid var(--sb-hairline);
+  padding: var(--sb-space-xl) 0;
+}
+
+.scoreboard-card:first-child {
+  border-top: 0;
+}
+
+/* Big editorial number — one per card, the only loud element. */
+.scoreboard-number {
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 0.9;
+  color: var(--sb-ink);
+}
+
+.scoreboard-number[data-pace="behind"],
+.scoreboard-number[data-pace="critical"] {
+  color: var(--sb-pace-behind);
+}
+
+/* Portrait TV: the design assumes a 9:16 viewport (1080×1920). On
+   landscape screens we letterbox to keep the proportions correct so
+   the same layout never re-flows into a stretched dashboard. */
+.scoreboard-stage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  background: var(--sb-soft-cloud);
+}
+
+.scoreboard-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: calc(100vh * 9 / 16);
+  background: var(--sb-canvas);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Slide-rotation transition between department pages. */
+.slide-enter-active, .slide-leave-active {
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+.slide-enter-from { opacity: 0; transform: translateY(16px); }
+.slide-leave-to   { opacity: 0; transform: translateY(-16px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-enter-active, .slide-leave-active { transition: none; }
+}

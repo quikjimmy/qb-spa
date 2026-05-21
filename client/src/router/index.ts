@@ -10,6 +10,14 @@ const router = createRouter({
       name: 'login',
       component: () => import('../views/LoginView.vue'),
     },
+    // TV scoreboard — full-screen, no sidebar. Auth still required so
+    // the device signs in once and stays parked here.
+    {
+      path: '/scoreboard',
+      name: 'scoreboard',
+      component: () => import('../views/ScoreboardView.vue'),
+      meta: { requiresAuth: true },
+    },
     {
       path: '/register',
       name: 'register',
@@ -213,6 +221,12 @@ const router = createRouter({
           path: 'admin',
           name: 'admin',
           component: () => import('../views/AdminView.vue'),
+          meta: { requiresAdmin: true },
+        },
+        {
+          path: 'admin/daily-goals',
+          name: 'admin-daily-goals',
+          component: () => import('../views/DailyGoalsAdminView.vue'),
           meta: { requiresAdmin: true },
         },
       ],
