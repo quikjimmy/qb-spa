@@ -242,6 +242,17 @@ db.prepare(
      AND (data_source IS NULL OR data_source = '')`
 ).run()
 
+// Interconnection scorecard should use the actual IX/NEM table, not the
+// project-cache rollups. Keep the canonical NEM submitted card visible when
+// the DB still has the seeded inactive/default state.
+db.prepare(
+  `UPDATE daily_goals
+   SET active = 1,
+       data_source = 'nem.submitted'
+   WHERE slug = 'nem-submitted'
+     AND (data_source IS NULL OR data_source = '' OR data_source = 'nem.submitted')`
+).run()
+
 // ─── Date helpers ─────────────────────────────────────────
 // All dates are local ISO YYYY-MM-DD in the *office* timezone — not
 // the host's timezone. Railway runs in UTC, so on a Mountain-Time
@@ -608,6 +619,90 @@ function kcaClearedCount(dateIso: string): number {
 
 refreshKcaCleared().catch(() => { /* logged inside */ })
 
+// ─── Interconnection / NEM — actual IX table ───────────────
+// Source of truth: bseufp79y (Interconnection/PTO). Field 6 is NEM
+// Submission and field 16 is NEM Approved.
+
+const INTERCONNECTION_TABLE = 'bseufp79y'
+const INTERCONNECTION_TTL_MS = 60_000
+let interconnectionCache: {
+  submittedByDate: Map<string, number>
+  approvedByDate: Map<string, number>
+  refreshedAt: number
+} = { submittedByDate: new Map(), approvedByDate: new Map(), refreshedAt: 0 }
+let interconnectionInFlight: Promise<void> | null = null
+
+async function refreshInterconnection(): Promise<void> {
+  if (interconnectionInFlight) return interconnectionInFlight
+  interconnectionInFlight = (async () => {
+    try {
+      const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+      const token = process.env['QB_USER_TOKEN'] || ''
+      if (!token) {
+        console.warn('[daily-goals] QB_USER_TOKEN missing — nem sources disabled')
+        return
+      }
+      const submittedByDate = new Map<string, number>()
+      const approvedByDate = new Map<string, number>()
+      let skip = 0
+      const top = 1000
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: INTERCONNECTION_TABLE,
+            select: [3, 6, 16],
+            where: `{'6'.XEX.''}OR{'16'.XEX.''}`,
+            sortBy: [{ fieldId: 3, order: 'DESC' }],
+            options: { skip, top },
+          }),
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          throw new Error(`QB interconnection query failed (${res.status}): ${text.slice(0, 200)}`)
+        }
+        const data = await res.json() as { data?: QbRecord[] }
+        const records = data.data || []
+        for (const rec of records) {
+          const submitted = qbVal(rec, 6).slice(0, 10)
+          if (submitted) submittedByDate.set(submitted, (submittedByDate.get(submitted) ?? 0) + 1)
+          const approved = qbVal(rec, 16).slice(0, 10)
+          if (approved) approvedByDate.set(approved, (approvedByDate.get(approved) ?? 0) + 1)
+        }
+        if (records.length < top || skip > 20_000) break
+        skip += top
+      }
+      interconnectionCache = { submittedByDate, approvedByDate, refreshedAt: Date.now() }
+    } catch (e) {
+      console.warn('[daily-goals] interconnection refresh failed:', e)
+    } finally {
+      interconnectionInFlight = null
+    }
+  })()
+  return interconnectionInFlight
+}
+
+function interconnectionSubmittedCount(dateIso: string): number {
+  if (Date.now() - interconnectionCache.refreshedAt > INTERCONNECTION_TTL_MS) {
+    refreshInterconnection().catch(() => { /* logged inside */ })
+  }
+  return interconnectionCache.submittedByDate.get(dateIso) ?? 0
+}
+
+function interconnectionApprovedCount(dateIso: string): number {
+  if (Date.now() - interconnectionCache.refreshedAt > INTERCONNECTION_TTL_MS) {
+    refreshInterconnection().catch(() => { /* logged inside */ })
+  }
+  return interconnectionCache.approvedByDate.get(dateIso) ?? 0
+}
+
+refreshInterconnection().catch(() => { /* logged inside */ })
+
 const DATA_SOURCES: DataSource[] = [
   { key: 'permit.submitted',    label: 'Permits submitted (project_cache.permit_submitted)',  fetch: d => countProjects('permit_submitted',  d) },
   { key: 'permit.approved',     label: 'Permits approved',    fetch: d => countProjects('permit_approved',   d) },
@@ -622,8 +717,8 @@ const DATA_SOURCES: DataSource[] = [
   { key: 'intake.kca_cleared', label: 'KCA Cleared (prior status Rejected, intake completed) — QB report 24', fetch: kcaClearedCount },
   { key: 'design.cad_started',  label: 'Designs started (CAD submitted)',     fetch: d => countProjects('cad_submitted',     d) },
   { key: 'design.completed',    label: 'Designs completed',   fetch: d => countProjects('design_completed',  d) },
-  { key: 'nem.submitted',       label: 'NEM submitted',       fetch: d => countProjects('nem_submitted',     d) },
-  { key: 'nem.approved',        label: 'NEM approved',        fetch: d => countProjects('nem_approved',      d) },
+  { key: 'nem.submitted',       label: 'NEM submitted (Interconnection table)', fetch: interconnectionSubmittedCount },
+  { key: 'nem.approved',        label: 'NEM approved (Interconnection table)',  fetch: interconnectionApprovedCount },
   { key: 'pto.submitted',       label: 'PTO submitted',       fetch: d => countProjects('pto_submitted',     d) },
   { key: 'pto.approved',        label: 'PTO approved (activated)', fetch: d => countProjects('pto_approved', d) },
   { key: 'install.scheduled',   label: 'Installs scheduled',  fetch: d => countProjects('install_scheduled', d) },
