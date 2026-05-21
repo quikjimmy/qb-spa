@@ -622,6 +622,50 @@ router.get('/sources', requireRole('admin'), (_req: Request, res: Response): voi
   res.json({ sources: DATA_SOURCES.map(s => ({ key: s.key, label: s.label })) })
 })
 
+// Diagnostic: shows what a live source is actually returning per day,
+// what's in project_cache for the relevant column on each day, and
+// when the cache was last refreshed. Use when a bound source returns
+// numbers that don't match your expectation — usually either the cache
+// is stale (forces a refresh) or the cached date doesn't match the
+// office TZ (rare, but visible here).
+//
+//   GET /api/daily-goals/debug?source=nem.submitted
+router.get('/debug', requireRole('admin'), (req: Request, res: Response): void => {
+  const sourceKey = String(req.query['source'] || '')
+  const src = sourcesByKey.get(sourceKey)
+  if (!src) {
+    res.status(400).json({
+      error: `Unknown source key: ${sourceKey}`,
+      available: DATA_SOURCES.map(s => s.key),
+    })
+    return
+  }
+
+  const todayIso = isoDate(new Date())
+  const dates: string[] = []
+  for (let i = 6; i >= 0; i--) dates.push(addDaysIso(todayIso, -i))
+  const counts = dates.map(d => ({ date: d, count: src.fetch(d) }))
+
+  // Surface the project_cache freshness so the user can tell at a
+  // glance whether they're looking at a lagged snapshot.
+  const freshness = db.prepare(
+    `SELECT MAX(cached_at) AS latest, COUNT(*) AS rows FROM project_cache`
+  ).get() as { latest: string | null; rows: number }
+  const ticketFreshness = db.prepare(
+    `SELECT MAX(cached_at) AS latest, COUNT(*) AS rows FROM ticket_cache`
+  ).get() as { latest: string | null; rows: number }
+
+  res.json({
+    source: { key: src.key, label: src.label },
+    office_tz: OFFICE_TZ,
+    today: todayIso,
+    counts,
+    project_cache: { last_refresh: freshness.latest, rows: freshness.rows },
+    ticket_cache:  { last_refresh: ticketFreshness.latest, rows: ticketFreshness.rows },
+    refresh_hint: 'POST /api/projects/refresh (full QB resync) — usually fixes lag',
+  })
+})
+
 router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => {
   const id = Number(req.params['id'])
   if (!Number.isInteger(id) || id < 1) {
