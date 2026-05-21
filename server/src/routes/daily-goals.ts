@@ -78,6 +78,22 @@ db.exec(`
     first_hit_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (goal_id, date_iso)
   );
+
+  -- Admin-defined data sources backed by saved QB reports. Each row
+  -- registers a runtime DataSource that the goal editor can bind to,
+  -- just like the hardcoded ones. The report's filter/select stays in
+  -- QB — we just run it on a 60s cache and count rows.
+  CREATE TABLE IF NOT EXISTS daily_goal_custom_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    label TEXT NOT NULL,
+    report_id INTEGER NOT NULL,
+    table_id TEXT NOT NULL,
+    group_by_field_id INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL DEFAULT 'count',  -- 'count' (per-day) | 'snapshot'
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `)
 
 // Idempotent additive migration: link daily_goals to the canonical
@@ -617,7 +633,20 @@ const DATA_SOURCES: DataSource[] = [
   } },
 ]
 
-const sourcesByKey = new Map(DATA_SOURCES.map(s => [s.key, s]))
+// Runtime registry — holds the hardcoded sources above + any custom
+// sources defined by admins in daily_goal_custom_sources. Consumers
+// look here instead of touching DATA_SOURCES directly so dynamic
+// registration "just works" everywhere (dropdown, /summary, /debug,
+// PUT validation, etc.).
+const sourceRegistry = new Map<string, DataSource>()
+function registerSource(s: DataSource): void { sourceRegistry.set(s.key, s) }
+function unregisterSource(key: string): void { sourceRegistry.delete(key) }
+function listSources(): DataSource[] { return Array.from(sourceRegistry.values()) }
+function getSource(key: string): DataSource | undefined { return sourceRegistry.get(key) }
+function hasSource(key: string): boolean { return sourceRegistry.has(key) }
+
+// Seed registry with the hardcoded sources.
+for (const s of DATA_SOURCES) registerSource(s)
 
 function valueForGoalDate(
   goal: { id: number; slug: string; data_source: string | null },
@@ -625,7 +654,7 @@ function valueForGoalDate(
   mockFallback: () => number,
 ): number {
   if (goal.data_source) {
-    const src = sourcesByKey.get(goal.data_source)
+    const src = getSource(goal.data_source)
     if (src) {
       try { return src.fetch(dateIso) } catch { /* fall through to mock */ }
     }
@@ -948,7 +977,11 @@ function targetWindowFor(goalId: number, slug: string, now: Date): TargetWindowE
     out.push({
       date,
       target: targetForDate(goalId, slug, date),
-      editable: date >= todayIso,
+      // All cells in the window are admin-editable. Past days used to
+      // be locked, but admins need the override to retroactively set
+      // or correct historical targets (and re-grade the win/loss
+      // strip).
+      editable: true,
     })
   }
   return out
@@ -978,7 +1011,7 @@ router.get('/', requireRole('admin'), (_req: Request, res: Response): void => {
     `SELECT id, name FROM departments ORDER BY name ASC`
   ).all() as Array<{ id: number; name: string }>
 
-  const sources = DATA_SOURCES.map(s => ({ key: s.key, label: s.label }))
+  const sources = listSources().map(s => ({ key: s.key, label: s.label }))
 
   res.json({ goals, departments, sources })
 })
@@ -986,7 +1019,7 @@ router.get('/', requireRole('admin'), (_req: Request, res: Response): void => {
 // Standalone sources endpoint for any UI that just needs the picker
 // list without the full goals payload.
 router.get('/sources', requireRole('admin'), (_req: Request, res: Response): void => {
-  res.json({ sources: DATA_SOURCES.map(s => ({ key: s.key, label: s.label })) })
+  res.json({ sources: listSources().map(s => ({ key: s.key, label: s.label })) })
 })
 
 // Wipe today's first-hit timestamps so the next /summary poll re-
@@ -1009,11 +1042,11 @@ router.delete('/hits', requireRole('admin'), (_req: Request, res: Response): voi
 //   GET /api/daily-goals/debug?source=nem.submitted
 router.get('/debug', requireRole('admin'), (req: Request, res: Response): void => {
   const sourceKey = String(req.query['source'] || '')
-  const src = sourcesByKey.get(sourceKey)
+  const src = getSource(sourceKey)
   if (!src) {
     res.status(400).json({
       error: `Unknown source key: ${sourceKey}`,
-      available: DATA_SOURCES.map(s => s.key),
+      available: listSources().map(s => s.key),
     })
     return
   }
@@ -1082,7 +1115,7 @@ router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => 
     const ds = body.data_source
     if (ds === null || ds === '') {
       fields.push({ col: 'data_source', val: null })
-    } else if (typeof ds === 'string' && sourcesByKey.has(ds)) {
+    } else if (typeof ds === 'string' && hasSource(ds)) {
       fields.push({ col: 'data_source', val: ds })
     } else {
       res.status(400).json({ error: `Unknown data_source: ${ds}` }); return
@@ -1102,10 +1135,8 @@ router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => 
       for (const t of body.targets) {
         if (!t || typeof t.date !== 'string' || typeof t.target !== 'number') continue
         if (t.target < 0) continue
-        if (t.date < todayIso) {
-          res.status(400).json({ error: `Cannot edit past target for ${t.date}` })
-          return
-        }
+        // Past dates are intentionally allowed — admins need to be
+        // able to backfill or correct historical targets.
         targetEdits.push({ date: t.date, target: Math.round(t.target) })
       }
     }
@@ -1202,7 +1233,7 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
 
   let dataSource: string | null = null
   if (typeof body.data_source === 'string' && body.data_source.length > 0) {
-    if (!sourcesByKey.has(body.data_source)) {
+    if (!hasSource(body.data_source)) {
       res.status(400).json({ error: `Unknown data_source: ${body.data_source}` }); return
     }
     dataSource = body.data_source
@@ -1354,6 +1385,287 @@ router.delete('/banner/:id', requireRole('admin'), (req: Request, res: Response)
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
   const info = db.prepare(`DELETE FROM scoreboard_banner WHERE id = ?`).run(id)
   if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
+  res.json({ ok: true })
+})
+
+// ─── Custom data sources (admin-defined, QB-report-backed) ─
+
+interface CustomSourceRow {
+  id: number
+  key: string
+  label: string
+  report_id: number
+  table_id: string
+  group_by_field_id: number
+  kind: 'count' | 'snapshot'
+}
+
+const CUSTOM_SOURCE_TTL_MS = 60_000
+
+// Per-source cache: keyed by source key, holds the per-date count map
+// + last refresh time. Same pattern as the hardcoded sources above.
+const customCache = new Map<string, {
+  byDate: Map<string, number>
+  snapshot: number
+  refreshedAt: number
+  lastError?: string
+}>()
+const customInFlight = new Map<string, Promise<void>>()
+
+interface QbReportRow {
+  [fieldId: string]: { value: unknown }
+}
+
+// Run a QB saved report via POST /v1/reports/{id}/run. QB evaluates
+// the report's full filter — including report-local formula fields
+// (the `[-1]`, `[-100]` style refs in saved chart-report filters) —
+// and returns the rows the report itself would render.
+//
+// Caveat: CHART-type reports (gauges, etc.) return aggregated data
+// (typically 1 row holding the aggregate count) rather than raw
+// matching rows. For per-day grouping you want a TABLE-type report.
+// For snapshot kind, the aggregate row works fine.
+// Paginated. _groupByFieldId is unused here but kept in the signature
+// so call sites stay consistent.
+async function runQbReport(
+  reportId: number,
+  tableId: string,
+  _groupByFieldId: number,
+): Promise<QbReportRow[]> {
+  const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+  const token = process.env['QB_USER_TOKEN'] || ''
+  if (!token) throw new Error('QB_USER_TOKEN missing')
+
+  const all: QbReportRow[] = []
+  let skip = 0
+  const top = 1000
+  while (true) {
+    const res = await fetch(
+      `https://api.quickbase.com/v1/reports/${reportId}/run?tableId=${encodeURIComponent(tableId)}&skip=${skip}&top=${top}`,
+      {
+        method: 'POST',
+        headers: {
+          'QB-Realm-Hostname': realm,
+          'Authorization': `QB-USER-TOKEN ${token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`QB report ${reportId} failed (${res.status}): ${text.slice(0, 200)}`)
+    }
+    const data = await res.json() as { data?: QbReportRow[] }
+    const records = data.data || []
+    all.push(...records)
+    if (records.length < top || skip > 20_000) break
+    skip += top
+  }
+  return all
+}
+
+async function refreshCustomSource(row: CustomSourceRow): Promise<void> {
+  const existing = customInFlight.get(row.key)
+  if (existing) return existing
+  const p = (async () => {
+    try {
+      const rows = await runQbReport(row.report_id, row.table_id, row.group_by_field_id)
+      const byDate = new Map<string, number>()
+      for (const rec of rows) {
+        const raw = rec[String(row.group_by_field_id)]?.value
+        const s = typeof raw === 'string' ? raw : String(raw ?? '')
+        const date = s.slice(0, 10)
+        if (!date) continue
+        byDate.set(date, (byDate.get(date) ?? 0) + 1)
+      }
+      customCache.set(row.key, { byDate, snapshot: rows.length, refreshedAt: Date.now() })
+    } catch (e) {
+      const prev = customCache.get(row.key)
+      customCache.set(row.key, {
+        byDate: prev?.byDate ?? new Map(),
+        snapshot: prev?.snapshot ?? 0,
+        refreshedAt: prev?.refreshedAt ?? 0,
+        lastError: e instanceof Error ? e.message : String(e),
+      })
+      console.warn(`[daily-goals] custom source "${row.key}" refresh failed:`, e)
+    } finally {
+      customInFlight.delete(row.key)
+    }
+  })()
+  customInFlight.set(row.key, p)
+  return p
+}
+
+// Turn a stored row into a DataSource and register it. Reused on boot
+// and after every create/update.
+function registerCustomSource(row: CustomSourceRow): void {
+  const fetcher = (dateIso: string): number => {
+    const c = customCache.get(row.key)
+    if (!c || Date.now() - c.refreshedAt > CUSTOM_SOURCE_TTL_MS) {
+      refreshCustomSource(row).catch(() => { /* logged in refresh */ })
+    }
+    if (!c) return 0
+    return row.kind === 'snapshot' ? c.snapshot : (c.byDate.get(dateIso) ?? 0)
+  }
+  registerSource({ key: row.key, label: row.label, fetch: fetcher })
+  // Warm the cache immediately so the first /summary poll doesn't see 0.
+  refreshCustomSource(row).catch(() => { /* logged inside */ })
+}
+
+// Load all custom sources from DB on boot.
+{
+  const rows = db.prepare(
+    `SELECT id, key, label, report_id, table_id, group_by_field_id, kind FROM daily_goal_custom_sources`
+  ).all() as CustomSourceRow[]
+  for (const r of rows) registerCustomSource(r)
+}
+
+// ─── Custom-source CRUD endpoints ─────────────────────────
+
+function isValidSourceKey(key: string): boolean {
+  // Lowercase letters, digits, dot, underscore, hyphen. Must contain
+  // at least one dot so it sorts cleanly next to the hardcoded keys.
+  return /^[a-z0-9][a-z0-9._-]*\.[a-z0-9._-]+$/.test(key)
+}
+
+router.get('/custom-sources', requireRole('admin'), (_req: Request, res: Response): void => {
+  const rows = db.prepare(
+    `SELECT id, key, label, report_id, table_id, group_by_field_id, kind, created_at, updated_at
+     FROM daily_goal_custom_sources ORDER BY label ASC`
+  ).all()
+  res.json({ sources: rows })
+})
+
+// Dry-run a QB report so the admin can preview counts + see which
+// fields are available before saving the source.
+//   POST /api/daily-goals/custom-sources/test
+//   { report_id, table_id, group_by_field_id?, kind? }
+router.post('/custom-sources/test', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  const reportId = Number(req.body?.report_id)
+  const tableId = String(req.body?.table_id || '').trim()
+  if (!Number.isInteger(reportId) || reportId < 1 || !tableId) {
+    res.status(400).json({ error: 'report_id (int) and table_id (string) required' }); return
+  }
+  try {
+    const groupBy = Number.isInteger(Number(req.body?.group_by_field_id))
+      ? Number(req.body.group_by_field_id)
+      : 1
+    const rows = await runQbReport(reportId, tableId, groupBy)
+    // Pull the unique field IDs present on the first row — admin
+    // picks which one to group by.
+    const sample = rows[0] || {}
+    const availableFields = Object.keys(sample).map(k => Number(k)).filter(Number.isFinite)
+    const byDate = new Map<string, number>()
+    for (const rec of rows) {
+      const raw = rec[String(groupBy)]?.value
+      const s = typeof raw === 'string' ? raw : String(raw ?? '')
+      const date = s.slice(0, 10)
+      if (!date) continue
+      byDate.set(date, (byDate.get(date) ?? 0) + 1)
+    }
+    // Last 7 days, oldest → newest, for a quick visual.
+    const today = isoDate(new Date())
+    const lastWeek: Array<{ date: string; count: number }> = []
+    for (let i = 6; i >= 0; i--) {
+      const d = addDaysIso(today, -i)
+      lastWeek.push({ date: d, count: byDate.get(d) ?? 0 })
+    }
+    res.json({
+      total_rows: rows.length,
+      snapshot_count: rows.length,
+      last_7_days: lastWeek,
+      group_by_field_id: groupBy,
+      available_fields: availableFields,
+      sample_row: sample,
+    })
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
+router.post('/custom-sources', requireRole('admin'), (req: Request, res: Response): void => {
+  const key = String(req.body?.key || '').trim()
+  const label = String(req.body?.label || '').trim()
+  const reportId = Number(req.body?.report_id)
+  const tableId = String(req.body?.table_id || '').trim()
+  const groupBy = Number(req.body?.group_by_field_id ?? 1)
+  const kind = req.body?.kind === 'snapshot' ? 'snapshot' : 'count'
+
+  if (!isValidSourceKey(key)) {
+    res.status(400).json({ error: 'Invalid key — use lowercase + at least one dot, e.g. custom.my_metric' }); return
+  }
+  if (label.length === 0) { res.status(400).json({ error: 'label required' }); return }
+  if (!Number.isInteger(reportId) || reportId < 1) { res.status(400).json({ error: 'report_id (int) required' }); return }
+  if (!tableId) { res.status(400).json({ error: 'table_id required' }); return }
+  if (!Number.isInteger(groupBy) || groupBy < 1) { res.status(400).json({ error: 'group_by_field_id (int) required' }); return }
+  if (hasSource(key)) { res.status(409).json({ error: `key already in use: ${key}` }); return }
+
+  const info = db.prepare(
+    `INSERT INTO daily_goal_custom_sources (key, label, report_id, table_id, group_by_field_id, kind)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(key, label, reportId, tableId, groupBy, kind)
+  const row = db.prepare(
+    `SELECT id, key, label, report_id, table_id, group_by_field_id, kind FROM daily_goal_custom_sources WHERE id = ?`
+  ).get(info.lastInsertRowid as number) as CustomSourceRow
+  registerCustomSource(row)
+  res.json({ source: row })
+})
+
+router.put('/custom-sources/:id', requireRole('admin'), (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
+  const current = db.prepare(
+    `SELECT id, key, label, report_id, table_id, group_by_field_id, kind FROM daily_goal_custom_sources WHERE id = ?`
+  ).get(id) as CustomSourceRow | undefined
+  if (!current) { res.status(404).json({ error: 'Not found' }); return }
+
+  const fields: Array<{ col: string; val: unknown }> = []
+  if (typeof req.body?.label === 'string' && req.body.label.trim().length > 0) {
+    fields.push({ col: 'label', val: req.body.label.trim() })
+  }
+  if (Number.isInteger(req.body?.report_id) && req.body.report_id > 0) {
+    fields.push({ col: 'report_id', val: req.body.report_id })
+  }
+  if (typeof req.body?.table_id === 'string' && req.body.table_id.trim().length > 0) {
+    fields.push({ col: 'table_id', val: req.body.table_id.trim() })
+  }
+  if (Number.isInteger(req.body?.group_by_field_id) && req.body.group_by_field_id > 0) {
+    fields.push({ col: 'group_by_field_id', val: req.body.group_by_field_id })
+  }
+  if (req.body?.kind === 'count' || req.body?.kind === 'snapshot') {
+    fields.push({ col: 'kind', val: req.body.kind })
+  }
+  if (fields.length === 0) { res.status(400).json({ error: 'No editable fields' }); return }
+
+  const setSql = fields.map(f => `${f.col} = ?`).join(', ')
+  db.prepare(`UPDATE daily_goal_custom_sources SET ${setSql}, updated_at = datetime('now') WHERE id = ?`)
+    .run(...fields.map(f => f.val), id)
+  const row = db.prepare(
+    `SELECT id, key, label, report_id, table_id, group_by_field_id, kind FROM daily_goal_custom_sources WHERE id = ?`
+  ).get(id) as CustomSourceRow
+  // Re-register so the registered source picks up the new label /
+  // report / group-by. Key never changes (would orphan goals).
+  registerCustomSource(row)
+  // Wipe cache so the next read does a fresh QB pull with the new params.
+  customCache.delete(row.key)
+  res.json({ source: row })
+})
+
+router.delete('/custom-sources/:id', requireRole('admin'), (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
+  const current = db.prepare(
+    `SELECT id, key FROM daily_goal_custom_sources WHERE id = ?`
+  ).get(id) as { id: number; key: string } | undefined
+  if (!current) { res.status(404).json({ error: 'Not found' }); return }
+  // Goals bound to this source fall back to no-live (mock/0). We
+  // intentionally don't NULL them — the admin may want to rebind to
+  // a different source quickly. The orphan reference shows up in
+  // /debug and the source dropdown will lack the key, so the admin
+  // sees what's bound to what.
+  db.prepare(`DELETE FROM daily_goal_custom_sources WHERE id = ?`).run(id)
+  unregisterSource(current.key)
+  customCache.delete(current.key)
   res.json({ ok: true })
 })
 
