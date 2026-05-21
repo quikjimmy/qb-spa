@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import SectionCard from './SectionCard.vue'
+import { classifyArrivyTask, STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 
 // Per-project Arrivy task feed. Backed by /api/field/project-tasks which
 // proxies QB's Arrivy table (bvbqgs5yc). Shows past + upcoming events with
@@ -118,7 +119,6 @@ function getStatus(t: QbRecord): StatusInfo {
   const submittedDt = qbv(t, F.value.submittedDateTime)
   const arrivedDt = qbv(t, F.value.startedStatus)
   const enrouteDt = qbv(t, F.value.enrouteStatus)
-  const isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete'
   const isOverdue = arrivyStatus === 'overdue'
   // Source of truth for cancellation: the project's task log (server-derived).
   // The QB task row's task_status often still reads "STARTED" after an
@@ -131,12 +131,34 @@ function getStatus(t: QbRecord): StatusInfo {
   const isException = /exception|notdone|not\s*done|notcomplete|incomplete/i.test(arrivyStatus)
   if (logSaysCancelled || rowSaysCancelled) return { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
   if (isException) return { key: 'exception', label: 'Exception', pillCls: 'bg-rose-600 text-white', borderCls: 'border-l-rose-600', emoji: '✗' }
-  if (isArrivyComplete && !submittedDt) return { key: 'notsubmitted', label: 'Not Submitted', pillCls: 'bg-rose-100 text-rose-700', borderCls: 'border-l-rose-500', emoji: '❌' }
-  if (submittedDt) return { key: 'submitted', label: 'Submitted', pillCls: 'bg-emerald-100 text-emerald-700', borderCls: 'border-l-emerald-500', emoji: '✅' }
   if (isOverdue) return { key: 'overdue', label: 'Overdue', pillCls: 'bg-rose-100 text-rose-700', borderCls: 'border-l-rose-500', emoji: '⚠️' }
-  if (arrivedDt) return { key: 'onsite', label: 'On Site', pillCls: 'bg-sky-100 text-sky-700', borderCls: 'border-l-sky-500', emoji: '🚧' }
-  if (enrouteDt) return { key: 'enroute', label: 'En Route', pillCls: 'bg-sky-100 text-sky-700', borderCls: 'border-l-sky-500', emoji: '🚗' }
-  return { key: 'scheduled', label: 'Scheduled', pillCls: 'bg-slate-100 text-slate-600', borderCls: 'border-l-slate-300', emoji: '⏳' }
+  const key = classifyArrivyTask({
+    rawStatus: arrivyStatus,
+    arrived: arrivedDt ? String(arrivedDt) : null,
+    enroute: enrouteDt ? String(enrouteDt) : null,
+    submitted: submittedDt ? String(submittedDt) : null,
+  })
+  const info = STATUS_INFO[key as ArrivyStatusKey]
+  const emoji: Record<ArrivyStatusKey, string> = {
+    scheduled: '⏳',
+    enroute: '🚗',
+    onsite: '🚧',
+    submitted: '✅',
+    approved: '✅',
+    rejected: '❌',
+    cancelled: '✗',
+  }
+  const localKey: StatusKey =
+    key === 'approved' ? 'submitted' :
+    key === 'rejected' ? 'exception' :
+    key
+  return {
+    key: localKey,
+    label: info.label,
+    pillCls: info.pillCls,
+    borderCls: info.borderCls,
+    emoji: emoji[key],
+  }
 }
 
 interface TaskItem {

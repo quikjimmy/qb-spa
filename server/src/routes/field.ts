@@ -85,6 +85,23 @@ async function qbQuery(tableId: string, where: string, select: number[], extra: 
 function fmtDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
+function fmtDateInTz(d: Date, tz: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d)
+  } catch {
+    return d.toISOString().slice(0, 10)
+  }
+}
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
 function dateRange(preset: string): { from: Date; to: Date } {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -125,6 +142,7 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
   // "today" forward after 6pm Mountain on Railway.
   const fromIsoQ = String(req.query['fromIso'] || '')
   const toIsoQ = String(req.query['toIso'] || '')
+  const tz = String(req.query['tz'] || 'UTC')
   let from: Date, to: Date, fromStr: string, toStr: string
   if (fromIsoQ && toIsoQ && !isNaN(new Date(fromIsoQ).getTime()) && !isNaN(new Date(toIsoQ).getTime())) {
     from = new Date(fromIsoQ)
@@ -139,8 +157,47 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
   }
   const where = `{'${F.scheduledDateTime}'.OAF.'${fromStr}'}AND{'${F.scheduledDateTime}'.OBF.'${toStr}'}`
   try {
-    const records = await qbQuery(QB.arrivyTable, where, SELECT_FIELDS, {
+    const scheduledRecords = await qbQuery(QB.arrivyTable, where, SELECT_FIELDS, {
       sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+    })
+    // A live task can be operationally relevant even when its own scheduled
+    // timestamp falls just outside the selected window (for example, a same
+    // project sibling task is marked on-site). Keep that supplement scoped to
+    // projects already relevant to the selected window so date filters still
+    // behave like filters.
+    const relevantProjectRids = new Set<string>()
+    for (const rec of scheduledRecords) {
+      const projectRid = String(rec[String(F.relatedProject)]?.value || '')
+      if (projectRid) relevantProjectRids.add(projectRid)
+    }
+    const fromLocal = fmtDateInTz(from, tz)
+    const toLocal = fmtDateInTz(to, tz)
+    const installRows = db.prepare(
+      `SELECT record_id FROM project_cache
+       WHERE install_scheduled >= ? AND install_scheduled <= ?`
+    ).all(fromLocal, toLocal) as Array<{ record_id: number | string }>
+    for (const row of installRows) relevantProjectRids.add(String(row.record_id))
+
+    const activeRecords: QbRecord[] = []
+    const activeBase = `({'${F.enrouteStatus}'.EX.'true'}OR{'${F.startedStatus}'.EX.'true'})AND{'${F.submittedDateTime}'.EX.''}`
+    for (const ids of chunk([...relevantProjectRids], 50)) {
+      if (ids.length === 0) continue
+      const projectWhere = ids.map(id => `{'${F.relatedProject}'.EX.'${id}'}`).join('OR')
+      const rows = await qbQuery(QB.arrivyTable, `${activeBase}AND(${projectWhere})`, SELECT_FIELDS, {
+        sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+        options: { top: 500 },
+      }).catch(() => [] as QbRecord[])
+      activeRecords.push(...rows)
+    }
+    const byRid = new Map<string, QbRecord>()
+    for (const rec of [...scheduledRecords, ...activeRecords]) {
+      const rid = String(rec['3']?.value || '')
+      if (rid) byRid.set(rid, rec)
+    }
+    const records = [...byRid.values()].sort((a, b) => {
+      const av = String(a[String(F.scheduledDateTime)]?.value || '')
+      const bv = String(b[String(F.scheduledDateTime)]?.value || '')
+      return av.localeCompare(bv)
     })
     // Pull cancellation events from the log for the same date window.
     // The QB Arrivy task row's task_status often doesn't update when an
