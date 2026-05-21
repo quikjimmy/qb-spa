@@ -226,38 +226,58 @@ db.transaction(() => {
 }
 
 // ─── Date helpers ─────────────────────────────────────────
-// All dates are local ISO YYYY-MM-DD. The scoreboard runs on an
-// office TV in local time; UTC would shift "today" by a day late at
-// night on the West Coast.
+// All dates are local ISO YYYY-MM-DD in the *office* timezone — not
+// the host's timezone. Railway runs in UTC, so on a Mountain-Time
+// office at 6pm the host has already rolled to "tomorrow". Anchoring
+// every date derivation here means /summary, target lock-in, and
+// live-source queries all agree on what "today" is.
+//
+// Override via SCOREBOARD_TZ env var (any IANA zone). Defaults to
+// America/Denver to match the existing agent-scheduler cron config.
+const OFFICE_TZ = process.env['SCOREBOARD_TZ'] || 'America/Denver'
 
 function isoDate(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  // en-CA renders as YYYY-MM-DD by spec — the cheapest way to format
+  // a date in a specific timezone without pulling in a tz library.
+  return d.toLocaleDateString('en-CA', { timeZone: OFFICE_TZ })
 }
 
-function addDays(d: Date, n: number): Date {
-  const out = new Date(d)
-  out.setDate(out.getDate() + n)
-  return out
+// Calendar-day addition on an ISO string. We compute via UTC midnight
+// math so DST transitions don't accidentally shift the result back or
+// forward by a day at 2am.
+function addDaysIso(iso: string, n: number): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  const t = Date.UTC(y!, (m ?? 1) - 1, d ?? 1) + n * 86_400_000
+  const out = new Date(t)
+  const yy = out.getUTCFullYear()
+  const mm = String(out.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(out.getUTCDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
 }
 
-// Workday progress: 0..1 across 8am → 6pm local. Before 8am we
-// return 0 (the day hasn't started, so we're not "behind"); after
-// 6pm we return 1 (any remaining shortfall is now a miss).
+// Office-TZ-aware version of getDay() — returns the long weekday name.
+function dayNameOf(d: Date): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: OFFICE_TZ, weekday: 'long' }).format(d)
+}
+
+// Workday progress: 0..1 across 8am → 6pm in the office timezone.
+// Before 8am we return 0 (day hasn't started, no one's behind); after
+// 6pm we return 1 (remaining shortfall is now a miss).
 const WORKDAY_START_HOUR = 8
 const WORKDAY_END_HOUR = 18
 
 function workdayProgress(now: Date): number {
-  const start = new Date(now)
-  start.setHours(WORKDAY_START_HOUR, 0, 0, 0)
-  const end = new Date(now)
-  end.setHours(WORKDAY_END_HOUR, 0, 0, 0)
-  const t = now.getTime()
-  if (t <= start.getTime()) return 0
-  if (t >= end.getTime()) return 1
-  return (t - start.getTime()) / (end.getTime() - start.getTime())
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: OFFICE_TZ,
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now)
+  const h = Number(parts.find(p => p.type === 'hour')?.value ?? '0')
+  const m = Number(parts.find(p => p.type === 'minute')?.value ?? '0')
+  // Intl returns 24 for midnight in en-US/hour12=false — normalize.
+  const hours = (h === 24 ? 0 : h) + m / 60
+  if (hours <= WORKDAY_START_HOUR) return 0
+  if (hours >= WORKDAY_END_HOUR) return 1
+  return (hours - WORKDAY_START_HOUR) / (WORKDAY_END_HOUR - WORKDAY_START_HOUR)
 }
 
 // ─── Live data sources ────────────────────────────────────
@@ -372,10 +392,10 @@ function seededRandom(seed: number): () => number {
 const HISTORY_DAYS = 6
 
 function ensureMockActuals(goalId: number, slug: string, kind: string): void {
-  const today = new Date()
+  const todayIso = isoDate(new Date())
   const days: string[] = []
   for (let i = HISTORY_DAYS - 1; i >= 0; i--) {
-    days.push(isoDate(addDays(today, -i)))
+    days.push(addDaysIso(todayIso, -i))
   }
 
   const existing = db.prepare(
@@ -447,8 +467,6 @@ interface ScoreboardSummary {
   goals: ScoreboardGoal[]
 }
 
-const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
 router.get('/summary', (_req: Request, res: Response): void => {
   // Refresh current-day mock value so a TV that's been running since
   // 8am ramps as the workday progresses. Historical days stay stable.
@@ -483,13 +501,13 @@ router.get('/summary', (_req: Request, res: Response): void => {
      WHERE goal_id = ? AND date_iso >= ? ORDER BY date_iso ASC`
   )
 
-  const sixDaysAgo = isoDate(addDays(now, -(HISTORY_DAYS - 1)))
+  const sixDaysAgo = addDaysIso(todayIso, -(HISTORY_DAYS - 1))
 
   // Per-day window of dates (oldest → today) — used to build the
   // history array whether the goal has a live source or not.
   const windowDates: string[] = []
   for (let i = HISTORY_DAYS - 1; i >= 0; i--) {
-    windowDates.push(isoDate(addDays(now, -i)))
+    windowDates.push(addDaysIso(todayIso, -i))
   }
 
   const out: ScoreboardGoal[] = goals.map(g => {
@@ -523,7 +541,7 @@ router.get('/summary', (_req: Request, res: Response): void => {
   const payload: ScoreboardSummary = {
     date: todayIso,
     dayProgress: workdayProgress(now),
-    dayName: dayNames[now.getDay()] ?? 'Today',
+    dayName: dayNameOf(now),
     generatedAt: now.toISOString(),
     goals: out,
   }
@@ -559,7 +577,7 @@ function targetWindowFor(goalId: number, slug: string, now: Date): TargetWindowE
   const todayIso = isoDate(now)
   const out: TargetWindowEntry[] = []
   for (let offset = -TARGET_WINDOW_BACK; offset <= TARGET_WINDOW_FORWARD; offset++) {
-    const date = isoDate(addDays(now, offset))
+    const date = addDaysIso(isoDate(now), offset)
     out.push({
       date,
       target: targetForDate(goalId, slug, date),
@@ -572,7 +590,7 @@ function targetWindowFor(goalId: number, slug: string, now: Date): TargetWindowE
 router.get('/', requireRole('admin'), (_req: Request, res: Response): void => {
   const now = new Date()
   const today = isoDate(now)
-  const yesterday = isoDate(addDays(now, -1))
+  const yesterday = addDaysIso(isoDate(now), -1)
 
   const rows = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
@@ -698,7 +716,7 @@ router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => 
 
   const now = new Date()
   const today = isoDate(now)
-  const yesterday = isoDate(addDays(now, -1))
+  const yesterday = addDaysIso(isoDate(now), -1)
   const updated = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
             g.label, g.kind, g.sort_order, g.active, g.data_source
@@ -803,7 +821,7 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
 
   const now = new Date()
   const today = isoDate(now)
-  const yesterday = isoDate(addDays(now, -1))
+  const yesterday = addDaysIso(isoDate(now), -1)
   const created = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
             g.label, g.kind, g.sort_order, g.active, g.data_source
