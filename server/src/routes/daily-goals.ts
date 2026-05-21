@@ -59,6 +59,18 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- "First time today the goal hit its target". The summary handler
+  -- writes here when a goal flips from non-met to met. The client uses
+  -- the recorded timestamp to decide whether to celebrate — meaning
+  -- celebrations no longer depend on a particular scoreboard tab
+  -- happening to witness the edge in real time.
+  CREATE TABLE IF NOT EXISTS daily_goal_hits (
+    goal_id INTEGER NOT NULL REFERENCES daily_goals(id) ON DELETE CASCADE,
+    date_iso TEXT NOT NULL,
+    first_hit_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (goal_id, date_iso)
+  );
 `)
 
 // Idempotent additive migration: link daily_goals to the canonical
@@ -470,6 +482,12 @@ interface ScoreboardGoal {
   current: number
   history: Array<{ date: string; value: number; target: number }>
   dayOverDayDelta: number | null
+  // ISO timestamp of the first moment the server saw this goal hit
+  // 'met' status today, or null if it hasn't hit yet. The scoreboard
+  // celebrates when this value is recent enough — meaning a TV that
+  // wasn't open at the moment of the hit still catches it on the next
+  // poll within the celebration window.
+  firstHitAt: string | null
 }
 
 interface ScoreboardSummary {
@@ -523,6 +541,15 @@ router.get('/summary', (_req: Request, res: Response): void => {
     windowDates.push(addDaysIso(todayIso, -i))
   }
 
+  // Statements for the first-hit tracking pass.
+  const getHit = db.prepare(
+    `SELECT first_hit_at FROM daily_goal_hits WHERE goal_id = ? AND date_iso = ?`
+  )
+  const insertHit = db.prepare(
+    `INSERT OR IGNORE INTO daily_goal_hits (goal_id, date_iso, first_hit_at)
+     VALUES (?, ?, datetime('now'))`
+  )
+
   const out: ScoreboardGoal[] = goals.map(g => {
     const rawHistory = historyStmt.all(g.id, sixDaysAgo) as Array<{ date: string; value: number }>
     const mockByDate = new Map(rawHistory.map(h => [h.date, h.value]))
@@ -538,16 +565,36 @@ router.get('/summary', (_req: Request, res: Response): void => {
     const dod = prev == null || prev === 0
       ? null
       : Math.round(((current - prev) / prev) * 100)
+
+    // First-hit detection — count-style goals are 'met' when current
+    // is at or past target (and target > 0 so we don't trivially-met
+    // every goal when the admin types 0); empty-bucket goals are met
+    // when current is 0. We mirror paceFor()'s shape so the server
+    // and the client agree on what "met" means.
+    const target = targetForDate(g.id, g.slug, todayIso)
+    const isMet = g.kind === 'empty_bucket' ? current === 0 : (target > 0 && current >= target)
+    let firstHitAt: string | null = null
+    if (isMet) {
+      insertHit.run(g.id, todayIso)
+      const row = getHit.get(g.id, todayIso) as { first_hit_at: string } | undefined
+      // SQLite stamps look like "2026-05-20 23:11:42" (UTC). Format as
+      // a real ISO so Date.parse on the client works cleanly.
+      if (row?.first_hit_at) {
+        firstHitAt = row.first_hit_at.replace(' ', 'T') + 'Z'
+      }
+    }
+
     return {
       id: g.id,
       slug: g.slug,
       department: g.department,
       label: g.label,
-      target: targetForDate(g.id, g.slug, todayIso),
+      target,
       kind: g.kind,
       current,
       history,
       dayOverDayDelta: dod,
+      firstHitAt,
     }
   })
 
@@ -633,6 +680,16 @@ router.get('/', requireRole('admin'), (_req: Request, res: Response): void => {
 // list without the full goals payload.
 router.get('/sources', requireRole('admin'), (_req: Request, res: Response): void => {
   res.json({ sources: DATA_SOURCES.map(s => ({ key: s.key, label: s.label })) })
+})
+
+// Wipe today's first-hit timestamps so the next /summary poll re-
+// detects met-status goals as "newly hit" and re-fires the
+// celebration takeover. Useful for testing the celebration look and
+// for re-celebrating after admin tweaks during the day.
+router.delete('/hits', requireRole('admin'), (_req: Request, res: Response): void => {
+  const todayIso = isoDate(new Date())
+  const info = db.prepare(`DELETE FROM daily_goal_hits WHERE date_iso = ?`).run(todayIso)
+  res.json({ ok: true, cleared: info.changes, date: todayIso })
 })
 
 // Diagnostic: shows what a live source is actually returning per day,
