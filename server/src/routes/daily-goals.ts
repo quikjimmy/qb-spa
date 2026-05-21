@@ -193,61 +193,21 @@ db.transaction(() => {
   }
 }
 
-// ─── One-time normalization to the canonical department set ───
-// Older names that map cleanly forward get renamed in place (id stays,
-// so user_departments + department_permissions FKs survive). Anything
-// that would collide with an already-existing canonical name is left
-// for an admin to merge via /admin → Departments.
+// ─── Canonical-department safety net ──────────────────────
+// Only the idempotent half of the original normalization. We make
+// sure the 11 canonical department names exist as rows, but we DO NOT
+// touch goal department assignments on boot — that was a one-time
+// fix already applied in production, and re-running it would
+// repeatedly overwrite any admin edits made in /admin/daily-goals.
+//
+// Admin-driven reassignments are authoritative. If a future schema
+// change needs another bulk migration, gate it behind a flag in a
+// dedicated migrations table; don't unconditionally UPDATE on boot.
 {
-  const RENAMES: Array<[from: string, to: string]> = [
-    ['PC', 'Project Coordinators'],
-    ['Inspection', 'Inspections'],
-  ]
-  for (const [from, to] of RENAMES) {
-    const src = db.prepare(`SELECT id FROM departments WHERE name = ?`).get(from) as { id: number } | undefined
-    const dst = db.prepare(`SELECT id FROM departments WHERE name = ?`).get(to) as { id: number } | undefined
-    if (src && !dst) {
-      db.prepare(`UPDATE departments SET name = ? WHERE id = ?`).run(to, src.id)
-    }
-  }
-
-  // Ensure every canonical name has a row.
   const ensureCanonical = db.prepare(
     `INSERT OR IGNORE INTO departments (name, description) VALUES (?, 'Canonical')`
   )
   for (const name of CANONICAL_DEPARTMENTS) ensureCanonical.run(name)
-
-  // Pin each existing goal slug to the canonical department it
-  // belongs in. The seed list above is the source of truth; we apply
-  // the same mapping to rows already in the table so old assignments
-  // (e.g. "Retention", "Permit", "NEM / PTO") snap into the new
-  // taxonomy on first boot after this change.
-  const lookup = db.prepare(`SELECT id FROM departments WHERE name = ?`)
-  const remapGoal = db.prepare(
-    `UPDATE daily_goals SET department_id = ?, department = ? WHERE slug = ?`
-  )
-  db.transaction(() => {
-    for (const g of seedGoals) {
-      const dept = lookup.get(g.department) as { id: number } | undefined
-      if (!dept) continue
-      remapGoal.run(dept.id, g.department, g.slug)
-    }
-  })()
-
-  // Garbage-collect the auto-seed artifact departments from earlier
-  // iterations — but only if nothing references them. Existing system
-  // departments (Operations, Engineering, Funding, Field Ops, INSPX,
-  // etc.) stay even when not in CANONICAL_DEPARTMENTS, because
-  // user_departments / department_permissions may depend on them.
-  const ARTIFACT_NAMES = ['Retention', 'Permit', 'NEM / PTO', 'Install', 'Tickets']
-  const cleanup = db.prepare(`
-    DELETE FROM departments
-    WHERE name = ?
-      AND id NOT IN (SELECT DISTINCT department_id FROM user_departments WHERE department_id IS NOT NULL)
-      AND id NOT IN (SELECT DISTINCT department_id FROM department_permissions WHERE department_id IS NOT NULL)
-      AND id NOT IN (SELECT DISTINCT department_id FROM daily_goals WHERE department_id IS NOT NULL)
-  `)
-  for (const name of ARTIFACT_NAMES) cleanup.run(name)
 }
 
 // ─── Date helpers ─────────────────────────────────────────
