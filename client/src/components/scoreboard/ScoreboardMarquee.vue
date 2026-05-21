@@ -30,19 +30,25 @@ const hasItems = computed(() => props.items.length > 0)
 
 <template>
   <div v-if="hasItems" class="scoreboard-marquee" :style="{ '--marquee-duration': duration }">
+    <!-- Stadium-style branded plate fixed at the left edge. Sits
+         outside the scrolling track so it stays put while content
+         passes behind it. -->
+    <div class="scoreboard-marquee-brand">
+      <img src="/img/Kin - Square Profile-blake-white.png" alt="Kin" />
+    </div>
     <div class="scoreboard-marquee-track">
       <!-- Each copy renders the full list with separators between
            items. The track translates -50%, swapping the second copy
            in for the first, for a seamless loop. -->
       <span class="scoreboard-marquee-content">
         <template v-for="(item, i) in items" :key="item.id">
-          <span v-if="i > 0" class="sep">•</span>
+          <span v-if="i > 0" class="sep">★</span>
           <span :class="{ live: item.kind === 'celebration' }">{{ item.text }}</span>
         </template>
       </span>
       <span class="scoreboard-marquee-content" aria-hidden="true">
         <template v-for="(item, i) in items" :key="`${item.id}-dup`">
-          <span v-if="i > 0" class="sep">•</span>
+          <span v-if="i > 0" class="sep">★</span>
           <span :class="{ live: item.kind === 'celebration' }">{{ item.text }}</span>
         </template>
       </span>
