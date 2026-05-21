@@ -44,6 +44,60 @@ const pace = computed(() => paceFor(props.goal, props.dayProgress))
 
 const values = computed(() => props.goal.history.map(h => h.value))
 
+// Sports-style 7-day win/loss strip — one cell per day in the
+// history window. State derived from value vs that day's target,
+// using the per-day target lock-in (so a target raised yesterday
+// doesn't retroactively re-grade Monday).
+interface HistoryCell {
+  date: string
+  dow: string   // single-letter day-of-week
+  state: 'hit' | 'miss' | 'weekend' | 'no-target'
+}
+
+const DOW_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']  // Sun..Sat
+
+function todayIsoLocal(): string {
+  // Office TZ lives server-side; for client-side "is this row today"
+  // we just compare to the last entry of the server's history (which
+  // is always today). Keeps the client free of TZ logic.
+  return props.goal.history[props.goal.history.length - 1]?.date ?? ''
+}
+
+const historyCells = computed<HistoryCell[]>(() => {
+  const today = todayIsoLocal()
+  return props.goal.history.map(h => {
+    const d = new Date(`${h.date}T00:00:00`)
+    const dow = DOW_LETTERS[d.getDay()] ?? '·'
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6
+    if (h.date === today) {
+      // Today is graded against the pace pill — green if met / on
+      // pace / at risk (still within striking distance), red if
+      // behind or critical. Matches the pill's color so the row
+      // reads consistently.
+      const s = pace.value.status
+      const state: HistoryCell['state'] = (s === 'met' || s === 'on_pace' || s === 'at_risk')
+        ? 'hit'
+        : 'miss'
+      return { date: h.date, dow, state }
+    }
+    if (isWeekend)                return { date: h.date, dow, state: 'weekend' }
+    if (props.goal.kind === 'empty_bucket') {
+      return h.value === 0
+        ? { date: h.date, dow, state: 'hit' }
+        : { date: h.date, dow, state: 'miss' }
+    }
+    if (h.target <= 0)            return { date: h.date, dow, state: 'no-target' }
+    return h.value >= h.target
+      ? { date: h.date, dow, state: 'hit' }
+      : { date: h.date, dow, state: 'miss' }
+  })
+})
+
+// All but the trailing "today" cell — rendered to the left of the
+// vertical divider so the eye lands cleanly on today's box.
+const priorCells = computed(() => historyCells.value.slice(0, -1))
+const todayCell = computed(() => historyCells.value[historyCells.value.length - 1] ?? null)
+
 const dodGlyph = computed(() => {
   const d = props.goal.dayOverDayDelta
   if (d == null) return ''
@@ -73,6 +127,28 @@ const dodColor = computed(() => {
   <div class="scoreboard-card">
     <div class="row">
       <p class="label">{{ goal.label }}</p>
+
+      <!-- 7-day win/loss strip — same row as the title and pace pill.
+           Small color-squares with a single day-letter. Hairline
+           divider separates the prior 6 days from today (rightmost
+           cell). Color carries everything. -->
+      <div class="scoreboard-history-strip">
+        <div
+          v-for="cell in priorCells"
+          :key="cell.date"
+          class="scoreboard-history-cell"
+          :data-state="cell.state"
+          :title="cell.date"
+        >{{ cell.dow }}</div>
+        <div class="scoreboard-history-divider" />
+        <div
+          v-if="todayCell"
+          class="scoreboard-history-cell"
+          :data-state="todayCell.state"
+          :title="todayCell.date"
+        >{{ todayCell.dow }}</div>
+      </div>
+
       <span class="scoreboard-pill" :data-pace="pace.status">{{ pace.label }}</span>
     </div>
 
@@ -107,7 +183,6 @@ const dodColor = computed(() => {
 <style scoped>
 .row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 16px;
 }
@@ -119,6 +194,19 @@ const dodColor = computed(() => {
   color: var(--sb-ink);
   margin: 0;
   letter-spacing: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row .scoreboard-history-strip {
+  flex: none;
+  /* Override the default top-margin since the strip is inline here,
+     not stacked below the sparkline. */
+  margin-top: 0;
+}
+
+.row .scoreboard-pill {
+  flex: none;
 }
 
 .number-row {

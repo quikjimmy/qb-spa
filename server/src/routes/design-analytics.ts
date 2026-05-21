@@ -882,4 +882,9 @@ router.get('/drill', async (req: Request, res: Response): Promise<void> => {
   }
 })
 
+// Re-export the cached design-row fetcher so daily-goals can piggy-
+// back without a second QB round-trip. Same 60s cache backing the
+// design dashboard.
+export { fetchDesignRows }
+
 export { router as designAnalyticsRouter }
