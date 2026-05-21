@@ -852,4 +852,11 @@ router.get('/drill', async (req: Request, res: Response): Promise<void> => {
   }
 })
 
+// Re-export the shared QB permit fetch + lightweight value helpers so
+// other routes (notably daily-goals' "Need to Submit" source) can
+// piggy-back on the same 60s-cached round-trip instead of re-querying
+// QuickBase from scratch.
+export { fetchPermitRows, val as permitFieldValue, isSet as permitIsSet }
+export type { QbRecord }
+
 export { router as permitAnalyticsRouter }

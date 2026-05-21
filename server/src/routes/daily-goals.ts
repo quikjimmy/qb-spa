@@ -1,6 +1,13 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
+import { fetchPermitRows, permitFieldValue, permitIsSet, type QbRecord } from './permit-analytics'
+import { fetchDesignRows } from './design-analytics'
+// permitFieldValue / permitIsSet aren't really permit-specific — they
+// just unpack QB record shapes. Aliased here for clarity when used
+// against the design and events tables.
+const qbVal = permitFieldValue
+const qbIsSet = permitIsSet
 
 const router = Router()
 
@@ -292,18 +299,302 @@ function countProjects(column: string, dateIso: string): number {
   return row.c
 }
 
+// ─── "Need to Submit" — canonical QB report 65 ──────────────
+// Mirrors the filter on the Permitting Dashboard's "Need to Submit"
+// gauge (table bscs3z866, report id 65). Applied in JS against the
+// rows that fetchPermitRows() already pulls + caches for the Permit
+// dashboard, so this doesn't add a second QB round-trip.
+//
+// Filter (all must be true):
+//   - Permitting To-Do (175) HAS one of:
+//       Submit Building Permit / Submit Zoning Permit /
+//       Submit Electrical Permit / Submit Revision
+//   - Project Status NOT in: Rejected, ROR, Cancelled, ARC,
+//       Pending Cancel, Lost, Finance Hold, Hoa Hold, On Hold,
+//       Complete, Completed, Roof Hold
+//   - Project - Design Completed (67) is NOT empty
+//   - Permit Missing Items (168) IS empty
+//   - Permit Approved (20) IS empty
+//   - Test Project (214) is NOT 1
+
+const DEAD_PROJECT_STATUSES = new Set([
+  'Rejected', 'ROR', 'Cancelled', 'ARC', 'Pending Cancel',
+  'Lost', 'Finance Hold', 'Hoa Hold', 'On Hold', 'Complete',
+  'Completed', 'Roof Hold',
+])
+
+const NEED_TO_SUBMIT_TODO_PATTERN =
+  /Submit (?:Building|Zoning|Electrical) Permit|Submit Revision/i
+
+function rowMatchesNeedToSubmit(record: QbRecord): boolean {
+  const todo = permitFieldValue(record, 175)
+  if (!NEED_TO_SUBMIT_TODO_PATTERN.test(todo)) return false
+
+  const projectStatus = permitFieldValue(record, 68) || permitFieldValue(record, 134)
+  if (DEAD_PROJECT_STATUSES.has(projectStatus.trim())) return false
+
+  const designCompleted = permitFieldValue(record, 67)
+  if (!permitIsSet(designCompleted)) return false
+
+  const missingItems = permitFieldValue(record, 168)
+  if (permitIsSet(missingItems)) return false
+
+  const permitApproved = permitFieldValue(record, 20)
+  if (permitIsSet(permitApproved)) return false
+
+  const testProject = permitFieldValue(record, 214)
+  if (testProject.trim() === '1' || /^true$/i.test(testProject.trim())) return false
+
+  return true
+}
+
+// Self-refreshing sync cache so the synchronous DataSource.fetch
+// signature still works. Background refresh keeps the cached count
+// within ~60s of QB; per-poll reads of the count are cheap.
+const NEED_TO_SUBMIT_TTL_MS = 60_000
+let needToSubmitCache: { count: number; refreshedAt: number } = { count: 0, refreshedAt: 0 }
+let needToSubmitInFlight: Promise<void> | null = null
+
+async function refreshNeedToSubmit(): Promise<void> {
+  if (needToSubmitInFlight) return needToSubmitInFlight
+  needToSubmitInFlight = (async () => {
+    try {
+      const rows = await fetchPermitRows()
+      const count = rows.filter(rowMatchesNeedToSubmit).length
+      needToSubmitCache = { count, refreshedAt: Date.now() }
+    } catch (e) {
+      // Soft fail — keep the last good number so the scoreboard doesn't
+      // flicker to zero on a transient QB blip.
+      console.warn('[daily-goals] need-to-submit refresh failed:', e)
+    } finally {
+      needToSubmitInFlight = null
+    }
+  })()
+  return needToSubmitInFlight
+}
+
+function needToSubmitCount(): number {
+  if (Date.now() - needToSubmitCache.refreshedAt > NEED_TO_SUBMIT_TTL_MS) {
+    refreshNeedToSubmit().catch(() => { /* logged in refreshNeedToSubmit */ })
+  }
+  return needToSubmitCache.count
+}
+
+// Warm the cache on boot so the first /summary poll doesn't see 0.
+refreshNeedToSubmit().catch(() => { /* logged inside */ })
+
+// ─── "Initial CAD Designs Completed" — per-day count ──────
+// Designs from table bsbhp6zhm where Design Type (field 8) is
+// "Initial Design" and CAD Completed (field 50) falls on a given
+// date. Piggy-backs on the same design-row cache the design
+// dashboard already maintains (60s TTL).
+
+const DESIGN_INITIAL_TTL_MS = 60_000
+let designInitialCache: { byDate: Map<string, number>; refreshedAt: number } =
+  { byDate: new Map(), refreshedAt: 0 }
+let designInitialInFlight: Promise<void> | null = null
+
+async function refreshDesignInitialCompleted(): Promise<void> {
+  if (designInitialInFlight) return designInitialInFlight
+  designInitialInFlight = (async () => {
+    try {
+      const rows = await fetchDesignRows()
+      const byDate = new Map<string, number>()
+      for (const r of rows) {
+        if (qbVal(r, 8) !== 'Initial Design') continue
+        const completed = qbVal(r, 50)
+        if (!qbIsSet(completed)) continue
+        const date = completed.slice(0, 10)
+        byDate.set(date, (byDate.get(date) ?? 0) + 1)
+      }
+      designInitialCache = { byDate, refreshedAt: Date.now() }
+    } catch (e) {
+      console.warn('[daily-goals] initial-CAD-completed refresh failed:', e)
+    } finally {
+      designInitialInFlight = null
+    }
+  })()
+  return designInitialInFlight
+}
+
+function designInitialCompletedCount(dateIso: string): number {
+  if (Date.now() - designInitialCache.refreshedAt > DESIGN_INITIAL_TTL_MS) {
+    refreshDesignInitialCompleted().catch(() => { /* logged inside */ })
+  }
+  return designInitialCache.byDate.get(dateIso) ?? 0
+}
+
+refreshDesignInitialCompleted().catch(() => { /* logged inside */ })
+
+// ─── "Install First Scheduled" — per-day count ────────────
+// Mirrors QB report 123 (table bsbguxz4i — the Events table). Each
+// row in this table is a scheduling event; a row with event type
+// (field 6) = 'Installation' and a Date Created (field 1) = X
+// means an install was scheduled on day X — which is the date the
+// user asked about, distinct from the install's appointment date.
+
+const EVENTS_TABLE = 'bsbguxz4i'
+const INSTALL_SCHEDULED_TTL_MS = 60_000
+let installScheduledCache: { byDate: Map<string, number>; refreshedAt: number } =
+  { byDate: new Map(), refreshedAt: 0 }
+let installScheduledInFlight: Promise<void> | null = null
+
+async function refreshInstallScheduled(): Promise<void> {
+  if (installScheduledInFlight) return installScheduledInFlight
+  installScheduledInFlight = (async () => {
+    try {
+      const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+      const token = process.env['QB_USER_TOKEN'] || ''
+      if (!token) {
+        console.warn('[daily-goals] QB_USER_TOKEN missing — install.first_scheduled disabled')
+        return
+      }
+      const byDate = new Map<string, number>()
+      let skip = 0
+      const top = 1000
+      // Pull every Installation event sorted newest first. Bail after
+      // ~20k rows or when a page returns short — same pattern as
+      // fetchPermitRows / fetchDesignRows.
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: EVENTS_TABLE,
+            select: [1, 6],
+            where: `{'6'.EX.'Installation'}`,
+            sortBy: [{ fieldId: 1, order: 'DESC' }],
+            options: { skip, top },
+          }),
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          throw new Error(`QB events query failed (${res.status}): ${text.slice(0, 200)}`)
+        }
+        const data = await res.json() as { data?: QbRecord[] }
+        const records = data.data || []
+        for (const rec of records) {
+          const dateRaw = qbVal(rec, 1)
+          if (!dateRaw) continue
+          const date = dateRaw.slice(0, 10)
+          byDate.set(date, (byDate.get(date) ?? 0) + 1)
+        }
+        if (records.length < top || skip > 20_000) break
+        skip += top
+      }
+      installScheduledCache = { byDate, refreshedAt: Date.now() }
+    } catch (e) {
+      console.warn('[daily-goals] install-scheduled refresh failed:', e)
+    } finally {
+      installScheduledInFlight = null
+    }
+  })()
+  return installScheduledInFlight
+}
+
+function installScheduledCount(dateIso: string): number {
+  if (Date.now() - installScheduledCache.refreshedAt > INSTALL_SCHEDULED_TTL_MS) {
+    refreshInstallScheduled().catch(() => { /* logged inside */ })
+  }
+  return installScheduledCache.byDate.get(dateIso) ?? 0
+}
+
+refreshInstallScheduled().catch(() => { /* logged inside */ })
+
+// ─── "KCA Cleared" — per-day count ────────────────────────
+// Mirrors QB report 24 (table bsiripd8r, "Prior Status is Rejected").
+// Report filter: field 9 (Prior Status) = 'Rejected' AND field 56
+// is set. Per the goal definition, field 56 represents the intake
+// completion date — so today's KCA-cleared count is the rows that
+// match the report filter AND have field 56 falling on today.
+// Verify against the QB report locally before relying on the number;
+// if field 56 turns out to be a different date column we'll adjust.
+
+const KCA_TABLE = 'bsiripd8r'
+const KCA_TTL_MS = 60_000
+let kcaClearedCache: { byDate: Map<string, number>; refreshedAt: number } =
+  { byDate: new Map(), refreshedAt: 0 }
+let kcaClearedInFlight: Promise<void> | null = null
+
+async function refreshKcaCleared(): Promise<void> {
+  if (kcaClearedInFlight) return kcaClearedInFlight
+  kcaClearedInFlight = (async () => {
+    try {
+      const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+      const token = process.env['QB_USER_TOKEN'] || ''
+      if (!token) {
+        console.warn('[daily-goals] QB_USER_TOKEN missing — intake.kca_cleared disabled')
+        return
+      }
+      const byDate = new Map<string, number>()
+      let skip = 0
+      const top = 1000
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: KCA_TABLE,
+            select: [9, 56],
+            where: `{'9'.EX.'Rejected'}AND{'56'.XEX.''}`,
+            sortBy: [{ fieldId: 56, order: 'DESC' }],
+            options: { skip, top },
+          }),
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          throw new Error(`QB KCA query failed (${res.status}): ${text.slice(0, 200)}`)
+        }
+        const data = await res.json() as { data?: QbRecord[] }
+        const records = data.data || []
+        for (const rec of records) {
+          const dateRaw = qbVal(rec, 56)
+          if (!dateRaw) continue
+          const date = dateRaw.slice(0, 10)
+          byDate.set(date, (byDate.get(date) ?? 0) + 1)
+        }
+        if (records.length < top || skip > 20_000) break
+        skip += top
+      }
+      kcaClearedCache = { byDate, refreshedAt: Date.now() }
+    } catch (e) {
+      console.warn('[daily-goals] kca-cleared refresh failed:', e)
+    } finally {
+      kcaClearedInFlight = null
+    }
+  })()
+  return kcaClearedInFlight
+}
+
+function kcaClearedCount(dateIso: string): number {
+  if (Date.now() - kcaClearedCache.refreshedAt > KCA_TTL_MS) {
+    refreshKcaCleared().catch(() => { /* logged inside */ })
+  }
+  return kcaClearedCache.byDate.get(dateIso) ?? 0
+}
+
+refreshKcaCleared().catch(() => { /* logged inside */ })
+
 const DATA_SOURCES: DataSource[] = [
   { key: 'permit.submitted',    label: 'Permits submitted (project_cache.permit_submitted)',  fetch: d => countProjects('permit_submitted',  d) },
   { key: 'permit.approved',     label: 'Permits approved',    fetch: d => countProjects('permit_approved',   d) },
-  { key: 'permit.bucket_empty', label: 'Permit-ready bucket count (snapshot)', fetch: _d => {
-    // "Bucket empty?" is a snapshot question, not a per-day flow. We
-    // return today's bucket count regardless of the requested date so
-    // the binary 0/non-zero signal still works on the scoreboard.
-    const row = db.prepare(
-      `SELECT COUNT(*) AS c FROM project_cache WHERE survey_approved != '' AND permit_submitted = ''`
-    ).get() as { c: number }
-    return row.c
+  { key: 'permit.bucket_empty', label: 'Need to Submit (QB report 65, table bscs3z866)', fetch: _d => {
+    // Snapshot — returns today's count regardless of the requested date
+    // so the binary "0 = bucket empty / clear" semantic works for the
+    // empty-bucket goal kind on the scoreboard.
+    return needToSubmitCount()
   } },
+  { key: 'design.cad_completed_initial', label: 'Initial CAD Designs Completed (Design Type = Initial Design)', fetch: designInitialCompletedCount },
+  { key: 'install.first_scheduled', label: 'Installs First Scheduled (QB report 123, Events table)', fetch: installScheduledCount },
+  { key: 'intake.kca_cleared', label: 'KCA Cleared (prior status Rejected, intake completed) — QB report 24', fetch: kcaClearedCount },
   { key: 'design.cad_started',  label: 'Designs started (CAD submitted)',     fetch: d => countProjects('cad_submitted',     d) },
   { key: 'design.completed',    label: 'Designs completed',   fetch: d => countProjects('design_completed',  d) },
   { key: 'nem.submitted',       label: 'NEM submitted',       fetch: d => countProjects('nem_submitted',     d) },
@@ -343,19 +634,33 @@ function valueForGoalDate(
 }
 
 // ─── Target lookup ────────────────────────────────────────
-// "Today's target" = the most recent daily_goal_targets row with
-// date_iso <= today. If none exist, fall back to the goal's
-// defaultTarget (from the seed list above).
+// "Target for date X" = the most recent daily_goal_targets row with
+// date_iso <= X. If none exists, return 0 — which means "no goal was
+// set for this day" and the scoreboard renders the cell as gray.
+//
+// The seed list's defaultTarget is intentionally NOT used as a
+// fallback here: in production, admins set targets explicitly and we
+// don't want phantom grading against a seed default that the team
+// never agreed to. The mock-data seeder still uses defaultTarget for
+// dev visuals — see `mockTargetForDate` below.
 
 const defaultTargetBySlug = new Map(seedGoals.map(g => [g.slug, g.defaultTarget]))
 
-function targetForDate(goalId: number, slug: string, dateIso: string): number {
+function targetForDate(goalId: number, _slug: string, dateIso: string): number {
   const row = db.prepare(`
     SELECT target FROM daily_goal_targets
     WHERE goal_id = ? AND date_iso <= ?
     ORDER BY date_iso DESC LIMIT 1
   `).get(goalId, dateIso) as { target: number } | undefined
-  if (row) return row.target
+  return row?.target ?? 0
+}
+
+function mockTargetForDate(goalId: number, slug: string, dateIso: string): number {
+  // Dev-only: fall through to the seed default so the mock generator
+  // can still create plausible historical values when admins haven't
+  // set targets yet. NOT used in any grading code path.
+  const explicit = targetForDate(goalId, slug, dateIso)
+  if (explicit > 0) return explicit
   return defaultTargetBySlug.get(slug) ?? 0
 }
 
@@ -374,7 +679,9 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-const HISTORY_DAYS = 6
+// 7-day history: today + 6 prior. Drives the sparkline AND the
+// sports-style win/loss strip on each goal card.
+const HISTORY_DAYS = 7
 
 function ensureMockActuals(goalId: number, slug: string, kind: string): void {
   const todayIso = isoDate(new Date())
@@ -402,7 +709,7 @@ function ensureMockActuals(goalId: number, slug: string, kind: string): void {
   days.forEach((day, idx) => {
     if (have.has(day)) return
     const isCurrent = idx === days.length - 1
-    const dayTarget = targetForDate(goalId, slug, day)
+    const dayTarget = mockTargetForDate(goalId, slug, day)
     let value: number
     if (kind === 'empty_bucket') {
       const roll = rng()
@@ -428,7 +735,47 @@ function seedAllMockActuals(): void {
   goals.forEach(g => ensureMockActuals(g.id, g.slug, g.kind))
 }
 
-seedAllMockActuals()
+// ─── One-shot pre-prod data cleanup ───────────────────────
+// Before the first real-data deploy, the dev DB accumulated 7+ days
+// of mock actuals and any test targets the admin set while iterating.
+// This migration wipes that history exactly once per environment so
+// the scoreboard launches with a clean slate — gray cells for dates
+// no goal was set, real numbers as admins start setting targets.
+//
+// Adds a new entry in daily_goals_migrations to gate re-runs. Past
+// targets are wiped because they were placeholder values; today's and
+// future targets are kept since the admin may have already pre-loaded
+// the right numbers.
+{
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_goals_migrations (
+      key TEXT PRIMARY KEY,
+      ran_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+  const MIG_KEY = 'clear_pre_prod_history_v1'
+  const alreadyRan = db.prepare(
+    `SELECT 1 FROM daily_goals_migrations WHERE key = ?`
+  ).get(MIG_KEY)
+  if (!alreadyRan) {
+    const todayIso = isoDate(new Date())
+    const tx = db.transaction(() => {
+      const actuals = db.prepare(`DELETE FROM daily_goal_actuals`).run()
+      const priorTargets = db.prepare(
+        `DELETE FROM daily_goal_targets WHERE date_iso < ?`
+      ).run(todayIso)
+      const hits = db.prepare(`DELETE FROM daily_goal_hits`).run()
+      db.prepare(`INSERT INTO daily_goals_migrations (key) VALUES (?)`).run(MIG_KEY)
+      return { actuals: actuals.changes, priorTargets: priorTargets.changes, hits: hits.changes }
+    })
+    const res = tx()
+    console.log(
+      `[daily-goals] one-shot cleanup ran: actuals=${res.actuals}, prior_targets=${res.priorTargets}, hits=${res.hits}`,
+    )
+  }
+}
+
+if (process.env['NODE_ENV'] !== 'production') seedAllMockActuals()
 
 // ─── Read endpoints ───────────────────────────────────────
 
@@ -461,7 +808,7 @@ interface ScoreboardSummary {
 router.get('/summary', (_req: Request, res: Response): void => {
   // Refresh current-day mock value so a TV that's been running since
   // 8am ramps as the workday progresses. Historical days stay stable.
-  seedAllMockActuals()
+  if (process.env['NODE_ENV'] !== 'production') seedAllMockActuals()
 
   const now = new Date()
   const todayIso = isoDate(now)
@@ -887,9 +1234,10 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
   })
   const newId = tx()
 
-  // Seed mock history so the sparkline isn't blank on first render —
-  // unless the goal has a live source, in which case real data flows.
-  if (!dataSource) {
+  // Dev-only: seed mock history so the sparkline isn't blank on
+  // first render. Skipped for live-source goals (real data flows) and
+  // skipped in production (clean slate is the desired prod behavior).
+  if (!dataSource && process.env['NODE_ENV'] !== 'production') {
     ensureMockActuals(newId, slug, kind)
   }
 
