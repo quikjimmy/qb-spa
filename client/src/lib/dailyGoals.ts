@@ -16,6 +16,10 @@ export interface ScoreboardGoal {
   current: number
   history: Array<{ date: string; value: number; target: number }>
   dayOverDayDelta: number | null
+  // ISO timestamp of the moment the server first observed this goal
+  // 'met' today, or null if it hasn't hit yet. Used by the scoreboard
+  // to decide whether to celebrate independently of poll timing.
+  firstHitAt: string | null
 }
 
 export interface ScoreboardSummary {

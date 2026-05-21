@@ -434,6 +434,30 @@ async function deleteBanner(item: BannerItem): Promise<void> {
   if (res.ok) await loadBanner()
 }
 
+const resettingHits = ref(false)
+const resetHitsMessage = ref('')
+async function resetTodaysCelebrations(): Promise<void> {
+  if (!window.confirm('Clear today\'s celebration history? Any goal currently at met status will re-celebrate on the next scoreboard poll.')) return
+  resettingHits.value = true
+  resetHitsMessage.value = ''
+  try {
+    const res = await fetch('/api/daily-goals/hits', {
+      method: 'DELETE',
+      headers: hdrs(),
+    })
+    if (!res.ok) {
+      resetHitsMessage.value = `Failed (${res.status})`
+      return
+    }
+    const data = (await res.json()) as { cleared: number; date: string }
+    resetHitsMessage.value = `Cleared ${data.cleared} hit(s) for ${data.date}. Open the scoreboard — celebrations will re-fire within ~60s.`
+  } catch (e) {
+    resetHitsMessage.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    resettingHits.value = false
+  }
+}
+
 onMounted(() => {
   load()
   loadBanner()
@@ -445,14 +469,25 @@ onMounted(() => {
     <!-- Scrolling banner messages — shown on the scoreboard ticker
          alongside live goal-hit celebrations. -->
     <Card>
-      <CardHeader>
-        <CardTitle>Scoreboard Ticker</CardTitle>
-        <CardDescription>
-          Messages that scroll at the bottom of
-          <RouterLink to="/scoreboard" class="underline">the scoreboard</RouterLink>.
-          Goal achievements auto-inject into the ticker for ~30s on
-          top of these.
-        </CardDescription>
+      <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle>Scoreboard Ticker</CardTitle>
+          <CardDescription>
+            Messages that scroll at the bottom of
+            <RouterLink to="/scoreboard" class="underline">the scoreboard</RouterLink>.
+            Goal achievements auto-inject into the ticker for ~30s on
+            top of these.
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          class="flex-none"
+          :disabled="resettingHits"
+          @click="resetTodaysCelebrations"
+        >
+          {{ resettingHits ? 'Resetting…' : 'Reset today\'s celebrations' }}
+        </Button>
       </CardHeader>
       <CardContent class="space-y-3">
         <div class="flex gap-2">
@@ -466,6 +501,7 @@ onMounted(() => {
             {{ newBannerSaving ? 'Adding…' : 'Add' }}
           </Button>
         </div>
+        <p v-if="resetHitsMessage" class="text-[11px] text-muted-foreground">{{ resetHitsMessage }}</p>
         <p v-if="bannerError" class="text-[11px] text-red-600">{{ bannerError }}</p>
         <p v-if="bannerLoading && bannerItems.length === 0" class="text-sm text-muted-foreground">Loading…</p>
         <p v-else-if="bannerItems.length === 0" class="text-sm text-muted-foreground">
