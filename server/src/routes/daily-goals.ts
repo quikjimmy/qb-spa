@@ -46,6 +46,19 @@ db.exec(`
     value INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (goal_id, date_iso)
   );
+
+  -- Persistent banner items shown in the scoreboard's scrolling ticker.
+  -- Goal-hit celebrations are ephemeral and merged in client-side; this
+  -- table holds the admin-curated announcements that stay up across
+  -- multiple goal cycles.
+  CREATE TABLE IF NOT EXISTS scoreboard_banner (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `)
 
 // Idempotent additive migration: link daily_goals to the canonical
@@ -900,6 +913,81 @@ router.delete('/:id', requireRole('admin'), (req: Request, res: Response): void 
     return db.prepare(`DELETE FROM daily_goals WHERE id = ?`).run(id)
   })
   const info = tx()
+  if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
+  res.json({ ok: true })
+})
+
+// ─── Scoreboard banner ───────────────────────────────────
+// Admin-curated ticker items. Goal-hit celebrations live client-side
+// and are merged into the marquee for ~30s when they fire.
+
+interface BannerItem {
+  id: number
+  text: string
+  active: number
+  priority: number
+}
+
+// Open to any authed user — the scoreboard reads this on every poll.
+router.get('/banner', (_req: Request, res: Response): void => {
+  const items = db.prepare(
+    `SELECT id, text, priority FROM scoreboard_banner
+     WHERE active = 1 ORDER BY priority DESC, id ASC`
+  ).all()
+  res.json({ items })
+})
+
+// Admin: full list including inactive.
+router.get('/banner/all', requireRole('admin'), (_req: Request, res: Response): void => {
+  const items = db.prepare(
+    `SELECT id, text, active, priority FROM scoreboard_banner ORDER BY priority DESC, id ASC`
+  ).all() as BannerItem[]
+  res.json({ items })
+})
+
+router.post('/banner', requireRole('admin'), (req: Request, res: Response): void => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+  if (text.length === 0) { res.status(400).json({ error: 'Text required' }); return }
+  const priority = typeof req.body?.priority === 'number' ? Math.round(req.body.priority) : 0
+  const active = req.body?.active === false ? 0 : 1
+  const info = db.prepare(
+    `INSERT INTO scoreboard_banner (text, active, priority) VALUES (?, ?, ?)`
+  ).run(text, active, priority)
+  const item = db.prepare(
+    `SELECT id, text, active, priority FROM scoreboard_banner WHERE id = ?`
+  ).get(info.lastInsertRowid as number)
+  res.json({ item })
+})
+
+router.put('/banner/:id', requireRole('admin'), (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
+  const fields: Array<{ col: string; val: unknown }> = []
+  if (typeof req.body?.text === 'string' && req.body.text.trim().length > 0) {
+    fields.push({ col: 'text', val: req.body.text.trim() })
+  }
+  if (typeof req.body?.active === 'boolean') {
+    fields.push({ col: 'active', val: req.body.active ? 1 : 0 })
+  }
+  if (typeof req.body?.priority === 'number') {
+    fields.push({ col: 'priority', val: Math.round(req.body.priority) })
+  }
+  if (fields.length === 0) { res.status(400).json({ error: 'No editable fields' }); return }
+  const setSql = fields.map(f => `${f.col} = ?`).join(', ')
+  const info = db.prepare(
+    `UPDATE scoreboard_banner SET ${setSql}, updated_at = datetime('now') WHERE id = ?`
+  ).run(...fields.map(f => f.val), id)
+  if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
+  const item = db.prepare(
+    `SELECT id, text, active, priority FROM scoreboard_banner WHERE id = ?`
+  ).get(id)
+  res.json({ item })
+})
+
+router.delete('/banner/:id', requireRole('admin'), (req: Request, res: Response): void => {
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
+  const info = db.prepare(`DELETE FROM scoreboard_banner WHERE id = ?`).run(id)
   if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
   res.json({ ok: true })
 })

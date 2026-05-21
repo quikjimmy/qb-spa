@@ -48,6 +48,13 @@ interface DataSource {
   label: string
 }
 
+interface BannerItem {
+  id: number
+  text: string
+  active: number
+  priority: number
+}
+
 interface EditState {
   label: string
   departmentId: string  // bound to <select>; "" means unchanged
@@ -80,6 +87,13 @@ const newGoalTarget = ref<string>('0')
 const newGoalSource = ref<string>('')
 const newGoalError = ref('')
 const newGoalSaving = ref(false)
+
+// Scrolling-banner messages — admin curated, shown on /scoreboard.
+const bannerItems = ref<BannerItem[]>([])
+const bannerLoading = ref(false)
+const bannerError = ref('')
+const newBannerText = ref('')
+const newBannerSaving = ref(false)
 
 // "+ New Department" dialog state. `dialogGoalId` tracks which goal's
 // dropdown triggered the dialog — on successful create we auto-select
@@ -360,11 +374,130 @@ async function createDepartment(): Promise<void> {
   }
 }
 
-onMounted(load)
+async function loadBanner(): Promise<void> {
+  bannerLoading.value = true
+  bannerError.value = ''
+  try {
+    const res = await fetch('/api/daily-goals/banner/all', { headers: hdrs() })
+    if (!res.ok) {
+      bannerError.value = `Failed (${res.status})`
+      return
+    }
+    const data = (await res.json()) as { items: BannerItem[] }
+    bannerItems.value = data.items
+  } catch (e) {
+    bannerError.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    bannerLoading.value = false
+  }
+}
+
+async function addBanner(): Promise<void> {
+  const text = newBannerText.value.trim()
+  if (text.length === 0) return
+  newBannerSaving.value = true
+  try {
+    const res = await fetch('/api/daily-goals/banner', {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      bannerError.value = (err as { error?: string }).error || `Failed (${res.status})`
+      return
+    }
+    newBannerText.value = ''
+    await loadBanner()
+  } catch (e) {
+    bannerError.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    newBannerSaving.value = false
+  }
+}
+
+async function toggleBanner(item: BannerItem): Promise<void> {
+  const res = await fetch(`/api/daily-goals/banner/${item.id}`, {
+    method: 'PUT',
+    headers: hdrs(),
+    body: JSON.stringify({ active: !item.active }),
+  })
+  if (res.ok) await loadBanner()
+}
+
+async function deleteBanner(item: BannerItem): Promise<void> {
+  if (!window.confirm(`Delete banner "${item.text}"?`)) return
+  const res = await fetch(`/api/daily-goals/banner/${item.id}`, {
+    method: 'DELETE',
+    headers: hdrs(),
+  })
+  if (res.ok) await loadBanner()
+}
+
+onMounted(() => {
+  load()
+  loadBanner()
+})
 </script>
 
 <template>
-  <div class="p-4 sm:p-6 max-w-5xl mx-auto">
+  <div class="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
+    <!-- Scrolling banner messages — shown on the scoreboard ticker
+         alongside live goal-hit celebrations. -->
+    <Card>
+      <CardHeader>
+        <CardTitle>Scoreboard Ticker</CardTitle>
+        <CardDescription>
+          Messages that scroll at the bottom of
+          <RouterLink to="/scoreboard" class="underline">the scoreboard</RouterLink>.
+          Goal achievements auto-inject into the ticker for ~30s on
+          top of these.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <div class="flex gap-2">
+          <Input
+            v-model="newBannerText"
+            type="text"
+            placeholder="Announcement, all-hands time, motivational line…"
+            @keyup.enter="addBanner"
+          />
+          <Button :disabled="newBannerSaving || newBannerText.trim().length === 0" @click="addBanner">
+            {{ newBannerSaving ? 'Adding…' : 'Add' }}
+          </Button>
+        </div>
+        <p v-if="bannerError" class="text-[11px] text-red-600">{{ bannerError }}</p>
+        <p v-if="bannerLoading && bannerItems.length === 0" class="text-sm text-muted-foreground">Loading…</p>
+        <p v-else-if="bannerItems.length === 0" class="text-sm text-muted-foreground">
+          No banner messages yet.
+        </p>
+        <ul v-else class="space-y-1.5">
+          <li
+            v-for="b in bannerItems"
+            :key="b.id"
+            class="flex items-center gap-2 text-sm"
+          >
+            <Switch
+              :model-value="!!b.active"
+              @update:model-value="() => toggleBanner(b)"
+            />
+            <span
+              class="flex-1 min-w-0 truncate"
+              :class="b.active ? 'text-foreground' : 'text-muted-foreground line-through'"
+            >{{ b.text }}</span>
+            <button
+              type="button"
+              class="flex-none w-7 h-7 rounded-md border flex items-center justify-center text-red-600 hover:bg-red-50 cursor-pointer"
+              :aria-label="`Delete banner: ${b.text}`"
+              @click="deleteBanner(b)"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
+          </li>
+        </ul>
+      </CardContent>
+    </Card>
+
     <Card>
       <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
         <div>
