@@ -48,6 +48,7 @@ import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 import { reportsRouter } from './routes/reports'
 import { fundingRouter } from './routes/funding'
 import { qbWebhookRouter } from './routes/qb-webhooks'
+import { dailyGoalsRouter } from './routes/daily-goals'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -100,6 +101,7 @@ app.use('/api/pto', authenticate, ptoCacheRouter)
 app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
 app.use('/api/analytics/design', authenticate, designAnalyticsRouter)
 app.use('/api/analytics/permit', authenticate, permitAnalyticsRouter)
+app.use('/api/daily-goals', authenticate, dailyGoalsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
