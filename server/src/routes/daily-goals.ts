@@ -233,6 +233,15 @@ db.transaction(() => {
   for (const name of CANONICAL_DEPARTMENTS) ensureCanonical.run(name)
 }
 
+// KCA Cleared has a canonical live source. Backfill only blank rows so admin
+// source changes remain authoritative after this one-time repair.
+db.prepare(
+  `UPDATE daily_goals
+   SET data_source = 'intake.kca_cleared'
+   WHERE slug = 'retention-casey-aid'
+     AND (data_source IS NULL OR data_source = '')`
+).run()
+
 // ─── Date helpers ─────────────────────────────────────────
 // All dates are local ISO YYYY-MM-DD in the *office* timezone — not
 // the host's timezone. Railway runs in UTC, so on a Mountain-Time
