@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Admin editor for the daily goals that drive /scoreboard.
 // Editable per goal: department (FK), label, active toggle, and a
-// 15-day target window (7 prior locked + today + 7 future editable).
+// 15-day target window (7 prior + today + 7 future, all editable).
 // Past targets are immutable; today and forward can be staged then
 // saved with a single per-goal Save button.
 
@@ -55,6 +55,25 @@ interface BannerItem {
   priority: number
 }
 
+interface CustomSource {
+  id: number
+  key: string
+  label: string
+  report_id: number
+  table_id: string
+  group_by_field_id: number
+  kind: 'count' | 'snapshot'
+}
+
+interface TestResult {
+  total_rows: number
+  snapshot_count: number
+  last_7_days: Array<{ date: string; count: number }>
+  group_by_field_id: number
+  available_fields: number[]
+  sample_row: Record<string, { value: unknown }>
+}
+
 interface EditState {
   label: string
   departmentId: string  // bound to <select>; "" means unchanged
@@ -94,6 +113,25 @@ const bannerLoading = ref(false)
 const bannerError = ref('')
 const newBannerText = ref('')
 const newBannerSaving = ref(false)
+
+// Custom (admin-defined, QB-report-backed) data sources.
+const customSources = ref<CustomSource[]>([])
+const customSourcesLoading = ref(false)
+const showCustomSourceDialog = ref(false)
+const csForm = ref({
+  key: '',
+  label: '',
+  report_url: '',  // pasted, we parse out report_id + table_id
+  report_id: 0,
+  table_id: '',
+  group_by_field_id: 1,
+  kind: 'count' as 'count' | 'snapshot',
+})
+const csError = ref('')
+const csSaving = ref(false)
+const csTesting = ref(false)
+const csTestResult = ref<TestResult | null>(null)
+const csEditingId = ref<number | null>(null)
 
 // "+ New Department" dialog state. `dialogGoalId` tracks which goal's
 // dropdown triggered the dialog — on successful create we auto-select
@@ -458,9 +496,148 @@ async function resetTodaysCelebrations(): Promise<void> {
   }
 }
 
+// ─── Custom source CRUD ────────────────────────────────
+
+// Pull report ID + table ID out of a pasted QB report URL. QB
+// supports two URL shapes — old `/db/{tableId}?...qid={id}` and the
+// newer `/nav/app/{appId}/table/{tableId}/action/q?qid={id}`. Both
+// land here.
+function parseReportUrl(url: string): { report_id: number; table_id: string } | null {
+  const tableMatch = url.match(/\/(?:db|table)\/([a-z0-9]+)(?:[\/?]|$)/i)
+  const qidMatch = url.match(/[?&]qid=(\d+)/i)
+  if (!tableMatch || !qidMatch || !tableMatch[1] || !qidMatch[1]) return null
+  return { table_id: tableMatch[1], report_id: Number(qidMatch[1]) }
+}
+
+async function loadCustomSources(): Promise<void> {
+  customSourcesLoading.value = true
+  try {
+    const res = await fetch('/api/daily-goals/custom-sources', { headers: hdrs() })
+    if (!res.ok) return
+    const data = (await res.json()) as { sources: CustomSource[] }
+    customSources.value = data.sources
+  } finally {
+    customSourcesLoading.value = false
+  }
+}
+
+function openCustomSourceDialog(existing?: CustomSource): void {
+  csError.value = ''
+  csTestResult.value = null
+  if (existing) {
+    csEditingId.value = existing.id
+    csForm.value = {
+      key: existing.key,
+      label: existing.label,
+      report_url: `https://kin.quickbase.com/db/${existing.table_id}?a=q&qid=${existing.report_id}`,
+      report_id: existing.report_id,
+      table_id: existing.table_id,
+      group_by_field_id: existing.group_by_field_id,
+      kind: existing.kind,
+    }
+  } else {
+    csEditingId.value = null
+    csForm.value = { key: '', label: '', report_url: '', report_id: 0, table_id: '', group_by_field_id: 1, kind: 'count' }
+  }
+  showCustomSourceDialog.value = true
+}
+
+// Live-derive report_id + table_id from the pasted URL as the user
+// types — saves them a step.
+function onReportUrlInput(): void {
+  const parsed = parseReportUrl(csForm.value.report_url)
+  if (parsed) {
+    csForm.value.report_id = parsed.report_id
+    csForm.value.table_id = parsed.table_id
+  }
+}
+
+async function testCustomSource(): Promise<void> {
+  csError.value = ''
+  csTestResult.value = null
+  if (!csForm.value.report_id || !csForm.value.table_id) {
+    csError.value = 'Paste a QB report URL first'
+    return
+  }
+  csTesting.value = true
+  try {
+    const res = await fetch('/api/daily-goals/custom-sources/test', {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({
+        report_id: csForm.value.report_id,
+        table_id: csForm.value.table_id,
+        group_by_field_id: csForm.value.group_by_field_id,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      csError.value = (data as { error?: string }).error || `Test failed (${res.status})`
+      return
+    }
+    csTestResult.value = data as TestResult
+  } catch (e) {
+    csError.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    csTesting.value = false
+  }
+}
+
+async function saveCustomSource(): Promise<void> {
+  csError.value = ''
+  if (!csForm.value.key.trim() || !csForm.value.label.trim()) {
+    csError.value = 'Key + label required'; return
+  }
+  if (!csForm.value.report_id || !csForm.value.table_id) {
+    csError.value = 'Paste a valid QB report URL'; return
+  }
+  csSaving.value = true
+  try {
+    const isEdit = csEditingId.value != null
+    const url = isEdit
+      ? `/api/daily-goals/custom-sources/${csEditingId.value}`
+      : '/api/daily-goals/custom-sources'
+    const method = isEdit ? 'PUT' : 'POST'
+    // Key isn't editable after creation (would orphan goals).
+    const body: Record<string, unknown> = {
+      label: csForm.value.label.trim(),
+      report_id: csForm.value.report_id,
+      table_id: csForm.value.table_id,
+      group_by_field_id: csForm.value.group_by_field_id,
+      kind: csForm.value.kind,
+    }
+    if (!isEdit) body['key'] = csForm.value.key.trim()
+    const res = await fetch(url, { method, headers: hdrs(), body: JSON.stringify(body) })
+    const data = await res.json()
+    if (!res.ok) {
+      csError.value = (data as { error?: string }).error || `Save failed (${res.status})`
+      return
+    }
+    showCustomSourceDialog.value = false
+    await Promise.all([loadCustomSources(), load()])  // refresh goal dropdown
+  } catch (e) {
+    csError.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    csSaving.value = false
+  }
+}
+
+async function deleteCustomSource(s: CustomSource): Promise<void> {
+  const bound = goals.value.filter(g => g.data_source === s.key)
+  const msg = bound.length > 0
+    ? `Delete "${s.label}"? ${bound.length} goal(s) currently bound to this source will fall back to mock/0 until you rebind them.`
+    : `Delete "${s.label}"?`
+  if (!window.confirm(msg)) return
+  const res = await fetch(`/api/daily-goals/custom-sources/${s.id}`, {
+    method: 'DELETE', headers: hdrs(),
+  })
+  if (res.ok) await Promise.all([loadCustomSources(), load()])
+}
+
 onMounted(() => {
   load()
   loadBanner()
+  loadCustomSources()
 })
 </script>
 
@@ -534,6 +711,54 @@ onMounted(() => {
       </CardContent>
     </Card>
 
+    <!-- Admin-defined data sources backed by saved QB reports. Each
+         appears in the goal-editor's Data Source dropdown alongside
+         the built-in sources. -->
+    <Card>
+      <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle>Custom Data Sources</CardTitle>
+          <CardDescription>
+            Wrap any saved QuickBase report as a goal data source.
+            Paste the report URL, name it, pick which date field
+            groups the count, and any goal can bind to it.
+          </CardDescription>
+        </div>
+        <Button class="flex-none" @click="openCustomSourceDialog()">
+          <Plus class="w-4 h-4 mr-1" /> New Source
+        </Button>
+      </CardHeader>
+      <CardContent class="space-y-2">
+        <p v-if="customSourcesLoading && customSources.length === 0" class="text-sm text-muted-foreground">Loading…</p>
+        <p v-else-if="customSources.length === 0" class="text-sm text-muted-foreground">
+          No custom sources yet. The built-in sources still work — this is for QB reports you want to wrap yourself.
+        </p>
+        <ul v-else class="space-y-1.5">
+          <li
+            v-for="s in customSources"
+            :key="s.id"
+            class="flex items-center gap-2 text-sm rounded-md border p-2 bg-card"
+          >
+            <div class="flex-1 min-w-0">
+              <p class="font-medium truncate">{{ s.label }}</p>
+              <p class="text-[10px] text-muted-foreground tabular-nums truncate">
+                {{ s.key }} · report {{ s.report_id }} on {{ s.table_id }} · group by field {{ s.group_by_field_id }} · {{ s.kind }}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" @click="openCustomSourceDialog(s)">Edit</Button>
+            <button
+              type="button"
+              class="flex-none w-7 h-7 rounded-md border flex items-center justify-center text-red-600 hover:bg-red-50 cursor-pointer"
+              :aria-label="`Delete ${s.label}`"
+              @click="deleteCustomSource(s)"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
+          </li>
+        </ul>
+      </CardContent>
+    </Card>
+
     <Card>
       <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
         <div>
@@ -542,9 +767,9 @@ onMounted(() => {
             Set today's and the next 7 days' targets for each goal on
             the
             <RouterLink to="/scoreboard" class="underline">Scoreboard</RouterLink>.
-            Past targets are locked in — editing tomorrow won't change
-            yesterday's history. Empty-bucket goals are binary
-            pass/fail (target always 0).
+            All 15 days are editable — set future targets in advance or
+            backfill historical targets to re-grade the win/loss strip.
+            Empty-bucket goals are binary pass/fail (target always 0).
           </CardDescription>
         </div>
         <Button class="flex-none" @click="openNewGoalDialog">
@@ -665,7 +890,7 @@ onMounted(() => {
               </span>
             </div>
             <p class="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Targets · 7 days prior locked · today + 7 days forward editable
+              Targets · last 7 days · today · next 7 days · all editable
             </p>
             <div class="grid grid-cols-15 gap-1.5 min-w-[900px]" v-if="g.kind !== 'empty_bucket'">
               <div
@@ -785,6 +1010,99 @@ onMounted(() => {
           </Button>
           <Button :disabled="newGoalSaving" @click="createGoal">
             {{ newGoalSaving ? 'Creating…' : 'Create' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Custom-source dialog. New/edit a QB-report-backed source.
+         Paste the report URL → we parse out report_id + table_id, the
+         Test button runs the report once and shows per-day counts so
+         the admin can sanity-check the group-by field before saving. -->
+    <Dialog v-model:open="showCustomSourceDialog">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{{ csEditingId == null ? 'New' : 'Edit' }} Data Source</DialogTitle>
+          <DialogDescription>
+            Wraps a saved QuickBase <strong>table-type</strong> report
+            as a goal data source. The report's filter stays in QB —
+            we just run it on a 60-second cache and count rows. Chart/
+            gauge reports return aggregated data instead of raw rows,
+            so they can't be grouped by date here. Test first; if you
+            see 0 rows, the report is either chart-type or empty.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="grid gap-3">
+          <div class="grid gap-1.5">
+            <Label for="cs-key">Source key</Label>
+            <Input
+              id="cs-key"
+              v-model="csForm.key"
+              type="text"
+              placeholder="custom.permits_notify_ahj"
+              :disabled="csEditingId != null"
+            />
+            <p class="text-[10px] text-muted-foreground">
+              Lowercase + at least one dot. Locked after creation so goals don't orphan.
+            </p>
+          </div>
+          <div class="grid gap-1.5">
+            <Label for="cs-label">Label</Label>
+            <Input id="cs-label" v-model="csForm.label" type="text" placeholder="Permits awaiting AHJ notify" />
+          </div>
+          <div class="grid gap-1.5">
+            <Label for="cs-url">QB report URL</Label>
+            <Input
+              id="cs-url"
+              v-model="csForm.report_url"
+              type="url"
+              placeholder="https://kin.quickbase.com/db/bscs3z866?a=q&qid=65"
+              @input="onReportUrlInput"
+            />
+            <p v-if="csForm.report_id" class="text-[10px] text-muted-foreground">
+              report {{ csForm.report_id }} on table {{ csForm.table_id }}
+            </p>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="grid gap-1.5">
+              <Label for="cs-groupby">Group-by field ID</Label>
+              <Input id="cs-groupby" v-model.number="csForm.group_by_field_id" type="number" min="1" />
+              <p class="text-[10px] text-muted-foreground">
+                Field 1 = Date Created; pick a date field that exists on the report
+              </p>
+            </div>
+            <div class="grid gap-1.5">
+              <Label for="cs-kind">Kind</Label>
+              <select id="cs-kind" v-model="csForm.kind" class="h-9 px-2 rounded-md border bg-background text-sm">
+                <option value="count">Per-day count</option>
+                <option value="snapshot">Snapshot count</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" :disabled="csTesting" @click="testCustomSource">
+              {{ csTesting ? 'Testing…' : 'Test report' }}
+            </Button>
+            <p v-if="csTestResult" class="text-[11px] text-muted-foreground tabular-nums">
+              Total rows: {{ csTestResult.total_rows }} ·
+              Available fields:
+              {{ csTestResult.available_fields.slice(0, 8).join(', ') }}{{ csTestResult.available_fields.length > 8 ? '…' : '' }}
+            </p>
+          </div>
+          <div v-if="csTestResult" class="rounded-md border bg-muted/30 p-2 grid grid-cols-7 gap-1 text-center">
+            <div v-for="d in csTestResult.last_7_days" :key="d.date" class="text-[10px]">
+              <p class="text-muted-foreground tabular-nums">{{ d.date.slice(5) }}</p>
+              <p class="font-bold tabular-nums">{{ d.count }}</p>
+            </div>
+          </div>
+
+          <p v-if="csError" class="text-[11px] text-red-600">{{ csError }}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="csSaving" @click="showCustomSourceDialog = false">Cancel</Button>
+          <Button :disabled="csSaving" @click="saveCustomSource">
+            {{ csSaving ? 'Saving…' : (csEditingId == null ? 'Create' : 'Save') }}
           </Button>
         </DialogFooter>
       </DialogContent>
