@@ -10,7 +10,7 @@
 //
 // One huge editorial number per card, everything else quiet.
 
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ScoreboardGoal } from '@/lib/dailyGoals'
 import { paceFor } from '@/lib/dailyGoals'
 import ScoreboardSparkline from './ScoreboardSparkline.vue'
@@ -19,6 +19,26 @@ const props = defineProps<{
   goal: ScoreboardGoal
   dayProgress: number
 }>()
+
+// Tier-2 celebration: when the current value goes up between polls,
+// briefly pulse the number and float a "+N" tag up off the top of it.
+// Skipped for empty-bucket goals (where down is good, up is bad).
+const bumped = ref(false)
+const bumpDelta = ref(0)
+
+watch(
+  () => props.goal.current,
+  (newV, oldV) => {
+    if (props.goal.kind === 'empty_bucket') return
+    if (typeof oldV !== 'number') return
+    const delta = newV - oldV
+    if (delta > 0) {
+      bumpDelta.value = delta
+      bumped.value = true
+      window.setTimeout(() => { bumped.value = false }, 1400)
+    }
+  },
+)
 
 const pace = computed(() => paceFor(props.goal, props.dayProgress))
 
@@ -57,8 +77,13 @@ const dodColor = computed(() => {
     </div>
 
     <div class="number-row">
-      <span class="scoreboard-number value" :data-pace="pace.status">
+      <span
+        class="scoreboard-number value"
+        :class="{ 'is-bumped': bumped }"
+        :data-pace="pace.status"
+      >
         {{ goal.current }}
+        <span v-if="bumped" class="scoreboard-bump-tag">+{{ bumpDelta }}</span>
       </span>
       <span v-if="goal.kind === 'count'" class="target">/ {{ goal.target }}</span>
       <span v-else class="target empty">target&nbsp;0</span>
@@ -107,6 +132,7 @@ const dodColor = computed(() => {
 .value {
   font-size: 88px;
   line-height: 0.9;
+  position: relative;  /* anchor for the absolute "+N" tag */
 }
 
 .target {
