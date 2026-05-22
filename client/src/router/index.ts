@@ -256,7 +256,13 @@ function shouldShowAgentsTeaser(
 
 router.beforeEach(async (to) => {
   const token = localStorage.getItem('token')
-  if (to.meta.requiresAuth && !token) {
+  // Pages embedded in OptiSign / Chromecast / an iframe pass their
+  // JWT via ?token=... since they have no localStorage session.
+  // ScoreboardView reads the query param on mount and uses it as the
+  // bearer JWT for API calls — here we just let the navigation
+  // through without redirecting to /login.
+  const hasUrlToken = typeof to.query['token'] === 'string' && (to.query['token'] as string).length > 0
+  if (to.meta.requiresAuth && !token && !hasUrlToken) {
     return { name: 'login' }
   }
   if ((to.name === 'login' || to.name === 'register') && token) {
