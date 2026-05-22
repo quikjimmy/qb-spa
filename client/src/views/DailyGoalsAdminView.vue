@@ -420,7 +420,9 @@ async function generateOptisignUrl(): Promise<void> {
     }
     const data = (await res.json()) as { token: string }
     const base = window.location.origin
-    optisignUrl.value = `${base}/scoreboard?token=${data.token}`
+    // TV-locked layout — keeps responsive/mobile overrides from
+    // interfering with the OptiSign render.
+    optisignUrl.value = `${base}/scoreboard/tv?token=${data.token}`
     try {
       await navigator.clipboard.writeText(optisignUrl.value)
       optisignMessage.value = 'URL copied. Paste into OptiSign as a Web App.'
