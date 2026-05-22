@@ -22,6 +22,7 @@
 // departments every 12s.
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import type { ScoreboardGoal, ScoreboardSummary } from '@/lib/dailyGoals'
 import { formatLongDate, groupByDepartment, paceFor } from '@/lib/dailyGoals'
@@ -37,6 +38,17 @@ const CELEBRATION_HOLD_MS = 4_000   // Tier-1 takeover lifetime
 const CELEBRATION_FADE_MS = 400     // overlap with fade-out CSS
 
 const auth = useAuthStore()
+const route = useRoute()
+
+// OptiSign / TV-stick embed support: if /scoreboard?token=... was
+// loaded, treat the URL token as the bearer JWT for API calls. Set
+// in-memory only — we don't persist to localStorage so a shared
+// browser session can't accidentally carry the read-only token into
+// a real user's account.
+if (typeof route.query['token'] === 'string' && (route.query['token'] as string).length > 0) {
+  auth.token = route.query['token'] as string
+}
+
 const summary = ref<ScoreboardSummary | null>(null)
 const errorMsg = ref('')
 const activeSlide = ref(0)
