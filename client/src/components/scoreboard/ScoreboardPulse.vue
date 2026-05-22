@@ -67,4 +67,19 @@ const cells = computed(() => [
 .label {
   font-size: 12px;
 }
+
+/* TV mode — bump up so the four pulse counts read big across the
+   TV's full width. */
+.scoreboard-root.is-tv .cell {
+  gap: 1.2vw;
+  padding: 3.5vw 2.5vw;
+}
+
+.scoreboard-root.is-tv .value {
+  font-size: 10vw;
+}
+
+.scoreboard-root.is-tv .label {
+  font-size: 1.9vw;
+}
 </style>

@@ -254,4 +254,42 @@ const dodColor = computed(() => {
   width: 100%;
   height: auto;
 }
+
+/* TV mode — scale fixed pixel sizes to vw so the design fills the
+   actual TV viewport instead of staying glued to its 600px design
+   reference. */
+.scoreboard-root.is-tv .label {
+  font-size: 2.8vw;
+}
+
+.scoreboard-root.is-tv .number-row {
+  gap: 2.2vw;
+  margin-top: 2.2vw;
+  margin-bottom: 1.9vw;
+}
+
+.scoreboard-root.is-tv .value {
+  font-size: 13vw;
+}
+
+.scoreboard-root.is-tv .target {
+  font-size: 3.4vw;
+}
+
+.scoreboard-root.is-tv .target.empty {
+  font-size: 2.2vw;
+}
+
+.scoreboard-root.is-tv .dod {
+  font-size: 2.5vw;
+}
+
+.scoreboard-root.is-tv .glyph {
+  font-size: 3vw;
+  margin-right: 0.3vw;
+}
+
+.scoreboard-root.is-tv .row {
+  gap: 2.5vw;
+}
 </style>
