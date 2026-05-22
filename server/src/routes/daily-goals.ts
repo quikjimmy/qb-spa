@@ -1,8 +1,31 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
+import jwt from 'jsonwebtoken'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
 import { fetchPermitRows, permitFieldValue, permitIsSet, type QbRecord } from './permit-analytics'
 import { fetchDesignRows } from './design-analytics'
+
+function getJwtSecret(): string {
+  return process.env['JWT_SECRET'] || 'dev-secret-change-me'
+}
+
+// Read-only scoreboard token role — minted via POST
+// /api/daily-goals/scoreboard-token and pasted into OptiSign /
+// Chromecast / iframe URLs. Tokens with this role can only hit
+// GET /summary on this router. Anything else returns 403, so a
+// leaked URL can't be used to mutate goals or read other data.
+const SCOREBOARD_READONLY_ROLE = 'scoreboard-readonly'
+const SCOREBOARD_TOKEN_TTL = '365d'
+
+function rejectIfReadonlyToken(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.roles.includes(SCOREBOARD_READONLY_ROLE)) {
+    // Only one path is allowed for read-only tokens: GET /summary.
+    if (req.method === 'GET' && req.path === '/summary') { next(); return }
+    res.status(403).json({ error: 'scoreboard-readonly token has no access to this endpoint' })
+    return
+  }
+  next()
+}
 // permitFieldValue / permitIsSet aren't really permit-specific — they
 // just unpack QB record shapes. Aliased here for clarity when used
 // against the design and events tables.
@@ -10,6 +33,7 @@ const qbVal = permitFieldValue
 const qbIsSet = permitIsSet
 
 const router = Router()
+router.use(rejectIfReadonlyToken)
 
 // ─── Schema ──────────────────────────────────────────────
 // Goals: 19 daily targets across nine departments. Targets are
@@ -54,18 +78,9 @@ db.exec(`
     PRIMARY KEY (goal_id, date_iso)
   );
 
-  -- Persistent banner items shown in the scoreboard's scrolling ticker.
-  -- Goal-hit celebrations are ephemeral and merged in client-side; this
-  -- table holds the admin-curated announcements that stay up across
-  -- multiple goal cycles.
-  CREATE TABLE IF NOT EXISTS scoreboard_banner (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    priority INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+  -- Drop the orphan scoreboard_banner table from earlier iterations.
+  -- The scrolling ticker was retired; the table has no consumers.
+  DROP TABLE IF EXISTS scoreboard_banner;
 
   -- "First time today the goal hit its target". The summary handler
   -- writes here when a goal flips from non-met to met. The client uses
@@ -1417,81 +1432,6 @@ router.delete('/:id', requireRole('admin'), (req: Request, res: Response): void 
   res.json({ ok: true })
 })
 
-// ─── Scoreboard banner ───────────────────────────────────
-// Admin-curated ticker items. Goal-hit celebrations live client-side
-// and are merged into the marquee for ~30s when they fire.
-
-interface BannerItem {
-  id: number
-  text: string
-  active: number
-  priority: number
-}
-
-// Open to any authed user — the scoreboard reads this on every poll.
-router.get('/banner', (_req: Request, res: Response): void => {
-  const items = db.prepare(
-    `SELECT id, text, priority FROM scoreboard_banner
-     WHERE active = 1 ORDER BY priority DESC, id ASC`
-  ).all()
-  res.json({ items })
-})
-
-// Admin: full list including inactive.
-router.get('/banner/all', requireRole('admin'), (_req: Request, res: Response): void => {
-  const items = db.prepare(
-    `SELECT id, text, active, priority FROM scoreboard_banner ORDER BY priority DESC, id ASC`
-  ).all() as BannerItem[]
-  res.json({ items })
-})
-
-router.post('/banner', requireRole('admin'), (req: Request, res: Response): void => {
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
-  if (text.length === 0) { res.status(400).json({ error: 'Text required' }); return }
-  const priority = typeof req.body?.priority === 'number' ? Math.round(req.body.priority) : 0
-  const active = req.body?.active === false ? 0 : 1
-  const info = db.prepare(
-    `INSERT INTO scoreboard_banner (text, active, priority) VALUES (?, ?, ?)`
-  ).run(text, active, priority)
-  const item = db.prepare(
-    `SELECT id, text, active, priority FROM scoreboard_banner WHERE id = ?`
-  ).get(info.lastInsertRowid as number)
-  res.json({ item })
-})
-
-router.put('/banner/:id', requireRole('admin'), (req: Request, res: Response): void => {
-  const id = Number(req.params['id'])
-  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
-  const fields: Array<{ col: string; val: unknown }> = []
-  if (typeof req.body?.text === 'string' && req.body.text.trim().length > 0) {
-    fields.push({ col: 'text', val: req.body.text.trim() })
-  }
-  if (typeof req.body?.active === 'boolean') {
-    fields.push({ col: 'active', val: req.body.active ? 1 : 0 })
-  }
-  if (typeof req.body?.priority === 'number') {
-    fields.push({ col: 'priority', val: Math.round(req.body.priority) })
-  }
-  if (fields.length === 0) { res.status(400).json({ error: 'No editable fields' }); return }
-  const setSql = fields.map(f => `${f.col} = ?`).join(', ')
-  const info = db.prepare(
-    `UPDATE scoreboard_banner SET ${setSql}, updated_at = datetime('now') WHERE id = ?`
-  ).run(...fields.map(f => f.val), id)
-  if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
-  const item = db.prepare(
-    `SELECT id, text, active, priority FROM scoreboard_banner WHERE id = ?`
-  ).get(id)
-  res.json({ item })
-})
-
-router.delete('/banner/:id', requireRole('admin'), (req: Request, res: Response): void => {
-  const id = Number(req.params['id'])
-  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: 'Invalid id' }); return }
-  const info = db.prepare(`DELETE FROM scoreboard_banner WHERE id = ?`).run(id)
-  if (info.changes === 0) { res.status(404).json({ error: 'Not found' }); return }
-  res.json({ ok: true })
-})
-
 // ─── Custom data sources (admin-defined, QB-report-backed) ─
 
 interface CustomSourceRow {
@@ -1771,6 +1711,30 @@ router.delete('/custom-sources/:id', requireRole('admin'), (req: Request, res: R
   unregisterSource(current.key)
   customCache.delete(current.key)
   res.json({ ok: true })
+})
+
+// ─── OptiSign / TV embed token ────────────────────────────
+// Mints a long-lived JWT tagged with the scoreboard-readonly role.
+// Pasted into OptiSign / Chromecast / an iframe — the scoreboard
+// page reads the token from `?token=` and uses it as the bearer JWT
+// for every /api/daily-goals/summary call.
+router.post('/scoreboard-token', requireRole('admin'), (req: Request, res: Response): void => {
+  const minter = req.user
+  if (!minter) { res.status(401).json({ error: 'Not authenticated' }); return }
+  const token = jwt.sign(
+    {
+      userId: minter.userId,
+      email: minter.email,
+      roles: [SCOREBOARD_READONLY_ROLE],
+    },
+    getJwtSecret(),
+    { expiresIn: SCOREBOARD_TOKEN_TTL },
+  )
+  res.json({
+    token,
+    expires_in: SCOREBOARD_TOKEN_TTL,
+    role: SCOREBOARD_READONLY_ROLE,
+  })
 })
 
 export { router as dailyGoalsRouter }
