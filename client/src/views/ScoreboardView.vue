@@ -65,10 +65,18 @@ const celebrationQueue = ref<ScoreboardGoal[]>([])
 const activeCelebration = ref<ScoreboardGoal | null>(null)
 const celebrationLeaving = ref(false)
 
-// Mobile responsive mode — on narrow viewports (phones), drop the
-// fixed-position letterbox + auto-rotation and let the user scroll
-// through all department slides under a sticky header. TV mode
-// (above the breakpoint) keeps the current 9:16 letterbox.
+// Two distinct viewing modes:
+//
+//   - `/scoreboard/tv` (route name 'scoreboard-tv'): locked TV
+//     layout, designed for a 1080×1920 portrait Samsung signage
+//     display fed by OptiSign. Always full-fill, auto-rotates,
+//     no mobile breakpoint, no orientation-based letterbox.
+//
+//   - `/scoreboard` (route name 'scoreboard'): responsive. Adapts
+//     to desktop (portrait letterbox) and phone (sticky header +
+//     stacked scroll). Use this for "preview at my desk".
+const isTvMode = computed(() => route.name === 'scoreboard-tv')
+
 const MOBILE_BREAKPOINT_PX = 640
 const isMobile = ref(false)
 
@@ -181,6 +189,11 @@ let rotateTimer: number | null = null
 let clockTimer: number | null = null
 
 function syncIsMobile(): void {
+  // TV mode is always full-fill — ignore viewport size entirely so
+  // a 1080×1920 portrait TV (or an OptiSign-rotated landscape one
+  // reporting < 640px wide in some unusual configs) never falls
+  // into the mobile stacked layout.
+  if (isTvMode.value) { isMobile.value = false; return }
   isMobile.value = typeof window !== 'undefined'
     && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches
 }
@@ -209,7 +222,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="scoreboard-root" :class="{ 'is-mobile': isMobile }">
+  <div class="scoreboard-root" :class="{ 'is-mobile': isMobile, 'is-tv': isTvMode }">
     <div class="scoreboard-stage">
       <div class="scoreboard-frame">
         <!-- Header — Kin mark + Bebas day-name lockup. Sticky on
