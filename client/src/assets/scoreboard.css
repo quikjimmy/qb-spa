@@ -171,81 +171,44 @@
 }
 
 /* ─── TV mode (/scoreboard/tv) ─────────────────────────────
-   Locked layout for a 1080×1920 portrait Samsung signage display
-   fed by OptiSign. Bypasses every responsive override so the TV
-   render is independent of the desktop + mobile tweaks. */
-.scoreboard-root.is-tv .scoreboard-frame {
-  max-width: 100%;
-}
+   Locked design canvas: every element renders against a fixed
+   1080×1920 portrait coordinate space (matching the TV's physical
+   resolution). Whatever viewport OptiSign / Samsung gives us, the
+   whole canvas is uniformly scaled to fit it via --tv-scale,
+   computed in JS on mount + resize. Result: every TV deployment
+   renders at exactly the designed proportions, no per-pixel
+   guessing about how the player reports its viewport. */
+
 .scoreboard-root.is-tv {
-  /* Always full-screen fixed positioning regardless of any media
-     query that might match the OptiSign viewport. */
   position: fixed;
   inset: 0;
   overflow: hidden;
+  background: var(--sb-ink);  /* matches the letterbox bars if
+                                  viewport aspect != 9:16 */
 }
 
-/* TV-mode sizing for shared components — pace pill, history strip,
-   eyebrow text, big number, celebration takeover. All vw-relative so
-   the design scales to whatever viewport the player reports. */
-.scoreboard-root.is-tv .scoreboard-eyebrow {
-  font-size: 1.9vw;
-  letter-spacing: 0.08em;
+.scoreboard-root.is-tv .scoreboard-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--sb-ink);
 }
 
-.scoreboard-root.is-tv .scoreboard-pill {
-  height: 5.5vw;
-  padding: 0 2.5vw;
-  font-size: 2.2vw;
-  gap: 0.9vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-card {
-  padding: 3.8vw 0;
-}
-
-.scoreboard-root.is-tv .scoreboard-number {
-  /* baseline — specific selectors below override for sparkline /
-     celebration. Pulse cell + goal-card value share this size. */
-}
-
-.scoreboard-root.is-tv .scoreboard-history-strip {
-  gap: 0.6vw;
-  margin-top: 1.3vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-history-cell {
-  width: 4.2vw;
-  height: 4.2vw;
-  border-radius: 0.6vw;
-  font-size: 1.9vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-history-divider {
-  margin: 0.3vw 0.6vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-bump-tag {
-  font-size: 4vw;
-  top: -1.2vw;
-  right: -1.2vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-celebration-eyebrow {
-  font-size: 2.2vw;
-  letter-spacing: 0.12em;
-}
-
-.scoreboard-root.is-tv .scoreboard-celebration-label {
-  font-size: 9.5vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-celebration-number {
-  font-size: 36vw;
-}
-
-.scoreboard-root.is-tv .scoreboard-celebration-caption {
-  font-size: 8.5vw;
+.scoreboard-root.is-tv .scoreboard-frame {
+  /* Locked design dimensions match the original 9:16 letterbox
+     proportions every nested px size is tuned for (88px campaign
+     font, 64px pulse value, etc.). The whole canvas is scaled
+     uniformly by --tv-scale to whatever the actual viewport is —
+     so a 1080×1920 TV scales the design 1.8x, fonts and elements
+     render at the correct proportions, no per-class overrides. */
+  width: 600px;
+  height: 1067px;
+  max-width: none;
+  flex: none;
+  transform-origin: center center;
+  transform: scale(var(--tv-scale, 1));
 }
 
 /* Slide-rotation transition between department pages. */
