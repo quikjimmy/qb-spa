@@ -129,8 +129,21 @@ if (isProd) {
     ? path.resolve(process.env['CLIENT_DIST'])
     : path.resolve(process.cwd(), '../client/dist')
   if (fs.existsSync(clientDist)) {
-    app.use(express.static(clientDist))
+    // Serve hashed assets with long-lived cache (file names change
+    // on every Vite build so this is safe), but serve index.html
+    // with no-store so always-on kiosks like OptiSign / Chromecast
+    // pick up new builds the moment Railway redeploys instead of
+    // holding onto a stale HTML that references vanished asset
+    // filenames.
+    app.use(express.static(clientDist, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-store, must-revalidate')
+        }
+      },
+    }))
     app.get(/^(?!\/api\/|\/uploads\/).*/, (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, must-revalidate')
       res.sendFile(path.join(clientDist, 'index.html'))
     })
   } else {
