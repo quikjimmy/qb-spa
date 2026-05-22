@@ -18,6 +18,17 @@ const router = createRouter({
       component: () => import('../views/ScoreboardView.vue'),
       meta: { requiresAuth: true },
     },
+    // TV-locked variant. Same component as /scoreboard but renders
+    // at a fixed 1080×1920 portrait layout — no mobile breakpoint,
+    // no orientation-driven letterbox. This is the URL we hand to
+    // OptiSign / wall-mounted signage so the TV layout is decoupled
+    // from desktop + mobile responsive tweaks.
+    {
+      path: '/scoreboard/tv',
+      name: 'scoreboard-tv',
+      component: () => import('../views/ScoreboardView.vue'),
+      meta: { requiresAuth: true },
+    },
     {
       path: '/register',
       name: 'register',
