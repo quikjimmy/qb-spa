@@ -535,4 +535,81 @@ onBeforeUnmount(() => {
 .scoreboard-root.is-mobile .dept {
   font-size: 48px;
 }
+
+/* ─── TV mode sizing (vw-relative) ─────────────────────────
+   The base CSS sizes the design against a ~600px-wide portrait
+   letterbox (desktop preview). On the actual 1080px+ TV viewport,
+   those pixel sizes look proportionally small. Express every
+   prominent size in vw so the layout scales naturally to whatever
+   the OptiSign / Samsung player reports as its viewport width.
+   Multiplier reference: 88px ≈ 14.5% of 600px design width → 14vw. */
+
+.scoreboard-root.is-tv .brand-mark {
+  width: 5.5vw;
+  height: 5.5vw;
+}
+
+.scoreboard-root.is-tv .hdr {
+  padding: 4vw 4.5vw 2.5vw;
+}
+
+.scoreboard-root.is-tv .campaign {
+  font-size: 14vw;
+}
+
+.scoreboard-root.is-tv .range {
+  font-size: 3.5vw;
+  margin: 2vw 0 0.6vw;
+}
+
+.scoreboard-root.is-tv .day {
+  font-size: 2.2vw;
+}
+
+.scoreboard-root.is-tv .focus {
+  padding: 2.8vw 4.5vw 1.2vw;
+}
+
+.scoreboard-root.is-tv .focus li {
+  grid-template-columns: 20vw 1fr auto;
+  gap: 2vw;
+  padding: 1.6vw 0;
+}
+
+.scoreboard-root.is-tv .focus-dept {
+  font-size: 1.9vw;
+}
+
+.scoreboard-root.is-tv .focus-label {
+  font-size: 2.7vw;
+}
+
+.scoreboard-root.is-tv .slide-shell {
+  padding: 0 4.5vw;
+}
+
+.scoreboard-root.is-tv .slide-hdr {
+  padding: 3.8vw 0 1.9vw;
+}
+
+.scoreboard-root.is-tv .dept {
+  font-size: 11.5vw;
+}
+
+.scoreboard-root.is-tv .slide-count {
+  font-size: 1.9vw;
+}
+
+.scoreboard-root.is-tv .ftr {
+  padding: 2.2vw 4.5vw 3.5vw;
+}
+
+.scoreboard-root.is-tv .dot {
+  width: 4.5vw;
+  height: 0.5vw;
+}
+
+.scoreboard-root.is-tv .clock {
+  font-size: 2.2vw;
+}
 </style>
