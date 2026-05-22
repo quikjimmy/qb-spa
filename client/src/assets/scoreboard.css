@@ -170,6 +170,21 @@
   }
 }
 
+/* ─── TV mode (/scoreboard/tv) ─────────────────────────────
+   Locked layout for a 1080×1920 portrait Samsung signage display
+   fed by OptiSign. Bypasses every responsive override so the TV
+   render is independent of the desktop + mobile tweaks. */
+.scoreboard-root.is-tv .scoreboard-frame {
+  max-width: 100%;
+}
+.scoreboard-root.is-tv {
+  /* Always full-screen fixed positioning regardless of any media
+     query that might match the OptiSign viewport. */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
 /* Slide-rotation transition between department pages. */
 .slide-enter-active, .slide-leave-active {
   transition: opacity 0.45s ease, transform 0.45s ease;
