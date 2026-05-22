@@ -400,6 +400,40 @@ async function createDepartment(): Promise<void> {
   }
 }
 
+// OptiSign / TV-stick embed URL generator.
+const optisignGenerating = ref(false)
+const optisignUrl = ref('')
+const optisignMessage = ref('')
+async function generateOptisignUrl(): Promise<void> {
+  optisignGenerating.value = true
+  optisignUrl.value = ''
+  optisignMessage.value = ''
+  try {
+    const res = await fetch('/api/daily-goals/scoreboard-token', {
+      method: 'POST',
+      headers: hdrs(),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      optisignMessage.value = (err as { error?: string }).error || `Failed (${res.status})`
+      return
+    }
+    const data = (await res.json()) as { token: string }
+    const base = window.location.origin
+    optisignUrl.value = `${base}/scoreboard?token=${data.token}`
+    try {
+      await navigator.clipboard.writeText(optisignUrl.value)
+      optisignMessage.value = 'URL copied. Paste into OptiSign as a Web App.'
+    } catch {
+      optisignMessage.value = 'Token generated — copy the URL below.'
+    }
+  } catch (e) {
+    optisignMessage.value = e instanceof Error ? e.message : 'Network error'
+  } finally {
+    optisignGenerating.value = false
+  }
+}
+
 const resettingHits = ref(false)
 const resetHitsMessage = ref('')
 async function resetTodaysCelebrations(): Promise<void> {
@@ -575,28 +609,49 @@ onMounted(() => {
          hit-state reset, used for re-firing the goal-hit takeover
          while iterating. -->
     <Card>
-      <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
-        <div>
-          <CardTitle>Scoreboard Controls</CardTitle>
-          <CardDescription>
-            Reset today's first-hit timestamps so any goal currently at
-            met status re-celebrates on the next
-            <RouterLink to="/scoreboard" class="underline">Scoreboard</RouterLink>
-            poll.
-          </CardDescription>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          class="flex-none"
-          :disabled="resettingHits"
-          @click="resetTodaysCelebrations"
-        >
-          {{ resettingHits ? 'Resetting…' : 'Reset today\'s celebrations' }}
-        </Button>
+      <CardHeader>
+        <CardTitle>Scoreboard Controls</CardTitle>
+        <CardDescription>
+          Operational knobs for the
+          <RouterLink to="/scoreboard" class="underline">live Scoreboard</RouterLink>:
+          reset celebration history for re-testing, or generate a
+          self-authenticating URL for a TV / OptiSign player.
+        </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent class="space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="resettingHits"
+            @click="resetTodaysCelebrations"
+          >
+            {{ resettingHits ? 'Resetting…' : 'Reset today\'s celebrations' }}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="optisignGenerating"
+            @click="generateOptisignUrl"
+          >
+            {{ optisignGenerating ? 'Generating…' : 'Generate OptiSign URL' }}
+          </Button>
+        </div>
         <p v-if="resetHitsMessage" class="text-[11px] text-muted-foreground">{{ resetHitsMessage }}</p>
+        <p v-if="optisignMessage" class="text-[11px] text-muted-foreground">{{ optisignMessage }}</p>
+        <div v-if="optisignUrl" class="space-y-1">
+          <Label class="text-[10px] uppercase tracking-wider text-muted-foreground">OptiSign URL (1-year token)</Label>
+          <Input
+            :model-value="optisignUrl"
+            type="text"
+            readonly
+            class="font-mono text-[11px]"
+            @focus="(e: Event) => (e.target as HTMLInputElement).select()"
+          />
+          <p class="text-[10px] text-muted-foreground">
+            Paste into OptiSign as a Web App content. Token is read-only and scoped to the scoreboard summary endpoint.
+          </p>
+        </div>
       </CardContent>
     </Card>
 
