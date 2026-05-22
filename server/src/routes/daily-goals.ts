@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
+import cron from 'node-cron'
 import jwt from 'jsonwebtoken'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
@@ -334,6 +335,12 @@ function workdayProgress(now: Date): number {
 interface DataSource {
   key: string
   label: string
+  // `count` (default) — fetcher returns the count for a specific date.
+  // `snapshot` — fetcher returns the *current* count regardless of the
+  //   requested date. The win/loss strip needs a recorded value for
+  //   historical days, so the end-of-day cron snapshots these into
+  //   `daily_goal_actuals` for goals bound to them.
+  kind?: 'count' | 'snapshot'
   // Synchronous fetcher — runs against local SQLite caches kept fresh
   // by the existing analytics schedulers. No network call in the
   // scoreboard's hot path.
@@ -721,7 +728,7 @@ refreshInterconnection().catch(() => { /* logged inside */ })
 const DATA_SOURCES: DataSource[] = [
   { key: 'permit.submitted',    label: 'Permits submitted (project_cache.permit_submitted)',  fetch: d => countProjects('permit_submitted',  d) },
   { key: 'permit.approved',     label: 'Permits approved',    fetch: d => countProjects('permit_approved',   d) },
-  { key: 'permit.bucket_empty', label: 'Need to Submit (QB report 65, table bscs3z866)', fetch: _d => {
+  { key: 'permit.bucket_empty', label: 'Need to Submit (QB report 65, table bscs3z866)', kind: 'snapshot', fetch: _d => {
     // Snapshot — returns today's count regardless of the requested date
     // so the binary "0 = bucket empty / clear" semantic works for the
     // empty-bucket goal kind on the scoreboard.
@@ -775,6 +782,17 @@ function valueForGoalDate(
   if (goal.data_source) {
     const src = getSource(goal.data_source)
     if (src) {
+      // Snapshot sources only know the *current* bucket count — they
+      // can't tell us what was in the bucket on day X. For past
+      // dates, prefer the cron-recorded actual (mockFallback reads
+      // from daily_goal_actuals for this goal). Today's cell still
+      // uses the live snapshot. Days before the cron started
+      // recording fall back to whatever's in the actuals table (mock
+      // in dev, 0 in prod) — they'll render as no-data on the strip.
+      const todayIso = isoDate(new Date())
+      if (src.kind === 'snapshot' && dateIso < todayIso) {
+        return mockFallback()
+      }
       try { return src.fetch(dateIso) } catch { /* fall through to mock */ }
     }
   }
@@ -1551,7 +1569,7 @@ function registerCustomSource(row: CustomSourceRow): void {
     if (!c) return 0
     return row.kind === 'snapshot' ? c.snapshot : (c.byDate.get(dateIso) ?? 0)
   }
-  registerSource({ key: row.key, label: row.label, fetch: fetcher })
+  registerSource({ key: row.key, label: row.label, kind: row.kind, fetch: fetcher })
   // Warm the cache immediately so the first /summary poll doesn't see 0.
   refreshCustomSource(row).catch(() => { /* logged inside */ })
 }
@@ -1735,6 +1753,63 @@ router.post('/scoreboard-token', requireRole('admin'), (req: Request, res: Respo
     expires_in: SCOREBOARD_TOKEN_TTL,
     role: SCOREBOARD_READONLY_ROLE,
   })
+})
+
+// ─── End-of-day snapshot cron ─────────────────────────────
+// Snapshot-kind data sources only know the *current* bucket count —
+// they have no historical lookback. To make the 7-day win/loss strip
+// meaningful for empty-bucket goals, freeze each day's value at 6pm
+// office time so future polls can read what was in the bucket on day
+// X from daily_goal_actuals instead of always seeing today's count.
+//
+// Mon-Fri only — weekends don't have a real "end of day" for ops
+// work, and freezing Saturday's empty-bucket value as a "miss"
+// would be misleading.
+
+function recordEndOfDaySnapshots(): void {
+  const todayIso = isoDate(new Date())
+  const goals = db.prepare(
+    `SELECT id, slug, data_source FROM daily_goals
+     WHERE active = 1 AND data_source IS NOT NULL`
+  ).all() as Array<{ id: number; slug: string; data_source: string }>
+
+  const upsert = db.prepare(
+    `INSERT INTO daily_goal_actuals (goal_id, date_iso, value)
+     VALUES (?, ?, ?)
+     ON CONFLICT(goal_id, date_iso) DO UPDATE SET value = excluded.value`
+  )
+
+  let written = 0
+  for (const g of goals) {
+    const src = getSource(g.data_source)
+    if (!src || src.kind !== 'snapshot') continue
+    try {
+      const value = src.fetch(todayIso)
+      upsert.run(g.id, todayIso, value)
+      written++
+    } catch (e) {
+      console.warn(`[daily-goals] EOD snapshot failed for ${g.slug}:`, e)
+    }
+  }
+  console.log(`[daily-goals] EOD snapshots: wrote ${written} of ${goals.length} active goals (${todayIso})`)
+}
+
+// Skip in non-prod so dev doesn't double-record on every restart.
+if (process.env['NODE_ENV'] === 'production') {
+  cron.schedule(
+    '0 18 * * 1-5',
+    () => recordEndOfDaySnapshots(),
+    { timezone: 'America/Denver' },
+  )
+  console.log('[daily-goals] EOD snapshot cron registered @ 18:00 Mon-Fri (America/Denver)')
+}
+
+// Manual "snapshot now" trigger — useful for testing the cron or
+// backfilling today's snapshot if something missed the 6pm window.
+// Same logic the cron runs.
+router.post('/snapshot-now', requireRole('admin'), (_req: Request, res: Response): void => {
+  recordEndOfDaySnapshots()
+  res.json({ ok: true })
 })
 
 export { router as dailyGoalsRouter }
