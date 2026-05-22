@@ -188,6 +188,12 @@ let pollTimer: number | null = null
 let rotateTimer: number | null = null
 let clockTimer: number | null = null
 
+// Design dimensions the TV-mode CSS canvas is locked to. Every
+// nested px size renders against this coordinate space; --tv-scale
+// uniformly scales the whole canvas to fit the actual viewport.
+const TV_DESIGN_WIDTH = 600
+const TV_DESIGN_HEIGHT = 1067
+
 function syncIsMobile(): void {
   // TV mode is always full-fill — ignore viewport size entirely so
   // a 1080×1920 portrait TV (or an OptiSign-rotated landscape one
@@ -198,9 +204,29 @@ function syncIsMobile(): void {
     && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches
 }
 
-onMounted(async () => {
+function syncTvScale(): void {
+  if (typeof document === 'undefined') return
+  if (!isTvMode.value) {
+    document.documentElement.style.removeProperty('--tv-scale')
+    return
+  }
+  const sw = window.innerWidth / TV_DESIGN_WIDTH
+  const sh = window.innerHeight / TV_DESIGN_HEIGHT
+  // Uniform scale that fits both axes — anything that doesn't match
+  // 9:16 viewport leaves ink-colored bars on the off-axis (matches
+  // the .is-tv root background).
+  const scale = Math.min(sw, sh)
+  document.documentElement.style.setProperty('--tv-scale', String(scale))
+}
+
+function syncViewport(): void {
   syncIsMobile()
-  window.addEventListener('resize', syncIsMobile)
+  syncTvScale()
+}
+
+onMounted(async () => {
+  syncViewport()
+  window.addEventListener('resize', syncViewport)
   await fetchSummary()
   pollTimer = window.setInterval(fetchSummary, POLL_MS)
   // Rotation is TV-mode only; mobile renders all slides stacked and
@@ -214,7 +240,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', syncIsMobile)
+  window.removeEventListener('resize', syncViewport)
   if (pollTimer != null) window.clearInterval(pollTimer)
   if (rotateTimer != null) window.clearInterval(rotateTimer)
   if (clockTimer != null) window.clearInterval(clockTimer)
@@ -534,82 +560,5 @@ onBeforeUnmount(() => {
 
 .scoreboard-root.is-mobile .dept {
   font-size: 48px;
-}
-
-/* ─── TV mode sizing (vw-relative) ─────────────────────────
-   The base CSS sizes the design against a ~600px-wide portrait
-   letterbox (desktop preview). On the actual 1080px+ TV viewport,
-   those pixel sizes look proportionally small. Express every
-   prominent size in vw so the layout scales naturally to whatever
-   the OptiSign / Samsung player reports as its viewport width.
-   Multiplier reference: 88px ≈ 14.5% of 600px design width → 14vw. */
-
-.scoreboard-root.is-tv .brand-mark {
-  width: 5.5vw;
-  height: 5.5vw;
-}
-
-.scoreboard-root.is-tv .hdr {
-  padding: 4vw 4.5vw 2.5vw;
-}
-
-.scoreboard-root.is-tv .campaign {
-  font-size: 14vw;
-}
-
-.scoreboard-root.is-tv .range {
-  font-size: 3.5vw;
-  margin: 2vw 0 0.6vw;
-}
-
-.scoreboard-root.is-tv .day {
-  font-size: 2.2vw;
-}
-
-.scoreboard-root.is-tv .focus {
-  padding: 2.8vw 4.5vw 1.2vw;
-}
-
-.scoreboard-root.is-tv .focus li {
-  grid-template-columns: 20vw 1fr auto;
-  gap: 2vw;
-  padding: 1.6vw 0;
-}
-
-.scoreboard-root.is-tv .focus-dept {
-  font-size: 1.9vw;
-}
-
-.scoreboard-root.is-tv .focus-label {
-  font-size: 2.7vw;
-}
-
-.scoreboard-root.is-tv .slide-shell {
-  padding: 0 4.5vw;
-}
-
-.scoreboard-root.is-tv .slide-hdr {
-  padding: 3.8vw 0 1.9vw;
-}
-
-.scoreboard-root.is-tv .dept {
-  font-size: 11.5vw;
-}
-
-.scoreboard-root.is-tv .slide-count {
-  font-size: 1.9vw;
-}
-
-.scoreboard-root.is-tv .ftr {
-  padding: 2.2vw 4.5vw 3.5vw;
-}
-
-.scoreboard-root.is-tv .dot {
-  width: 4.5vw;
-  height: 0.5vw;
-}
-
-.scoreboard-root.is-tv .clock {
-  font-size: 2.2vw;
 }
 </style>
