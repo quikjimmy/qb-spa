@@ -148,10 +148,26 @@
   position: relative;
   width: 100%;
   height: 100%;
-  max-width: calc(100vh * 9 / 16);
   background: var(--sb-canvas);
   display: flex;
   flex-direction: column;
+  /* No default letterbox. On portrait TVs that physically rotate
+     output but report landscape viewports to the browser (OptiSign,
+     most TV-stick players), the prior 9:16 cap shrunk content into
+     a narrow centered column. Filling 100% width works in all the
+     cases that matter: portrait TV, OptiSign-rotated portrait, and
+     phone-portrait (the mobile breakpoint below already handles
+     phones separately). */
+}
+
+/* The original 9:16 letterbox only made sense on a desktop browser
+   where the OS knows the screen is landscape and we wanted to keep
+   the portrait design proportions. Apply only there — never on a
+   TV / OptiSign player which reports landscape but renders portrait. */
+@media (orientation: portrait) and (min-width: 641px) {
+  .scoreboard-frame {
+    max-width: calc(100vh * 9 / 16);
+  }
 }
 
 /* Slide-rotation transition between department pages. */
