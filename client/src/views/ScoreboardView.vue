@@ -80,12 +80,26 @@ const isTvMode = computed(() => route.name === 'scoreboard-tv')
 const MOBILE_BREAKPOINT_PX = 640
 const isMobile = ref(false)
 
-const slides = computed(() => {
+// Two slide flavors so the rotation can interleave a company-pulse
+// intro page with the per-department goal pages. The intro slide
+// holds the four pulse counts + Today's Focus list; dept slides hold
+// the goal cards (now with the full vertical canvas to themselves
+// since pulse + focus moved off the always-visible top area).
+type IntroSlide = { kind: 'intro' }
+type DeptSlide = { kind: 'dept'; department: string; goals: ScoreboardGoal[] }
+type Slide = IntroSlide | DeptSlide
+
+const slides = computed<Slide[]>(() => {
   if (!summary.value) return []
-  return groupByDepartment(summary.value.goals)
+  const depts: DeptSlide[] = groupByDepartment(summary.value.goals)
+    .map(d => ({ kind: 'dept', department: d.department, goals: d.goals }))
+  return [{ kind: 'intro' }, ...depts]
 })
 
-const currentSlide = computed(() => slides.value[activeSlide.value] ?? null)
+const currentSlide = computed<Slide | null>(() => slides.value[activeSlide.value] ?? null)
+const deptSlides = computed<DeptSlide[]>(() =>
+  slides.value.filter((s): s is DeptSlide => s.kind === 'dept'),
+)
 
 const dayName = computed(() => summary.value?.dayName ?? 'TODAY')
 
@@ -263,36 +277,42 @@ onBeforeUnmount(() => {
           <p class="day">{{ paceLabel }}</p>
         </header>
 
-        <!-- Pulse strip -->
-        <ScoreboardPulse
-          v-if="summary"
-          :goals="summary.goals"
-          :day-progress="summary.dayProgress"
-        />
+        <!-- Mobile only: keep the pulse + focus stacked at the top
+             of the scroll, above the dept list. Removing them from
+             rotation on mobile because mobile already shows every
+             dept stacked vertically — no slide cycling there. -->
+        <template v-if="isMobile">
+          <ScoreboardPulse
+            v-if="summary"
+            :goals="summary.goals"
+            :day-progress="summary.dayProgress"
+          />
+          <section v-if="ranking.length > 0" class="focus">
+            <p class="scoreboard-eyebrow">Today's Focus</p>
+            <ul>
+              <li v-for="r in ranking" :key="r.goal.id">
+                <span class="focus-dept">{{ r.goal.department }}</span>
+                <span class="focus-label">{{ r.goal.label }}</span>
+                <span class="scoreboard-pill" :data-pace="r.pace.status">{{ r.pace.label }}</span>
+              </li>
+            </ul>
+          </section>
+        </template>
 
-        <!-- Today's Focus — worst three goals across all departments -->
-        <section v-if="ranking.length > 0" class="focus">
-          <p class="scoreboard-eyebrow">Today's Focus</p>
-          <ul>
-            <li v-for="r in ranking" :key="r.goal.id">
-              <span class="focus-dept">{{ r.goal.department }}</span>
-              <span class="focus-label">{{ r.goal.label }}</span>
-              <span class="scoreboard-pill" :data-pace="r.pace.status">{{ r.pace.label }}</span>
-            </li>
-          </ul>
-        </section>
-
-        <!-- Department slides. TV mode (>640px): one slide visible,
-             auto-rotating every 12s. Mobile: all slides stacked +
-             scrollable under the sticky header. -->
+        <!-- Slide area. TV mode: one slide visible, auto-rotating
+             every 12s. Slide 0 is the company-pulse intro (4 counts
+             + Today's Focus); slides 1..N are department goal pages
+             with the full canvas to themselves so 3-4 cards fit.
+             Mobile: all dept slides stacked + scrollable under the
+             sticky header (pulse + focus already rendered above). -->
         <main class="slide-shell">
           <template v-if="isMobile">
-            <section v-if="slides.length === 0" class="slide empty">
+            <section v-if="deptSlides.length === 0" class="slide empty">
               <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
               <p v-else class="scoreboard-eyebrow">Loading…</p>
             </section>
             <section
-              v-for="s in slides"
+              v-for="s in deptSlides"
               :key="s.department"
               class="slide"
             >
@@ -309,7 +329,31 @@ onBeforeUnmount(() => {
             </section>
           </template>
           <Transition v-else name="slide" mode="out-in">
-            <section v-if="currentSlide" :key="currentSlide.department" class="slide">
+            <section
+              v-if="currentSlide?.kind === 'intro' && summary"
+              key="intro"
+              class="slide intro-slide"
+            >
+              <ScoreboardPulse
+                :goals="summary.goals"
+                :day-progress="summary.dayProgress"
+              />
+              <section v-if="ranking.length > 0" class="focus">
+                <p class="scoreboard-eyebrow">Today's Focus</p>
+                <ul>
+                  <li v-for="r in ranking" :key="r.goal.id">
+                    <span class="focus-dept">{{ r.goal.department }}</span>
+                    <span class="focus-label">{{ r.goal.label }}</span>
+                    <span class="scoreboard-pill" :data-pace="r.pace.status">{{ r.pace.label }}</span>
+                  </li>
+                </ul>
+              </section>
+            </section>
+            <section
+              v-else-if="currentSlide?.kind === 'dept'"
+              :key="currentSlide.department"
+              class="slide"
+            >
               <div class="slide-hdr">
                 <h2 class="scoreboard-display dept">{{ currentSlide.department }}</h2>
                 <p class="slide-count">{{ currentSlide.goals.length }} goals</p>
@@ -328,13 +372,12 @@ onBeforeUnmount(() => {
           </Transition>
         </main>
 
-        <!-- Footer — TV-only. Hidden on mobile since rotation doesn't
-             run and dots/clock would just be clutter. -->
+        <!-- Footer — TV-only. One dot per slide (intro + each dept). -->
         <footer v-if="!isMobile" class="ftr">
           <div class="dots">
             <span
               v-for="(s, i) in slides"
-              :key="s.department"
+              :key="s.kind === 'dept' ? s.department : 'intro'"
               class="dot"
               :class="{ active: i === activeSlide }"
             />
