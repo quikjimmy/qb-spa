@@ -157,16 +157,26 @@ async function callOllama(items: FeedbackInput[], model: string, key: { apiKey: 
   }
   const data = (await r.json()) as {
     message?: { content?: string }
+    choices?: Array<{ message?: { content?: string } }>
+    response?: string
+    error?: string
     prompt_eval_count?: number
     eval_count?: number
+    usage?: { prompt_tokens?: number; completion_tokens?: number }
   }
-  const content = data.message?.content
-  if (!content) throw new Error('Ollama returned no content')
+  // Accept the three envelope shapes we've seen in the wild: Ollama native
+  // (message.content), OpenAI-compat (choices[0].message.content), and the
+  // legacy /api/generate shape (response).
+  const content = data.message?.content || data.choices?.[0]?.message?.content || data.response
+  if (!content) {
+    const preview = JSON.stringify(data).slice(0, 600)
+    throw new Error(`Ollama returned no content — envelope: ${preview}`)
+  }
 
   return {
     raw: content,
-    tokensIn: data.prompt_eval_count ?? 0,
-    tokensOut: data.eval_count ?? 0,
+    tokensIn: data.prompt_eval_count ?? data.usage?.prompt_tokens ?? 0,
+    tokensOut: data.eval_count ?? data.usage?.completion_tokens ?? 0,
   }
 }
 
