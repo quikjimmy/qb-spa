@@ -110,6 +110,13 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     // cancel_date is set the moment a customer requests cancel; if status
     // later flips back to Active the project counts as "saved".
     'cancel_date', 'cancel_reasons',
+    // Per-milestone "last funding check" timestamps. Mirror the QB
+    // Funding-Dashboard Stale Follow-Up reports' `{2589/2591/2593.OBF.
+    // '3 days ago'}` filter — projects whose last funding check is on
+    // or before 3 days ago are flagged for follow-up.
+    'm1_last_funding_check_date',
+    'm2_last_funding_check_date',
+    'm3_last_funding_check_date',
   ]
   for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
   const FUNDING_REAL = [
@@ -129,6 +136,14 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   for (const c of FUNDING_REAL) addIfMissing(c, 'REAL')
   const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready']
   for (const c of FUNDING_BOOL) addIfMissing(c, 'INTEGER')
+
+  // QB exclusion flags shared by every Funding-Dashboard report
+  // (status_exclusion = FID 2568, general_archive = FID 2569). Both
+  // are checkbox booleans; layered into funding queries so the app
+  // mirrors the QB report set instead of including archived/excluded
+  // rows.
+  addIfMissing('status_exclusion', 'INTEGER')
+  addIfMissing('general_archive', 'INTEGER')
 
   // Test-project marker (QB fid 622). Stored as 0/1; existing rows
   // default to 0 (treated as "not a test"). Once the QB pull starts
@@ -282,6 +297,7 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2021, col: 'm1_approved_date' },
   { fid: 1913, col: 'm1_deposit_date' },
   { fid: 1888, col: 'm1_net_received' },      // negative = clawback
+  { fid: 2591, col: 'm1_last_funding_check_date' },
 
   { fid: 2050, col: 'm2_status' },
   { fid: 1993, col: 'm2_ready' },
@@ -291,6 +307,9 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2025, col: 'm2_approved_date' },
   { fid: 1914, col: 'm2_deposit_date' },      // Actual M2 Deposit Date
   { fid: 1889, col: 'm2_net_received' },
+  // Stale Follow-Up signal (mirrors QB report 1025 `{'2589'.OBF.'3 days ago'}`).
+  // Drives the M2 follow-up KPI; analogous fields exist for M1/M3.
+  { fid: 2589, col: 'm2_last_funding_check_date' },
 
   { fid: 2051, col: 'm3_status' },
   { fid: 1994, col: 'm3_ready' },
@@ -300,6 +319,7 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2029, col: 'm3_approved_date' },
   { fid: 1915, col: 'm3_deposit_date' },
   { fid: 1890, col: 'm3_net_received' },
+  { fid: 2593, col: 'm3_last_funding_check_date' },
 
   { fid: 2774, col: 'dca_status' },
   { fid: 2775, col: 'dca_timer_start' },
@@ -323,6 +343,13 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   // rows never enter the cache; downstream queries can safely assume
   // test_project = 0 but still gate defensively.
   { fid: 622, col: 'test_project' },
+
+  // QB exclusion flags layered into every Funding-Dashboard report.
+  // Both are booleans; pipeline/funding queries exclude rows where
+  // either is checked (mirrors `{2569.XEX.'1'}AND{2568.XEX.'1'}` on
+  // the QB side).
+  { fid: 2568, col: 'status_exclusion' },   // Status Exclusion Logic
+  { fid: 2569, col: 'general_archive' },    // General Archive Logic
 ]
 
 const selectFids = fieldMap.map(f => f.fid)
@@ -357,6 +384,7 @@ const BOOLEAN_COLS = new Set([
   'is_funded',
   'm1_ready', 'm2_ready', 'm3_ready',
   'test_project',
+  'status_exclusion', 'general_archive',
 ])
 
 // Multi-select text columns — QB returns these as either an array of strings

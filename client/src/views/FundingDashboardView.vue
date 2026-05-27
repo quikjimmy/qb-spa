@@ -10,6 +10,8 @@ import { useAuthStore } from '@/stores/auth'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { openProjectWithEvent } from '@/lib/openProject'
 import { localTodayIso } from '@/lib/dates'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Label } from '@/components/ui/label'
 
 type Milestone = 'M1' | 'M2' | 'M3' | 'DCA'
 type MilestoneMode = Milestone | 'ALL'
@@ -19,13 +21,16 @@ interface Bucket { count: number; expectedAmount: number; label: string }
 interface MilestoneSummary {
   buckets: Record<string, Bucket>
   followUp?: { count: number; expectedAmount: number }
+  pendingFollowUp?: { count: number; expectedAmount: number }
 }
 interface Overview {
   asOf: string
   activeMilestone: Milestone
   milestones: Record<Milestone, MilestoneSummary>
   byLender: Array<{ lender: string; status: string; count: number; expectedAmount: number }>
+  appliedFilters?: { state?: string; closer?: string; lender?: string }
 }
+interface FilterOptions { states: string[]; closers: string[]; lenders: string[] }
 interface AuditRow {
   recordId: number
   customerName: string
@@ -54,11 +59,103 @@ function readStored(): MilestoneMode {
 }
 const milestone = ref<MilestoneMode>(readStored())
 
+// Filters scope every count, lender pivot row, and audit drill to a
+// single state / closer / lender. Empty string = unset. Persisted in
+// localStorage so navigation in/out keeps the active scope.
+const FILTERS_KEY = 'funding.filters.v1'
+function readFilters(): { state: string; closer: string; lender: string } {
+  if (typeof localStorage === 'undefined') return { state: '', closer: '', lender: '' }
+  try {
+    const raw = localStorage.getItem(FILTERS_KEY)
+    if (!raw) return { state: '', closer: '', lender: '' }
+    const v = JSON.parse(raw)
+    return { state: v.state || '', closer: v.closer || '', lender: v.lender || '' }
+  } catch { return { state: '', closer: '', lender: '' } }
+}
+const fState  = ref('')
+const fCloser = ref('')
+const fLender = ref('')
+const initial = readFilters()
+fState.value  = initial.state
+fCloser.value = initial.closer
+fLender.value = initial.lender
+const filterOptions = ref<FilterOptions>({ states: [], closers: [], lenders: [] })
+const hasFilters = computed(() => !!(fState.value || fCloser.value || fLender.value))
+const showFilterDrawer = ref(false)
+function filterQS() {
+  const p: string[] = []
+  if (fState.value)  p.push(`state=${encodeURIComponent(fState.value)}`)
+  if (fCloser.value) p.push(`closer=${encodeURIComponent(fCloser.value)}`)
+  if (fLender.value) p.push(`lender=${encodeURIComponent(fLender.value)}`)
+  return p.length ? '&' + p.join('&') : ''
+}
+function persistFilters() {
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify({ state: fState.value, closer: fCloser.value, lender: fLender.value })) } catch { /* ignore */ }
+}
+function clearFilters() {
+  fState.value = ''
+  fCloser.value = ''
+  fLender.value = ''
+  persistFilters()
+  auditRows.value = {}
+  auditSort.value = {}
+  loadOverview()
+}
+async function loadFilterOptions() {
+  try {
+    const res = await fetch('/api/funding/filter-options', { headers: hdrs() })
+    if (res.ok) filterOptions.value = await res.json() as FilterOptions
+  } catch { /* keep defaults */ }
+}
+
 // Per-bucket audit state. Lazy-loaded on first expand; cached after
 // to keep toggle interactions snappy.
 const auditOpen = ref<Record<string, boolean>>({})
 const auditRows = ref<Record<string, AuditRow[]>>({})
 const auditLoading = ref<Record<string, boolean>>({})
+
+// Per-bucket sort state. Three-click cycle per column: desc → asc → off.
+// Sorting only one column at a time; clicking a different column resets
+// to desc on that column.
+type SortCol = 'customer' | 'state' | 'status' | 'lender' | 'sale' | 'install' | 'milestone' | 'reqDays' | 'schedDays' | 'expected' | 'kw'
+const auditSort = ref<Record<string, { col: SortCol; dir: 'asc' | 'desc' } | null>>({})
+const SORT_KEY: Record<SortCol, (r: AuditRow) => string | number> = {
+  customer:  r => (r.customerName || '').toLowerCase(),
+  state:     r => (r.state || '').toLowerCase(),
+  status:    r => (r.status || '').toLowerCase(),
+  lender:    r => (r.lender || '').toLowerCase(),
+  sale:      r => r.salesDate || '',
+  install:   r => r.installCompleted || r.installScheduled || '',
+  milestone: r => r.milestoneApprovedDate || r.milestoneRequestedDate || r.milestoneDepositDate || '',
+  reqDays:   r => r.milestoneRequestedDate ? Date.now() - new Date(r.milestoneRequestedDate).getTime() : -Infinity,
+  schedDays: r => r.installScheduled       ? Date.now() - new Date(r.installScheduled).getTime()       : -Infinity,
+  expected:  r => r.milestoneExpectedAmount || 0,
+  kw:        r => r.systemSizeKw || 0,
+}
+function toggleSort(bucketKey: string, col: SortCol) {
+  const cur = auditSort.value[bucketKey]
+  if (!cur || cur.col !== col) auditSort.value[bucketKey] = { col, dir: 'desc' }
+  else if (cur.dir === 'desc')  auditSort.value[bucketKey] = { col, dir: 'asc' }
+  else                          auditSort.value[bucketKey] = null
+}
+function sortIndicator(bucketKey: string, col: SortCol): string {
+  const s = auditSort.value[bucketKey]
+  if (!s || s.col !== col) return ''
+  return s.dir === 'desc' ? '▼' : '▲'
+}
+function sortedRows(bucketKey: string): AuditRow[] {
+  const raw = auditRows.value[bucketKey] || []
+  const s = auditSort.value[bucketKey]
+  if (!s) return raw
+  const k = SORT_KEY[s.col]
+  const sign = s.dir === 'asc' ? 1 : -1
+  return [...raw].sort((a, b) => {
+    const av = k(a), bv = k(b)
+    if (av < bv) return -1 * sign
+    if (av > bv) return  1 * sign
+    return 0
+  })
+}
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
 
@@ -70,7 +167,7 @@ async function loadOverview() {
     // `milestone` param only picks which one's lender pivot to include.
     // ALL mode doesn't show a pivot, so default to M2 for that query.
     const queryMs = milestone.value === 'ALL' ? 'M2' : milestone.value
-    const res = await fetch(`/api/funding/overview?milestone=${queryMs}`, { headers: hdrs() })
+    const res = await fetch(`/api/funding/overview?milestone=${queryMs}${filterQS()}`, { headers: hdrs() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     overview.value = await res.json() as Overview
   } catch (e) {
@@ -84,7 +181,7 @@ async function loadAudit(bucketKey: string) {
   if (auditRows.value[bucketKey]) return
   auditLoading.value[bucketKey] = true
   try {
-    const res = await fetch(`/api/funding/audit?bucket=${encodeURIComponent(bucketKey)}`, { headers: hdrs() })
+    const res = await fetch(`/api/funding/audit?bucket=${encodeURIComponent(bucketKey)}${filterQS()}`, { headers: hdrs() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json() as { rows: AuditRow[] }
     auditRows.value[bucketKey] = data.rows
@@ -107,14 +204,27 @@ function setMilestone(m: MilestoneMode) {
   try { localStorage.setItem(STORAGE_KEY, m) } catch { /* ignore */ }
   // Clear any open audits — they're milestone-specific.
   auditOpen.value = {}
+  auditSort.value = {}
   loadOverview()
 }
 
-onMounted(loadOverview)
+onMounted(() => { loadOverview(); loadFilterOptions() })
 watch(milestone, () => {
   // Re-fetch when milestone changes via toggle.
   auditRows.value = {}
+  auditSort.value = {}
 })
+function applyFilter(key: 'state' | 'closer' | 'lender', value: string) {
+  // Re-pull data when a filter changes. Existing audits are dropped
+  // because their bucket counts are filter-scoped too.
+  if (key === 'state')  fState.value  = fState.value  === value ? '' : value
+  if (key === 'closer') fCloser.value = fCloser.value === value ? '' : value
+  if (key === 'lender') fLender.value = fLender.value === value ? '' : value
+  persistFilters()
+  auditRows.value = {}
+  auditSort.value = {}
+  loadOverview()
+}
 
 function openProject(rid: number, e?: MouseEvent) { openProjectWithEvent(router, rid, e) }
 
@@ -212,6 +322,13 @@ function bucketsForMilestone(m: Milestone): BucketView[] {
       accent: 'rose',
     })
   }
+  if (ms.pendingFollowUp && m !== 'DCA') {
+    list.push({
+      key: `${m}:pendingFollowUp`,
+      bucket: { count: ms.pendingFollowUp.count, expectedAmount: ms.pendingFollowUp.expectedAmount, label: 'Pending · Follow-Up' },
+      accent: 'amber',
+    })
+  }
   return list
 }
 
@@ -220,12 +337,12 @@ const activeBuckets = computed<BucketView[]>(() => {
   return bucketsForMilestone(milestone.value)
 })
 
-// Grid columns scale to the bucket count so DCA's 4-tile group stays
-// 4-up while M1/M2/M3's 5-tile group lays out 5-up on lg.
-function gridClassFor(count: number): string {
-  if (count >= 5) return 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 min-w-0'
-  return 'grid grid-cols-2 sm:grid-cols-4 gap-2 min-w-0'
-}
+// KPI strip is horizontal-scroll instead of grid-wrap — keeps every
+// tile at the canonical fixed width and stops them stacking onto a
+// second row when there are 5+ buckets (M1/M2/M3 with follow-up
+// callouts).
+const KPI_STRIP_CLASS = 'flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0 snap-x'
+const KPI_TILE_WIDTH = 'flex-none w-[180px] snap-start'
 
 const activeFollowUp = computed(() => {
   if (!overview.value || milestone.value === 'ALL') return null
@@ -308,19 +425,69 @@ function milestoneForBucket(bucketKey: string): Milestone {
       </p>
     </div>
 
-    <!-- Milestone toggle (canonical segmented toggle) -->
-    <div class="inline-flex rounded-md border overflow-hidden self-start" role="tablist" aria-label="Milestone">
+    <!-- Milestone toggle + filter-icon drawer (BookedBoarded pattern).
+         State / Closer / Lender live in the drawer so the visible row
+         stays compact; the icon shows a dot when any filter is active. -->
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="inline-flex rounded-md border overflow-hidden" role="tablist" aria-label="Milestone">
+        <button
+          v-for="m in MILESTONES" :key="m.key"
+          type="button"
+          role="tab"
+          :aria-selected="milestone === m.key"
+          class="px-3 py-1.5 text-[11px] font-medium transition-colors cursor-pointer"
+          :class="milestone === m.key ? 'bg-foreground text-background' : 'hover:bg-muted'"
+          @click="setMilestone(m.key)"
+        >
+          {{ m.label }}
+        </button>
+      </div>
+
       <button
-        v-for="m in MILESTONES" :key="m.key"
-        type="button"
-        role="tab"
-        :aria-selected="milestone === m.key"
-        class="px-3 py-1.5 text-[11px] font-medium transition-colors cursor-pointer"
-        :class="milestone === m.key ? 'bg-foreground text-background' : 'hover:bg-muted'"
-        @click="setMilestone(m.key)"
+        class="relative inline-flex items-center justify-center rounded-md border size-8 transition-colors"
+        :class="showFilterDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
+        :title="hasFilters ? 'Filters · active' : 'More filters'"
+        @click="showFilterDrawer = !showFilterDrawer"
       >
-        {{ m.label }}
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        <span v-if="hasFilters" class="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-rose-500" />
       </button>
+
+      <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground" @click="clearFilters">Clear</button>
+    </div>
+
+    <!-- Filter drawer — state + closer + lender. Hidden by default. -->
+    <div v-if="showFilterDrawer" class="rounded-xl border bg-card p-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div class="space-y-1.5">
+        <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label>
+        <Select :model-value="fState || '__all__'" @update:model-value="v => applyFilter('state', v === '__all__' ? '' : String(v))">
+          <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All states" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All states</SelectItem>
+            <SelectItem v-for="s in filterOptions.states" :key="s" :value="s">{{ s }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div class="space-y-1.5">
+        <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Sales Rep</Label>
+        <Select :model-value="fCloser || '__all__'" @update:model-value="v => applyFilter('closer', v === '__all__' ? '' : String(v))">
+          <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All reps" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All reps</SelectItem>
+            <SelectItem v-for="c in filterOptions.closers" :key="c" :value="c">{{ c }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div class="space-y-1.5">
+        <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Lender</Label>
+        <Select :model-value="fLender || '__all__'" @update:model-value="v => applyFilter('lender', v === '__all__' ? '' : String(v))">
+          <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All lenders" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All lenders</SelectItem>
+            <SelectItem v-for="l in filterOptions.lenders" :key="l" :value="l">{{ l }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
     </div>
 
     <p v-if="loading" class="text-sm text-muted-foreground italic">Loading…</p>
@@ -330,12 +497,12 @@ function milestoneForBucket(bucketKey: string): Milestone {
 
     <template v-else-if="overview">
       <!-- ═══ KPI tiles · single-milestone view ═══ -->
-      <section v-if="milestone !== 'ALL'" aria-label="Status KPIs" :class="gridClassFor(activeBuckets.length)">
+      <section v-if="milestone !== 'ALL'" aria-label="Status KPIs" :class="KPI_STRIP_CLASS">
         <button
           v-for="b in activeBuckets" :key="b.key"
           type="button"
           class="rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden text-left cursor-pointer hover:bg-muted/30 transition-colors focus:outline-none focus:ring-2 focus:ring-foreground/10"
-          :class="auditOpen[b.key] ? 'bg-muted/30 ring-2 ring-foreground/10' : ''"
+          :class="[KPI_TILE_WIDTH, auditOpen[b.key] ? 'bg-muted/30 ring-2 ring-foreground/10' : '']"
           :title="`${b.bucket.label} — click to view projects`"
           @click="toggleAudit(b.key)"
         >
@@ -362,12 +529,12 @@ function milestoneForBucket(bucketKey: string): Milestone {
           class="grid gap-2 min-w-0"
         >
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{{ m }}</p>
-          <div :class="gridClassFor(bucketsForMilestone(m).length)">
+          <div :class="KPI_STRIP_CLASS">
             <button
               v-for="b in bucketsForMilestone(m)" :key="b.key"
               type="button"
               class="rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden text-left cursor-pointer hover:bg-muted/30 transition-colors focus:outline-none focus:ring-2 focus:ring-foreground/10"
-              :class="auditOpen[b.key] ? 'bg-muted/30 ring-2 ring-foreground/10' : ''"
+              :class="[KPI_TILE_WIDTH, auditOpen[b.key] ? 'bg-muted/30 ring-2 ring-foreground/10' : '']"
               :title="`${b.bucket.label} — click to view projects`"
               @click="toggleAudit(b.key)"
             >
@@ -417,24 +584,24 @@ function milestoneForBucket(bucketKey: string): Milestone {
               <!-- Desktop table -->
               <div class="hidden sm:block overflow-auto max-h-[480px] border-t">
                 <table class="w-full text-[11px] tabular-nums">
-                  <thead class="bg-muted/30 text-muted-foreground sticky top-0">
+                  <thead class="bg-card text-muted-foreground sticky top-0 z-10 shadow-[0_1px_0_0_hsl(var(--border))]">
                     <tr>
-                      <th class="text-left font-medium px-3 py-2">Customer</th>
-                      <th class="text-left font-medium px-2 py-2">State</th>
-                      <th class="text-left font-medium px-2 py-2">Status</th>
-                      <th class="text-left font-medium px-2 py-2">Lender</th>
-                      <th class="text-left font-medium px-2 py-2">Sale</th>
-                      <th class="text-left font-medium px-2 py-2">Install</th>
-                      <th class="text-left font-medium px-2 py-2">{{ milestoneForBucket(b.key) }}</th>
-                      <th class="text-right font-medium px-2 py-2" title="Days since milestone was requested">Req·d</th>
-                      <th class="text-right font-medium px-2 py-2" title="Days since install was scheduled">Sched·d</th>
-                      <th class="text-right font-medium px-3 py-2">Expected</th>
-                      <th class="text-right font-medium px-2 py-2">kW</th>
+                      <th class="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'customer')">Customer <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'customer') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'state')">State <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'state') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'status')">Status <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'status') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'lender')">Lender <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'lender') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'sale')">Sale <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'sale') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'install')">Install <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'install') }}</span></th>
+                      <th class="text-left font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'milestone')">{{ milestoneForBucket(b.key) }} <span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'milestone') }}</span></th>
+                      <th class="text-right font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" title="Days since milestone was requested" @click="toggleSort(b.key, 'reqDays')"><span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'reqDays') }}</span> Req·d</th>
+                      <th class="text-right font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" title="Days since install was scheduled" @click="toggleSort(b.key, 'schedDays')"><span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'schedDays') }}</span> Sched·d</th>
+                      <th class="text-right font-medium px-3 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'expected')"><span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'expected') }}</span> Expected</th>
+                      <th class="text-right font-medium px-2 py-2 cursor-pointer select-none hover:text-foreground" @click="toggleSort(b.key, 'kw')"><span class="text-[9px] opacity-70">{{ sortIndicator(b.key, 'kw') }}</span> kW</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y">
                     <tr
-                      v-for="r in (auditRows[b.key] || [])" :key="r.recordId"
+                      v-for="r in sortedRows(b.key)" :key="r.recordId"
                       class="hover:bg-muted/30 cursor-pointer"
                       @click="openProject(r.recordId, $event)"
                       @auxclick.prevent="openProject(r.recordId, $event)"
@@ -457,7 +624,7 @@ function milestoneForBucket(bucketKey: string): Milestone {
               <!-- Mobile cards -->
               <div class="sm:hidden divide-y border-t">
                 <div
-                  v-for="r in (auditRows[b.key] || [])" :key="`m-${r.recordId}`"
+                  v-for="r in sortedRows(b.key)" :key="`m-${r.recordId}`"
                   class="px-3 py-2 min-w-0 cursor-pointer hover:bg-muted/30"
                   @click="openProject(r.recordId, $event)"
                   @auxclick.prevent="openProject(r.recordId, $event)"
