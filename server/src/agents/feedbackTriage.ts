@@ -4,8 +4,9 @@ import {
   FEEDBACK_TRIAGE_SYSTEM,
   FEEDBACK_TRIAGE_MODEL_DEFAULT,
   FEEDBACK_TRIAGE_MODEL_FALLBACK,
+  FEEDBACK_TRIAGE_MODEL_OLLAMA,
 } from './prompt'
-import { getDefaultKeyFor, getKeyById } from '../lib/userProviderKeys'
+import { getDefaultKeyFor, getKeyById, type ProviderId, SUPPORTED_PROVIDERS } from '../lib/userProviderKeys'
 
 export interface FeedbackInput {
   id: number
@@ -96,7 +97,7 @@ function parseTriageResponse(raw: string): TriageResponse {
   return parsed
 }
 
-async function callClaude(items: FeedbackInput[], model: string, key: { apiKey: string; baseUrl: string | null }): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
+async function callAnthropic(items: FeedbackInput[], model: string, key: { apiKey: string; baseUrl: string | null }): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
   const client = new Anthropic({ apiKey: key.apiKey, ...(key.baseUrl ? { baseURL: key.baseUrl } : {}) })
   const userPrompt = `## Unclustered feedback (${items.length} items)\n\n${JSON.stringify(items, null, 2)}\n\nGroup these and draft a proposal for each cluster. Return only the JSON object.`
 
@@ -119,31 +120,93 @@ async function callClaude(items: FeedbackInput[], model: string, key: { apiKey: 
   return { raw: textBlock.text, tokensIn, tokensOut }
 }
 
-// Resolve which Anthropic API key to use for this triage run, in order:
+// Ollama's native /api/chat with format: "json" enforces grammar-constrained
+// JSON output. We use this (not the /v1/chat/completions shim) because the
+// OpenAI-compat layer does not reliably translate max_tokens → num_predict,
+// which left Kimi truncating mid-string at the ~128-token default cap.
+async function callOllama(items: FeedbackInput[], model: string, key: { apiKey: string; baseUrl: string | null }): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
+  const base = (key.baseUrl || 'https://ollama.com').replace(/\/+$/, '')
+  const userPrompt = `## Unclustered feedback (${items.length} items)\n\n${JSON.stringify(items, null, 2)}\n\nGroup these and draft a proposal for each cluster. Return only the JSON object.`
+
+  const r = await fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key.apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: 'json',
+      messages: [
+        { role: 'system', content: FEEDBACK_TRIAGE_SYSTEM },
+        { role: 'user', content: userPrompt },
+      ],
+      options: { num_predict: 8000 },
+    }),
+  })
+  if (!r.ok) {
+    const text = (await r.text().catch(() => '')).slice(0, 400)
+    throw new Error(`Ollama ${r.status}: ${text || r.statusText}`)
+  }
+  const data = (await r.json()) as {
+    message?: { content?: string }
+    prompt_eval_count?: number
+    eval_count?: number
+  }
+  const content = data.message?.content
+  if (!content) throw new Error('Ollama returned no content')
+
+  return {
+    raw: content,
+    tokensIn: data.prompt_eval_count ?? 0,
+    tokensOut: data.eval_count ?? 0,
+  }
+}
+
+function callModel(provider: ProviderId, items: FeedbackInput[], model: string, key: { apiKey: string; baseUrl: string | null }): Promise<{ raw: string; tokensIn: number; tokensOut: number }> {
+  if (provider === 'anthropic') return callAnthropic(items, model, key)
+  if (provider === 'ollama') return callOllama(items, model, key)
+  throw new Error(`Triage provider not implemented: ${provider}`)
+}
+
+function defaultModelFor(provider: ProviderId): string {
+  if (provider === 'ollama') return FEEDBACK_TRIAGE_MODEL_OLLAMA
+  return FEEDBACK_TRIAGE_MODEL_DEFAULT
+}
+
+// Resolve which API key to use for this triage run, in order:
 //   1. opts.keyId — caller picked a specific user_provider_keys row
-//   2. opts.userId — caller's default Anthropic key
-//   3. ANTHROPIC_API_KEY env var — system fallback
-// Returns the resolved key + a label for logging/UI feedback.
-function resolveTriageKey(opts: { userId?: number; keyId?: number }): { apiKey: string; baseUrl: string | null; source: string } {
+//   2. opts.userId (+ optional opts.provider) — caller's default key for that
+//      provider, or first available default walking anthropic→ollama→openai
+//   3. ANTHROPIC_API_KEY env var — system fallback (Anthropic only)
+function resolveTriageKey(opts: { userId?: number; keyId?: number; provider?: ProviderId }): { apiKey: string; baseUrl: string | null; provider: ProviderId; source: string } {
   if (opts.keyId && opts.userId) {
     const k = getKeyById(opts.userId, opts.keyId)
     if (!k) throw new Error(`API key id=${opts.keyId} not found for user`)
-    if (k.provider !== 'anthropic') throw new Error(`Triage requires an Anthropic key — selected key is ${k.provider}`)
-    return { apiKey: k.apiKey, baseUrl: k.baseUrl, source: `user-key:${opts.keyId}${k.label ? ` (${k.label})` : ''}` }
+    return { apiKey: k.apiKey, baseUrl: k.baseUrl, provider: k.provider, source: `user-key:${opts.keyId}${k.label ? ` (${k.label})` : ''}` }
   }
   if (opts.userId) {
-    const k = getDefaultKeyFor(opts.userId, 'anthropic')
-    if (k) return { apiKey: k.apiKey, baseUrl: k.baseUrl, source: 'user-default' }
+    if (opts.provider) {
+      const k = getDefaultKeyFor(opts.userId, opts.provider)
+      if (k) return { apiKey: k.apiKey, baseUrl: k.baseUrl, provider: opts.provider, source: `user-default:${opts.provider}` }
+      throw new Error(`No default ${opts.provider} key for user — add one in Settings`)
+    }
+    for (const provider of SUPPORTED_PROVIDERS) {
+      const k = getDefaultKeyFor(opts.userId, provider)
+      if (k) return { apiKey: k.apiKey, baseUrl: k.baseUrl, provider, source: `user-default:${provider}` }
+    }
   }
   const envKey = process.env['ANTHROPIC_API_KEY']
-  if (envKey) return { apiKey: envKey, baseUrl: null, source: 'env' }
-  throw new Error('No Anthropic API key available — add one in Settings or set ANTHROPIC_API_KEY')
+  if (envKey) return { apiKey: envKey, baseUrl: null, provider: 'anthropic', source: 'env' }
+  throw new Error('No API key available for triage — add one in Settings or set ANTHROPIC_API_KEY')
 }
 
-export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: string; userId?: number; keyId?: number }): Promise<TriageRunSummary> {
-  const model = opts?.model || FEEDBACK_TRIAGE_MODEL_DEFAULT
+export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: string; userId?: number; keyId?: number; provider?: ProviderId }): Promise<TriageRunSummary> {
   const triggeredBy = opts?.triggeredBy ?? null
-  const key = resolveTriageKey({ userId: opts?.userId, keyId: opts?.keyId })
+  const key = resolveTriageKey({ userId: opts?.userId, keyId: opts?.keyId, provider: opts?.provider })
+  const model = opts?.model || defaultModelFor(key.provider)
+  const modelWasExplicit = !!opts?.model
 
   const insertRun = db.prepare(
     `INSERT INTO feedback_triage_runs (status, triggered_by, model) VALUES ('running', ?, ?)`
@@ -175,13 +238,15 @@ export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: s
   let tokensOut: number
   let usedModel = model
   try {
-    const r = await callClaude(items, model, key)
+    const r = await callModel(key.provider, items, model, key)
     raw = r.raw
     tokensIn = r.tokensIn
     tokensOut = r.tokensOut
   } catch (err) {
-    if (model === FEEDBACK_TRIAGE_MODEL_DEFAULT) {
-      const r = await callClaude(items, FEEDBACK_TRIAGE_MODEL_FALLBACK, key)
+    // Only fall back on Anthropic, and only when caller didn't pin a specific
+    // model. Ollama has no second-tier model in this codebase to retry with.
+    if (key.provider === 'anthropic' && !modelWasExplicit) {
+      const r = await callModel(key.provider, items, FEEDBACK_TRIAGE_MODEL_FALLBACK, key)
       raw = r.raw
       tokensIn = r.tokensIn
       tokensOut = r.tokensOut
@@ -195,6 +260,7 @@ export async function runFeedbackTriage(opts?: { triggeredBy?: number; model?: s
   try {
     parsed = parseTriageResponse(raw)
   } catch (err) {
+    console.error(`[feedback-triage] parse failed (model=${usedModel}, provider=${key.provider}). Raw response:\n${raw.slice(0, 2000)}`)
     db.prepare(
       `UPDATE feedback_triage_runs
          SET finished_at = datetime('now'), status = 'failed',

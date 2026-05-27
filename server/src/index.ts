@@ -45,9 +45,11 @@ import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
+import { startFeedbackTriageScheduler } from './lib/feedbackTriageSchedule'
 import { reportsRouter } from './routes/reports'
 import { fundingRouter } from './routes/funding'
 import { qbWebhookRouter } from './routes/qb-webhooks'
+import { githubWebhookRouter } from './routes/github-webhooks'
 import { dailyGoalsRouter } from './routes/daily-goals'
 
 const app = express()
@@ -62,7 +64,13 @@ app.set('trust proxy', 1)
 if (!isProd) {
   app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
 }
-app.use(express.json({ limit: '1mb' }))
+// Stash the raw buffer on req so webhook handlers that need HMAC
+// verification (e.g. GitHub) can compute the signature against the
+// untransformed bytes. Cheap (~no overhead) and unused by other routes.
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, _res, buf) => { (req as unknown as { rawBody?: Buffer }).rawBody = buf },
+}))
 
 // Serve uploaded media files
 app.use('/uploads', express.static(UPLOADS_DIR))
@@ -84,6 +92,9 @@ app.use('/api/field/webhooks', authenticate, arrivyWebhookAdminRouter)
 // X-QB-Webhook-Secret header. Used to invalidate intake caches when
 // a new project lands so dashboards see it on the next 30s poll.
 app.use('/api/webhooks/qb', qbWebhookRouter)
+// GitHub webhooks — PUBLIC, HMAC-verified per request via GITHUB_WEBHOOK_SECRET.
+// Listens for pull_request events to flip approved proposals to shipped.
+app.use('/api/webhooks', githubWebhookRouter)
 
 // Protected routes — require JWT
 app.use('/api/qb', authenticate, qbRouter)
@@ -163,4 +174,5 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
   try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
   try { startArrivyUsersScheduler() } catch (e) { console.error('[startup] arrivy users scheduler failed:', e) }
+  try { startFeedbackTriageScheduler() } catch (e) { console.error('[startup] feedback triage scheduler failed:', e) }
 })

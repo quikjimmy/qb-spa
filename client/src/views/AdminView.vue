@@ -1276,6 +1276,11 @@ interface ProposalRow {
   approved_at: string | null
   rejection_reason: string | null
   target_release: string | null
+  github_issue_number: number | null
+  github_issue_url: string | null
+  github_issue_error: string | null
+  github_pr_number: number | null
+  github_pr_url: string | null
   cluster_title: string
   cluster_summary: string
   cluster_theme: string | null
@@ -1291,10 +1296,10 @@ const triageRunning = ref(false)
 const triageMessage = ref<string>('')
 
 // BYOM keys for the "Run Triage Now" picker. Only the admin's own
-// Anthropic keys are listed since the triage runner uses the Anthropic
-// SDK. With 0 keys we fall back to ANTHROPIC_API_KEY env on the server,
-// 1 key auto-uses it, 2+ shows a Select.
-interface TriageKey { id: number; label: string | null; is_default: boolean; last_test_ok: boolean | null; last_tested_at: string | null }
+// All provider keys are listed (anthropic + ollama + openai). With 0 keys we
+// fall back to ANTHROPIC_API_KEY env on the server, 1 key auto-uses it, 2+
+// shows a Select.
+interface TriageKey { id: number; provider: string; label: string | null; is_default: boolean; last_test_ok: boolean | null; last_tested_at: string | null }
 const triageKeys = ref<TriageKey[]>([])
 const triageKeyId = ref<number | null>(null)
 
@@ -1310,7 +1315,8 @@ async function loadTriageKeys() {
 
 function triageKeyLabel(k: TriageKey): string {
   const base = k.label || `key #${k.id}`
-  return k.is_default ? `${base} (default)` : base
+  const tagged = `${k.provider} · ${base}`
+  return k.is_default ? `${tagged} (default)` : tagged
 }
 const proposals = ref<ProposalRow[]>([])
 const proposalCounts = ref<Record<string, number>>({})
@@ -1388,6 +1394,19 @@ async function editProposalScope(p: ProposalRow) {
     body: JSON.stringify({ scope_md: next }),
   })
   await loadProposals()
+}
+
+async function retryIssueCreation(id: number) {
+  const res = await fetch(`/api/improvement-proposals/${id}/retry-issue`, {
+    method: 'POST', headers: hdrs(),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string }
+    window.alert(`Retry failed: ${data.error || res.statusText}`)
+    return
+  }
+  // The retry runs async server-side; poll proposals to surface the result.
+  setTimeout(loadProposals, 1500)
 }
 
 function toggleProposalExpanded(id: number) {
@@ -2036,14 +2055,14 @@ onMounted(async () => {
                 </div>
                 <div class="flex items-center gap-2 flex-wrap">
                   <!-- BYOM key picker. Only renders when the admin has 2+
-                       Anthropic keys configured; with 1 key we use it
-                       silently, with 0 we fall through to the system env. -->
+                       keys configured; with 1 key we use it silently, with
+                       0 we fall through to the system env (Anthropic). -->
                   <select
                     v-if="triageKeys.length >= 2"
                     v-model.number="triageKeyId"
                     class="h-9 rounded-md border bg-background px-2 text-xs"
                     :disabled="triageRunning"
-                    title="Which Anthropic key to bill"
+                    title="Which key to use"
                   >
                     <option v-for="k in triageKeys" :key="k.id" :value="k.id">{{ triageKeyLabel(k) }}</option>
                   </select>
@@ -2058,10 +2077,10 @@ onMounted(async () => {
                    which BYOM (or system fallback) will be billed. -->
               <p class="text-[11px] text-muted-foreground">
                 <template v-if="triageKeys.length === 0">
-                  No personal Anthropic key — using system fallback. Add one in Settings to bill your own account.
+                  No personal API key — using system fallback. Add one in Settings to bill your own account.
                 </template>
                 <template v-else-if="triageKeys.length === 1">
-                  Using your Anthropic key: <span class="font-medium">{{ triageKeyLabel(triageKeys[0]!) }}</span>
+                  Using your key: <span class="font-medium">{{ triageKeyLabel(triageKeys[0]!) }}</span>
                 </template>
                 <template v-else>
                   Run will bill: <span class="font-medium">{{ triageKeys.find(k => k.id === triageKeyId)?.label || `key #${triageKeyId}` }}</span>
@@ -2149,6 +2168,19 @@ onMounted(async () => {
 
                   <div v-if="p.rejection_reason" class="rounded-md border-l-2 border-rose-300 bg-rose-50/40 px-3 py-2 text-xs">
                     <span class="font-semibold">Rejected:</span> {{ p.rejection_reason }}
+                  </div>
+
+                  <div v-if="p.github_pr_url" class="rounded-md border-l-2 border-emerald-300 bg-emerald-50/40 px-3 py-2 text-xs">
+                    <span class="font-semibold">Shipped via PR</span>
+                    <a :href="p.github_pr_url" target="_blank" rel="noopener" class="ml-1 underline">#{{ p.github_pr_number }}</a>
+                  </div>
+                  <div v-else-if="p.github_issue_url" class="rounded-md border-l-2 border-sky-300 bg-sky-50/40 px-3 py-2 text-xs">
+                    <span class="font-semibold">Tracked in issue</span>
+                    <a :href="p.github_issue_url" target="_blank" rel="noopener" class="ml-1 underline">#{{ p.github_issue_number }}</a>
+                  </div>
+                  <div v-else-if="p.status === 'approved' && p.github_issue_error" class="rounded-md border-l-2 border-amber-300 bg-amber-50/40 px-3 py-2 text-xs space-y-1">
+                    <div><span class="font-semibold">Issue creation failed:</span> {{ p.github_issue_error }}</div>
+                    <Button size="sm" variant="outline" @click="retryIssueCreation(p.id)">Retry</Button>
                   </div>
 
                   <button
