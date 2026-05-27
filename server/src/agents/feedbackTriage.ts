@@ -144,11 +144,15 @@ async function callOllama(items: FeedbackInput[], model: string, key: { apiKey: 
       model,
       stream: false,
       format: 'json',
+      // Kimi K2.6 is a thinking model; without this it spends its entire
+      // token budget on chain-of-thought in message.thinking and never
+      // emits message.content. We need direct JSON output, not reasoning.
+      think: false,
       messages: [
         { role: 'system', content: FEEDBACK_TRIAGE_SYSTEM },
         { role: 'user', content: userPrompt },
       ],
-      options: { num_predict: 8000 },
+      options: { num_predict: 16000 },
     }),
   })
   if (!r.ok) {
