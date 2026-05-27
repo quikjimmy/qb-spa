@@ -76,7 +76,13 @@ function loadUnclusteredFeedback(): FeedbackInput[] {
 
 function parseTriageResponse(raw: string): TriageResponse {
   const trimmed = raw.trim().replace(/^```json\s*/i, '').replace(/```$/, '').trim()
-  const parsed = JSON.parse(trimmed) as TriageResponse
+  let parsed: TriageResponse
+  try {
+    parsed = JSON.parse(trimmed) as TriageResponse
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`${msg} — raw response started: ${JSON.stringify(trimmed.slice(0, 600))}`)
+  }
   if (!parsed || !Array.isArray(parsed.clusters)) {
     throw new Error('Triage response missing clusters[]')
   }
