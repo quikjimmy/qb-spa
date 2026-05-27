@@ -113,20 +113,20 @@ router.post('/triage/run', requireRole('admin'), async (req: Request, res: Respo
   }
 })
 
-// GET /api/feedback/triage/keys — admin only; list the admin's Anthropic
-// keys for the "Run Triage Now" picker. Filtered to anthropic since the
-// triage runner uses the Anthropic SDK.
+// GET /api/feedback/triage/keys — admin only; list the admin's keys
+// across all supported providers for the "Run Triage Now" picker.
 router.get('/triage/keys', requireRole('admin'), (req: Request, res: Response): void => {
   const userId = req.user!.userId
   const rows = db.prepare(
-    `SELECT id, label, is_default, last_test_ok, last_tested_at
+    `SELECT id, provider, label, is_default, last_test_ok, last_tested_at
        FROM user_provider_keys
-      WHERE user_id = ? AND provider = 'anthropic'
-      ORDER BY is_default DESC, created_at DESC`
-  ).all(userId) as Array<{ id: number; label: string | null; is_default: number; last_test_ok: number | null; last_tested_at: string | null }>
+      WHERE user_id = ?
+      ORDER BY provider, is_default DESC, created_at DESC`
+  ).all(userId) as Array<{ id: number; provider: string; label: string | null; is_default: number; last_test_ok: number | null; last_tested_at: string | null }>
   res.json({
     keys: rows.map(r => ({
       id: r.id,
+      provider: r.provider,
       label: r.label,
       is_default: r.is_default === 1,
       last_test_ok: r.last_test_ok === 1 ? true : r.last_test_ok === 0 ? false : null,

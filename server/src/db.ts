@@ -516,6 +516,18 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_improvement_proposals_status ON improvement_proposals(status, created_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_improvement_proposals_cluster ON improvement_proposals(cluster_id)`)
 
+// GitHub-issue link columns (idempotent ALTERs for existing rows).
+// Set when a proposal is approved and an issue is opened; PR fields set
+// when the GitHub webhook reports the closing PR merged.
+const proposalCols = db.prepare(`PRAGMA table_info(improvement_proposals)`).all() as Array<{ name: string }>
+const proposalColNames = new Set(proposalCols.map(c => c.name))
+if (!proposalColNames.has('github_issue_number')) db.exec(`ALTER TABLE improvement_proposals ADD COLUMN github_issue_number INTEGER`)
+if (!proposalColNames.has('github_issue_url')) db.exec(`ALTER TABLE improvement_proposals ADD COLUMN github_issue_url TEXT`)
+if (!proposalColNames.has('github_issue_error')) db.exec(`ALTER TABLE improvement_proposals ADD COLUMN github_issue_error TEXT`)
+if (!proposalColNames.has('github_pr_number')) db.exec(`ALTER TABLE improvement_proposals ADD COLUMN github_pr_number INTEGER`)
+if (!proposalColNames.has('github_pr_url')) db.exec(`ALTER TABLE improvement_proposals ADD COLUMN github_pr_url TEXT`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_improvement_proposals_issue ON improvement_proposals(github_issue_number)`)
+
 // --- Triage runs: audit trail of when the feedback agent ran and what it found ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS feedback_triage_runs (

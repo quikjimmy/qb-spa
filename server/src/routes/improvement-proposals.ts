@@ -1,8 +1,40 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
+import { createGithubIssue, githubConfigured, loadProposalIssueContext } from '../lib/githubIssues'
 
 const router = Router()
+
+// Fire-and-forget: open a GitHub issue for an approved proposal, then stamp
+// the issue number/url (or error) onto the row. Errors are stored so the
+// admin can retry without losing the approval state.
+async function openIssueForApprovedProposal(proposalId: number): Promise<void> {
+  if (!githubConfigured()) {
+    db.prepare(
+      `UPDATE improvement_proposals SET github_issue_error = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run('GITHUB_TOKEN/GITHUB_REPO not configured', proposalId)
+    return
+  }
+  const ctx = loadProposalIssueContext(proposalId)
+  if (!ctx) return
+  try {
+    const { number, url } = await createGithubIssue(ctx)
+    db.prepare(
+      `UPDATE improvement_proposals
+         SET github_issue_number = ?, github_issue_url = ?, github_issue_error = NULL,
+             updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(number, url, proposalId)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[github-issues] proposal ${proposalId} failed:`, msg)
+    db.prepare(
+      `UPDATE improvement_proposals
+         SET github_issue_error = ?, updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(msg.slice(0, 500), proposalId)
+  }
+}
 
 const VALID_STATUSES = [
   'awaiting_approval',
@@ -29,6 +61,11 @@ interface ProposalRow {
   target_release: string | null
   triage_run_id: number | null
   model: string | null
+  github_issue_number: number | null
+  github_issue_url: string | null
+  github_issue_error: string | null
+  github_pr_number: number | null
+  github_pr_url: string | null
   created_at: string
   updated_at: string
   cluster_title: string
@@ -173,6 +210,17 @@ router.patch('/:id', requireRole('admin'), (req: Request, res: Response): void =
 
   if (result.changes === 0) { res.status(404).json({ error: 'not found' }); return }
 
+  // First-time approval: open a GitHub issue. Fire-and-forget so the
+  // approval response isn't gated on GitHub API latency. Skip if the
+  // proposal already has an issue (idempotent retry, status flip back
+  // and forth, etc.).
+  if (status === 'approved') {
+    const cur = db.prepare(`SELECT github_issue_number FROM improvement_proposals WHERE id = ?`).get(id) as { github_issue_number: number | null } | undefined
+    if (cur && cur.github_issue_number == null) {
+      void openIssueForApprovedProposal(id)
+    }
+  }
+
   // When a proposal is approved/scheduled, mark its member feedback as in_build.
   // When shipped, mark them as shipped. This keeps the per-feedback queue in sync
   // with the cluster-level lifecycle so admins don't have to touch both.
@@ -197,6 +245,23 @@ router.patch('/:id', requireRole('admin'), (req: Request, res: Response): void =
     ).run(id)
   }
 
+  res.json({ ok: true })
+})
+
+// POST /api/improvement-proposals/:id/retry-issue — admin only; manually
+// retry GitHub issue creation after a transient failure (rate limit, auth,
+// etc.). Only fires if the proposal is approved and doesn't already have
+// an issue number.
+router.post('/:id/retry-issue', requireRole('admin'), (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  if (!id) { res.status(400).json({ error: 'invalid id' }); return }
+  const row = db.prepare(
+    `SELECT status, github_issue_number FROM improvement_proposals WHERE id = ?`
+  ).get(id) as { status: string; github_issue_number: number | null } | undefined
+  if (!row) { res.status(404).json({ error: 'not found' }); return }
+  if (row.status !== 'approved') { res.status(400).json({ error: 'proposal not approved' }); return }
+  if (row.github_issue_number != null) { res.status(400).json({ error: 'issue already exists' }); return }
+  void openIssueForApprovedProposal(id)
   res.json({ ok: true })
 })
 
