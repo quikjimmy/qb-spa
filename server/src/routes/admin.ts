@@ -990,6 +990,100 @@ router.put('/users/:id/departments', (req: Request, res: Response): void => {
   res.json({ ok: true, departments: rows })
 })
 
+// ── Department ↔ Dialpad routing-target bridge (admin) ───────
+// Maps a portal department to one or more Dialpad routing targets. The
+// Comms Hub SSE fanout uses these mappings to decide who should see an
+// inbound event (PR-1c); writes here are admin-only so an arbitrary user
+// can't subscribe themselves to traffic they shouldn't see.
+
+router.get('/departments/:id/dialpad-targets', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  if (!Number.isFinite(id)) { res.status(400).json({ error: 'invalid department id' }); return }
+  const rows = db.prepare(
+    `SELECT id, target_kind, target_id, label, created_at
+       FROM department_dialpad_targets
+      WHERE department_id = ?
+      ORDER BY target_kind, target_id`
+  ).all(id)
+  res.json({ targets: rows })
+})
+
+router.post('/departments/:id/dialpad-targets', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  if (!Number.isFinite(id)) { res.status(400).json({ error: 'invalid department id' }); return }
+  const { target_kind, target_id, label } = req.body as { target_kind?: string; target_id?: string; label?: string }
+  const kind = (target_kind || '').trim()
+  const tid = (target_id || '').trim()
+  if (!kind || !tid) { res.status(400).json({ error: 'target_kind and target_id are required' }); return }
+  // Department must exist — FK will reject but we surface a 404 first
+  const dept = db.prepare(`SELECT id FROM departments WHERE id = ?`).get(id)
+  if (!dept) { res.status(404).json({ error: 'department not found' }); return }
+  try {
+    const r = db.prepare(
+      `INSERT INTO department_dialpad_targets (department_id, target_kind, target_id, label, created_by)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, kind, tid, (label || '').trim() || null, req.user!.userId)
+    const row = db.prepare(
+      `SELECT id, target_kind, target_id, label, created_at FROM department_dialpad_targets WHERE id = ?`
+    ).get(Number(r.lastInsertRowid))
+    res.json(row)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('UNIQUE')) { res.status(409).json({ error: 'department already mapped to that target' }); return }
+    res.status(500).json({ error: msg })
+  }
+})
+
+router.delete('/departments/:id/dialpad-targets/:bridgeId', (req: Request, res: Response): void => {
+  const id = parseInt(String(req.params['id']), 10)
+  const bridgeId = parseInt(String(req.params['bridgeId']), 10)
+  if (!Number.isFinite(id) || !Number.isFinite(bridgeId)) { res.status(400).json({ error: 'invalid id' }); return }
+  const r = db.prepare(
+    `DELETE FROM department_dialpad_targets WHERE id = ? AND department_id = ?`
+  ).run(bridgeId, id)
+  if (r.changes === 0) { res.status(404).json({ error: 'mapping not found' }); return }
+  res.json({ ok: true })
+})
+
+// Distinct (target_kind, target_id) seen on inbound Dialpad events in the
+// last 30 days. Drives the admin picker so an admin doesn't have to paste
+// raw IDs — they pick from real traffic. Includes a sample external_number
+// + last_seen so the row is recognizable (e.g. "callcenter 5402… · last seen
+// 12 min ago · most recent caller +1 801 …").
+router.get('/dialpad-targets/seen', (_req: Request, res: Response): void => {
+  const rows = db.prepare(
+    `SELECT target_kind, target_id,
+            COUNT(*) AS occurrences,
+            MAX(received_at) AS last_seen,
+            (SELECT e2.external_number
+               FROM dialpad_events e2
+              WHERE e2.target_kind = e.target_kind
+                AND e2.target_id = e.target_id
+                AND e2.external_number IS NOT NULL
+              ORDER BY e2.received_at DESC LIMIT 1) AS sample_external_number
+       FROM dialpad_events e
+      WHERE e.target_id IS NOT NULL
+        AND e.received_at >= datetime('now', '-30 days')
+      GROUP BY target_kind, target_id
+      ORDER BY last_seen DESC
+      LIMIT 50`
+  ).all()
+  const entryRows = db.prepare(
+    `SELECT entry_point_target_kind AS target_kind,
+            entry_point_target_id AS target_id,
+            COUNT(*) AS occurrences,
+            MAX(received_at) AS last_seen,
+            NULL AS sample_external_number
+       FROM dialpad_events
+      WHERE entry_point_target_id IS NOT NULL
+        AND received_at >= datetime('now', '-30 days')
+      GROUP BY entry_point_target_kind, entry_point_target_id
+      ORDER BY last_seen DESC
+      LIMIT 50`
+  ).all()
+  res.json({ targets: rows, entry_points: entryRows })
+})
+
 // --- Chat Bot insights (admin) ---
 // Aggregated, anonymized signal about how the chatbot is being used. Designed
 // for mining "what should we build next" — top user prompts, where errors

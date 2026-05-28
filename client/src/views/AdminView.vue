@@ -554,6 +554,96 @@ async function deleteDepartment(d: Department) {
   await Promise.all([loadDepartments(), loadUsers()])
 }
 
+// ─── Dialpad routing-target bridges (PR-1b) ──────────────
+// Per-department mappings to Dialpad routing targets. The Comms Hub uses
+// these to decide who sees an inbound event when PR-1c lands. Storage is
+// authoritative on the server; we just keep a per-department cache here
+// so chips render without an extra fetch per row.
+interface DialpadTargetMapping {
+  id: number
+  target_kind: string
+  target_id: string
+  label: string | null
+  created_at: string
+}
+interface SeenTarget {
+  target_kind: string
+  target_id: string
+  occurrences: number
+  last_seen: string
+  sample_external_number: string | null
+}
+const deptTargets = ref<Record<number, DialpadTargetMapping[]>>({})
+const seenTargets = ref<SeenTarget[]>([])
+const seenEntryPoints = ref<SeenTarget[]>([])
+const expandedDeptId = ref<number | null>(null)
+const newTargetKind = ref<string>('callcenter')
+const newTargetId = ref<string>('')
+const newTargetLabel = ref<string>('')
+const targetSaveError = ref<Record<number, string>>({})
+
+async function loadDeptTargets(deptId: number) {
+  const res = await fetch(`/api/admin/departments/${deptId}/dialpad-targets`, { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json() as { targets: DialpadTargetMapping[] }
+  deptTargets.value = { ...deptTargets.value, [deptId]: data.targets }
+}
+async function loadSeenTargets() {
+  const res = await fetch('/api/admin/dialpad-targets/seen', { headers: hdrs() })
+  if (!res.ok) return
+  const data = await res.json() as { targets: SeenTarget[]; entry_points: SeenTarget[] }
+  seenTargets.value = data.targets || []
+  seenEntryPoints.value = data.entry_points || []
+}
+function toggleDeptRouting(deptId: number) {
+  if (expandedDeptId.value === deptId) {
+    expandedDeptId.value = null
+    return
+  }
+  expandedDeptId.value = deptId
+  newTargetKind.value = 'callcenter'
+  newTargetId.value = ''
+  newTargetLabel.value = ''
+  targetSaveError.value = { ...targetSaveError.value, [deptId]: '' }
+  if (!deptTargets.value[deptId]) loadDeptTargets(deptId)
+  if (seenTargets.value.length === 0 && seenEntryPoints.value.length === 0) loadSeenTargets()
+}
+function pickSeenTarget(t: SeenTarget) {
+  newTargetKind.value = t.target_kind
+  newTargetId.value = t.target_id
+}
+async function addDeptTarget(deptId: number) {
+  const kind = newTargetKind.value.trim()
+  const tid = newTargetId.value.trim()
+  if (!kind || !tid) return
+  const res = await fetch(`/api/admin/departments/${deptId}/dialpad-targets`, {
+    method: 'POST', headers: hdrs(),
+    body: JSON.stringify({ target_kind: kind, target_id: tid, label: newTargetLabel.value.trim() || undefined }),
+  })
+  const data = await res.json().catch(() => ({})) as { error?: string }
+  if (!res.ok) {
+    targetSaveError.value = { ...targetSaveError.value, [deptId]: data.error || `Save failed (${res.status})` }
+    return
+  }
+  targetSaveError.value = { ...targetSaveError.value, [deptId]: '' }
+  newTargetId.value = ''
+  newTargetLabel.value = ''
+  await loadDeptTargets(deptId)
+}
+async function removeDeptTarget(deptId: number, bridgeId: number) {
+  await fetch(`/api/admin/departments/${deptId}/dialpad-targets/${bridgeId}`, { method: 'DELETE', headers: hdrs() })
+  await loadDeptTargets(deptId)
+}
+function relativeTime(iso: string): string {
+  const ts = new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z')).getTime()
+  if (!Number.isFinite(ts)) return ''
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (sec < 60) return `${sec}s ago`
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`
+  return `${Math.round(sec / 86400)}d ago`
+}
+
 // ─── Roles ───────────────────────────────────────────────
 
 async function createRole() {
@@ -1874,26 +1964,105 @@ onMounted(async () => {
           <Card>
             <CardHeader>
               <CardTitle>All Departments</CardTitle>
+              <CardDescription>
+                Expand a row to map this department to Dialpad routing targets. Members will see (PR-1c) any inbound Comms Hub event whose Dialpad target or entry-point matches one of the mappings.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
-                    <TableHead>Description</TableHead>
+                    <TableHead class="hidden md:table-cell">Description</TableHead>
                     <TableHead class="text-right">Members</TableHead>
                     <TableHead class="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <TableRow v-for="d in departments" :key="d.id">
-                    <TableCell class="font-medium">{{ d.name }}</TableCell>
-                    <TableCell class="text-xs text-muted-foreground">{{ d.description || '—' }}</TableCell>
-                    <TableCell class="text-right tabular-nums">{{ d.user_count || 0 }}</TableCell>
-                    <TableCell class="text-right">
-                      <Button variant="ghost" size="sm" @click="deleteDepartment(d)">Delete</Button>
-                    </TableCell>
-                  </TableRow>
+                  <template v-for="d in departments" :key="d.id">
+                    <TableRow>
+                      <TableCell class="font-medium">{{ d.name }}</TableCell>
+                      <TableCell class="hidden md:table-cell text-xs text-muted-foreground">{{ d.description || '—' }}</TableCell>
+                      <TableCell class="text-right tabular-nums">{{ d.user_count || 0 }}</TableCell>
+                      <TableCell class="text-right">
+                        <Button variant="ghost" size="sm" @click="toggleDeptRouting(d.id)">
+                          {{ expandedDeptId === d.id ? 'Hide routing' : 'Routing' }}
+                        </Button>
+                        <Button variant="ghost" size="sm" @click="deleteDepartment(d)">Delete</Button>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow v-if="expandedDeptId === d.id" class="bg-muted/30">
+                      <TableCell colspan="4" class="py-4">
+                        <div class="space-y-3">
+                          <div>
+                            <p class="text-[11px] uppercase tracking-widest text-muted-foreground mb-2">Mapped Dialpad routing targets</p>
+                            <div v-if="(deptTargets[d.id] || []).length === 0" class="text-xs text-muted-foreground italic">
+                              No mappings yet. Add one below — members of this department will start seeing inbound events for that target once PR-1c ships.
+                            </div>
+                            <div v-else class="flex flex-wrap gap-1.5">
+                              <span v-for="t in (deptTargets[d.id] || [])" :key="t.id" class="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 bg-background text-xs">
+                                <span class="font-medium">{{ t.target_kind }}</span>
+                                <span class="text-muted-foreground tabular-nums">{{ t.target_id }}</span>
+                                <span v-if="t.label" class="text-muted-foreground">· {{ t.label }}</span>
+                                <button class="ml-1 text-muted-foreground hover:text-foreground" :aria-label="`Remove ${t.target_kind} ${t.target_id}`" @click="removeDeptTarget(d.id, t.id)">×</button>
+                              </span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <p class="text-[11px] uppercase tracking-widest text-muted-foreground mb-2">Add a routing target</p>
+                            <div class="flex flex-wrap gap-2 items-end">
+                              <div class="space-y-1 w-32">
+                                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Kind</Label>
+                                <Select v-model="newTargetKind">
+                                  <SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="callcenter">callcenter</SelectItem>
+                                    <SelectItem value="department">department</SelectItem>
+                                    <SelectItem value="user">user</SelectItem>
+                                    <SelectItem value="office">office</SelectItem>
+                                    <SelectItem value="coachinggroup">coachinggroup</SelectItem>
+                                    <SelectItem value="room">room</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div class="space-y-1 flex-1 min-w-[180px]">
+                                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Dialpad ID</Label>
+                                <Input v-model="newTargetId" placeholder="e.g. 5402964308508672" class="h-8 text-xs font-mono" />
+                              </div>
+                              <div class="space-y-1 flex-1 min-w-[140px]">
+                                <Label class="text-[10px] uppercase tracking-widest text-muted-foreground">Label (optional)</Label>
+                                <Input v-model="newTargetLabel" placeholder="e.g. PC line" class="h-8 text-xs" />
+                              </div>
+                              <Button size="sm" :disabled="!newTargetId.trim()" @click="addDeptTarget(d.id)">Add</Button>
+                            </div>
+                            <p v-if="targetSaveError[d.id]" class="text-xs text-rose-600 mt-2">{{ targetSaveError[d.id] }}</p>
+                          </div>
+
+                          <div v-if="seenTargets.length > 0 || seenEntryPoints.length > 0">
+                            <p class="text-[11px] uppercase tracking-widest text-muted-foreground mb-2">Recently seen in events — click to pre-fill</p>
+                            <div class="flex flex-wrap gap-1.5">
+                              <button v-for="t in seenTargets.slice(0, 12)" :key="`seen-t-${t.target_kind}-${t.target_id}`"
+                                      class="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 bg-background text-xs hover:bg-muted transition-colors"
+                                      @click="pickSeenTarget(t)">
+                                <span class="font-medium">{{ t.target_kind }}</span>
+                                <span class="text-muted-foreground tabular-nums">{{ t.target_id }}</span>
+                                <span class="text-muted-foreground">· {{ relativeTime(t.last_seen) }}</span>
+                                <span class="text-muted-foreground tabular-nums">· ×{{ t.occurrences }}</span>
+                              </button>
+                              <button v-for="t in seenEntryPoints.slice(0, 12)" :key="`seen-ep-${t.target_kind}-${t.target_id}`"
+                                      class="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 bg-background text-xs hover:bg-muted transition-colors"
+                                      @click="pickSeenTarget(t)">
+                                <span class="font-medium">entry · {{ t.target_kind }}</span>
+                                <span class="text-muted-foreground tabular-nums">{{ t.target_id }}</span>
+                                <span class="text-muted-foreground">· {{ relativeTime(t.last_seen) }}</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </template>
                   <TableRow v-if="departments.length === 0">
                     <TableCell colspan="4" class="text-center text-muted-foreground py-6">No departments yet.</TableCell>
                   </TableRow>
