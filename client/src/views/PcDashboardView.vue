@@ -240,7 +240,7 @@ const groupBy = ref<GroupMode>('time')
 // Independent filters: type (Solar Install / Survey / …) and status
 // (Scheduled / En Route / On Site / Submitted / Late). Click a KPI tile
 // to toggle. Both can be active simultaneously.
-type StatusFilter = 'scheduled' | 'enroute' | 'onsite' | 'notsubmitted' | 'late'
+type StatusFilter = 'scheduled' | 'enroute' | 'onsite' | 'submitted' | 'late'
 const filterType = ref<string | null>(null)
 const filterStatus = ref<StatusFilter | null>(null)
 
@@ -689,14 +689,16 @@ function clearFilters(): void {
 }
 
 interface StatusTile { key: StatusFilter; label: string; count: number; iconKey: UpcomingTask['status']; tone: 'neutral' | 'progress' | 'done' | 'alert' }
-// Submitted is intentionally absent — the server filters submitted
-// tasks out of "upcoming". "Not Submitted" (crew complete, no RTR) is
-// the actionable state the PC needs to chase, so it takes that slot.
+// Field Activity is a chronological view, not a to-do bucket — Submitted
+// stays as a KPI so PCs see "X completed in this window" alongside the
+// in-flight states. Tasks with 'notsubmitted' (crew complete, no RTR)
+// still show on their cards as an alert pill — they're just not a
+// top-level KPI.
 const STATUS_TILE_ORDER: Array<{ key: StatusFilter; label: string; iconKey: UpcomingTask['status']; tone: StatusTile['tone'] }> = [
   { key: 'scheduled', label: 'Scheduled', iconKey: 'scheduled', tone: 'neutral' },
   { key: 'enroute', label: 'En Route', iconKey: 'enroute', tone: 'progress' },
   { key: 'onsite', label: 'On Site', iconKey: 'onsite', tone: 'progress' },
-  { key: 'notsubmitted', label: 'No RTR', iconKey: 'notsubmitted', tone: 'alert' },
+  { key: 'submitted', label: 'Submitted', iconKey: 'submitted', tone: 'done' },
   { key: 'late', label: 'Running Late', iconKey: 'overdue', tone: 'alert' },
 ]
 function statusTileAccent(tone: StatusTile['tone']): string {
@@ -743,7 +745,7 @@ function statusAccentColor(key: StatusFilter): string {
   switch (key) {
     case 'enroute': return 'sky'
     case 'onsite': return 'sky'
-    case 'notsubmitted': return 'amber'
+    case 'submitted': return 'emerald'
     case 'late': return 'rose'
     default: return 'slate'
   }

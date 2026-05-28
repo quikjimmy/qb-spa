@@ -928,15 +928,10 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   })
   const _afterPcFilterCount = collected.length
 
-  // "Upcoming" means not-yet-done. A task with a submitted timestamp
-  // is fully complete — it shouldn't pad tomorrow's schedule. We
-  // deliberately DO NOT filter techCompleteDateTime — those tasks are
-  // the "Crew complete but no RTR" actionable state PCs need to chase.
-  // Cancelled stays visible (PC needs to reschedule).
-  collected = collected.filter(rec => {
-    if (fieldValue(rec, F.submittedDateTime)) return false
-    return true
-  })
+  // Field Activity is a CHRONOLOGICAL view of what was scheduled to
+  // happen in the window — not a to-do bucket. Submitted tasks stay
+  // visible so PCs see the completion signal (green status pill).
+  // No status-based filtering happens here.
   const _afterDoneFilterCount = collected.length
 
   // Merge duplicates by (project_rid + lowercase template). QB's Arrivy
