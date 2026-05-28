@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, inject, nextTick, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,7 +12,8 @@ import {
 import { getStatusConfig } from '@/lib/status'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
-import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays } from '@/lib/dates'
+import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays, userTz, localDayBoundsToUtc } from '@/lib/dates'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
@@ -192,6 +194,111 @@ const commsProject = ref<{ record_id?: number; customer_name?: string; coordinat
 const commsSummary = ref<{ sms_count_7d: number; call_count_7d: number; last_comms_at: string } | null>(null)
 const commsScroller = ref<HTMLElement | null>(null)
 
+// ─── Field Activity tab state ────────────────────────────
+// Upcoming Arrivy tasks for projects currently on the PC dashboard. Tab
+// + window are persisted in the URL so refresh / direct-link works.
+type DashboardTab = 'outreach' | 'field-activity'
+type WindowKey = 'today' | 'tomorrow' | 'thisweek' | 'nextweek' | 'thismonth' | 'next7'
+
+interface UpcomingTask {
+  arrivy_id: string
+  project_rid: string
+  customer_name: string
+  project_coordinator: string
+  task_title: string
+  task_type_key: string
+  task_type_label: string
+  scheduled_at: string
+  crew_names: string
+  status: 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
+  status_label: string
+  task_url: string
+  progress: {
+    enroute: boolean
+    onsite: boolean
+    submitted: boolean
+    install_complete: boolean
+    rtr_ready: boolean
+    rtr_status: string
+  }
+}
+
+// Full project_cache row used by ProjectDetailDialog (the shared
+// "project snapshot" panel — pipeline strip + key dates + contact
+// shortcuts). The dialog reads any project_cache columns it needs;
+// we just pass the row through.
+type PeekProjectRow = Record<string, unknown> & { record_id: number; customer_name: string }
+
+const activeTab = ref<DashboardTab>('outreach')
+const windowKey = ref<WindowKey>('next7')
+const upcomingTasks = ref<UpcomingTask[]>([])
+const upcomingLoading = ref(false)
+const upcomingError = ref<string>('')
+type GroupMode = 'time' | 'type'
+const groupBy = ref<GroupMode>('time')
+
+// Independent filters: type (Solar Install / Survey / …) and status
+// (Scheduled / En Route / On Site / Submitted / Late). Click a KPI tile
+// to toggle. Both can be active simultaneously.
+type StatusFilter = 'scheduled' | 'enroute' | 'onsite' | 'notsubmitted' | 'late'
+const filterType = ref<string | null>(null)
+const filterStatus = ref<StatusFilter | null>(null)
+
+const WINDOW_CHIPS: Array<{ k: WindowKey; l: string }> = [
+  { k: 'today', l: 'Today' },
+  { k: 'tomorrow', l: 'Tomorrow' },
+  { k: 'thisweek', l: 'This Week' },
+  { k: 'nextweek', l: 'Next Week' },
+  { k: 'thismonth', l: 'This Month' },
+  { k: 'next7', l: 'Next 7 Days' },
+]
+
+// Resolve a chip key to UTC ISO bounds in the user's local tz. All windows
+// are forward-looking ("upcoming") — past portions of "this week" etc. are
+// excluded so a row that already passed doesn't pad the count.
+function windowBounds(key: WindowKey): { fromIso: string; toIso: string } {
+  const tz = userTz()
+  const today = localTodayIso()
+  const [y, m, d] = today.split('-').map(n => parseInt(n, 10))
+  const todayUtc = new Date(Date.UTC(y!, m! - 1, d!, 12))
+  function shift(n: number): string {
+    const o = new Date(todayUtc); o.setUTCDate(todayUtc.getUTCDate() + n)
+    return `${o.getUTCFullYear()}-${String(o.getUTCMonth() + 1).padStart(2, '0')}-${String(o.getUTCDate()).padStart(2, '0')}`
+  }
+  switch (key) {
+    case 'today': {
+      const b = localDayBoundsToUtc(today, tz)
+      return { fromIso: b.from, toIso: b.to }
+    }
+    case 'tomorrow': {
+      const b = localDayBoundsToUtc(shift(1), tz)
+      return { fromIso: b.from, toIso: b.to }
+    }
+    case 'thisweek': {
+      // ISO week: Mon→Sun. We want today→Sun (forward-looking).
+      const dow = todayUtc.getUTCDay() // 0=Sun,1=Mon,...,6=Sat
+      const daysToSun = dow === 0 ? 0 : 7 - dow
+      return { fromIso: localDayBoundsToUtc(today, tz).from, toIso: localDayBoundsToUtc(shift(daysToSun), tz).to }
+    }
+    case 'nextweek': {
+      const dow = todayUtc.getUTCDay()
+      const daysToNextMon = dow === 0 ? 1 : 8 - dow
+      const mon = shift(daysToNextMon)
+      const sun = shift(daysToNextMon + 6)
+      return { fromIso: localDayBoundsToUtc(mon, tz).from, toIso: localDayBoundsToUtc(sun, tz).to }
+    }
+    case 'thismonth': {
+      const lastDay = new Date(Date.UTC(y!, m!, 0)).getUTCDate()
+      const lastIso = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+      return { fromIso: localDayBoundsToUtc(today, tz).from, toIso: localDayBoundsToUtc(lastIso, tz).to }
+    }
+    case 'next7':
+    default: {
+      return { fromIso: localDayBoundsToUtc(today, tz).from, toIso: localDayBoundsToUtc(shift(6), tz).to }
+    }
+  }
+}
+
 // Customer phone derived from comms items — for inbound use from_number,
 // for outbound use to_number. Most-recent item wins. Powers the
 // click-to-call icon in the drawer header.
@@ -323,6 +430,385 @@ async function refreshCache() {
     await loadData()
   } finally { refreshing.value = false }
 }
+
+async function loadUpcomingTasks() {
+  upcomingLoading.value = true
+  upcomingError.value = ''
+  const { fromIso, toIso } = windowBounds(windowKey.value)
+  const params = new URLSearchParams({ fromIso, toIso })
+  // Mirror the outreach coordinator scope onto the field-activity tab so
+  // both views read as the same person/team.
+  if (viewMode.value === 'personal' && auth.user?.name) params.set('coordinator', auth.user.name)
+  else if (fCoordinator.value) params.set('coordinator', fCoordinator.value)
+  try {
+    const res = await fetch(`/api/pc-dashboard/upcoming-tasks?${params}`, { headers: hdrs() })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({})) as { error?: string }
+      upcomingError.value = data.error || `Failed to load (${res.status})`
+      upcomingTasks.value = []
+      return
+    }
+    const data = await res.json() as { tasks: UpcomingTask[] }
+    upcomingTasks.value = data.tasks || []
+  } catch (e) {
+    upcomingError.value = e instanceof Error ? e.message : 'Network error'
+    upcomingTasks.value = []
+  } finally { upcomingLoading.value = false }
+}
+
+// ─── Tab + window URL state ─────────────────────────────
+const router = useRouter()
+const route = useRoute()
+
+function parseTab(q: unknown): DashboardTab {
+  return q === 'field-activity' ? 'field-activity' : 'outreach'
+}
+function parseWindow(q: unknown): WindowKey {
+  const valid: WindowKey[] = ['today', 'tomorrow', 'thisweek', 'nextweek', 'thismonth', 'next7']
+  return valid.includes(q as WindowKey) ? (q as WindowKey) : 'next7'
+}
+function syncUrlFromState() {
+  const query: Record<string, string> = { ...route.query as Record<string, string> }
+  if (activeTab.value === 'outreach') {
+    delete query['tab']; delete query['window']
+  } else {
+    query['tab'] = 'field-activity'
+    query['window'] = windowKey.value
+  }
+  void router.replace({ query })
+}
+
+function fmtScheduled(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+}
+
+// Status pill — calmer pastels, no anxiety colors. Editorial weight.
+// Warm tones (rose/red) reserved for genuinely actionable states.
+function statusPillCls(s: UpcomingTask['status']): string {
+  switch (s) {
+    case 'cancelled': return 'bg-rose-100/80 text-rose-800 ring-1 ring-rose-200/60'
+    case 'notsubmitted': return 'bg-amber-100/70 text-amber-800 ring-1 ring-amber-200/60'
+    case 'submitted': return 'bg-emerald-100/70 text-emerald-800 ring-1 ring-emerald-200/60'
+    case 'overdue': return 'bg-rose-100/70 text-rose-800 ring-1 ring-rose-200/60'
+    case 'onsite': return 'bg-sky-100/70 text-sky-800 ring-1 ring-sky-200/60'
+    case 'enroute': return 'bg-sky-100/70 text-sky-800 ring-1 ring-sky-200/60'
+    default: return 'bg-foreground/[0.06] text-foreground/70'
+  }
+}
+
+// Status dot — replaces the previous hard left border. A small filled
+// circle reads as a tonal accent without imposing a rule on the card.
+function statusDotCls(s: UpcomingTask['status']): string {
+  switch (s) {
+    case 'cancelled': return 'bg-rose-500'
+    case 'notsubmitted': return 'bg-red-500'
+    case 'submitted': return 'bg-emerald-500'
+    case 'overdue': return 'bg-red-500'
+    case 'onsite': return 'bg-sky-500'
+    case 'enroute': return 'bg-sky-500'
+    default: return 'bg-foreground/30'
+  }
+}
+
+// Inline SVG paths for status icons. Heroicons-style 24x24 stroke icons.
+// Emojis as icons were a checklist violation — these read consistent at
+// any size and inherit currentColor for the active status tint.
+const STATUS_ICON_PATHS: Record<UpcomingTask['status'], string> = {
+  scheduled: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  enroute: '<path d="M5 12h13M13 6l6 6-6 6"/>',
+  onsite: '<path d="M12 21s-7-7.5-7-12a7 7 0 0 1 14 0c0 4.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/>',
+  submitted: '<path d="M5 12l4 4L19 7"/>',
+  notsubmitted: '<path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
+  overdue: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M18 6l4-4M22 6l-4-4" stroke-width="1.5"/>',
+  cancelled: '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
+}
+
+// Task-type chip — editorial pastel with a subtle ring, not a loud
+// solid. Each type still reads distinct at a glance but the row stays
+// calm under the customer name.
+function taskTypeChipCls(key: string): string {
+  switch (key) {
+    case 'install': return 'bg-violet-50 text-violet-800 ring-1 ring-violet-200/70'
+    case 'survey': return 'bg-sky-50 text-sky-800 ring-1 ring-sky-200/70'
+    case 'final-inspection': return 'bg-amber-50 text-amber-900 ring-1 ring-amber-200/70'
+    case 'inspection': return 'bg-amber-50 text-amber-900 ring-1 ring-amber-200/70'
+    case 'service': return 'bg-teal-50 text-teal-800 ring-1 ring-teal-200/70'
+    case 'rework': return 'bg-orange-50 text-orange-800 ring-1 ring-orange-200/70'
+    case 'battery': return 'bg-fuchsia-50 text-fuchsia-800 ring-1 ring-fuchsia-200/70'
+    default: return 'bg-foreground/[0.04] text-foreground/70 ring-1 ring-foreground/10'
+  }
+}
+function taskTypeAccentTextCls(key: string): string {
+  switch (key) {
+    case 'install': return 'text-violet-700'
+    case 'survey': return 'text-sky-700'
+    case 'final-inspection': return 'text-amber-700'
+    case 'inspection': return 'text-amber-700'
+    case 'service': return 'text-teal-700'
+    case 'rework': return 'text-orange-700'
+    case 'battery': return 'text-fuchsia-700'
+    default: return 'text-muted-foreground'
+  }
+}
+
+// Progress chips — direct port of the field app's chipsFor(t) logic so a
+// PC can see at a glance whether the crew is en route, on site, has
+// submitted, and whether RTR is ready. "filled" → action complete.
+function progressChips(t: UpcomingTask): Array<{ label: string; cls: string }> {
+  const filled = 'bg-emerald-100 text-emerald-700'
+  const empty = 'bg-slate-100 text-slate-400'
+  const chips = [
+    { label: 'ER', cls: t.progress.enroute ? filled : empty },
+    { label: 'OS', cls: t.progress.onsite ? filled : empty },
+    { label: 'SUB', cls: t.progress.submitted ? filled : empty },
+  ]
+  if (t.task_type_key === 'install') {
+    chips.push({ label: 'COMP', cls: t.progress.install_complete ? filled : empty })
+    chips.push({ label: 'RTR', cls: t.progress.rtr_ready ? filled : empty })
+  }
+  return chips
+}
+
+// ─── Project snapshot — shared ProjectDetailDialog ─────
+// Clicking a Field Activity row hands its project_cache row to the
+// shared "project snapshot" dialog (pipeline strip + key dates +
+// contact shortcuts + Open full view). The dialog auto-opens when
+// the prop is non-null and closes back to null.
+const selectedPeekProject = ref<PeekProjectRow | null>(null)
+
+async function openProjectPeek(rid: number): Promise<void> {
+  if (!Number.isFinite(rid) || rid <= 0) return
+  try {
+    const res = await fetch(`/api/projects/${rid}?live=0`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json() as { project: PeekProjectRow }
+    if (data.project) selectedPeekProject.value = data.project
+  } catch {
+    // Silent — row stays clickable for retry.
+  }
+}
+
+// "Late" = scheduled time has passed, no progress logged (still in 'scheduled'
+// or marked 'overdue' by Arrivy). PCs need to act on these now — surfaced
+// per-card and counted at the top of the view.
+function isTaskLate(t: UpcomingTask): boolean {
+  if (t.status === 'submitted' || t.status === 'cancelled') return false
+  if (t.progress.onsite || t.progress.enroute) return false
+  const sched = new Date(t.scheduled_at)
+  if (isNaN(sched.getTime())) return false
+  return sched.getTime() < Date.now()
+}
+
+const TASK_TYPE_ORDER: Array<{ key: string; label: string }> = [
+  { key: 'install', label: 'Solar Install' },
+  { key: 'battery', label: 'Battery' },
+  { key: 'survey', label: 'Survey' },
+  { key: 'final-inspection', label: 'Final Inspection' },
+  { key: 'inspection', label: 'Inspection' },
+  { key: 'service', label: 'Service' },
+  { key: 'rework', label: 'Rework' },
+  { key: 'other', label: 'Other' },
+]
+
+interface TaskGroup { key: string; label: string; tasks: UpcomingTask[] }
+
+function statusMatches(t: UpcomingTask, f: StatusFilter): boolean {
+  if (f === 'late') return isTaskLate(t)
+  return t.status === f
+}
+
+// Apply type + status filters (independent) before grouping. Both null
+// means "show everything"; either set narrows the list.
+const filteredTasks = computed<UpcomingTask[]>(() => {
+  return upcomingTasks.value.filter(t => {
+    if (filterType.value && t.task_type_key !== filterType.value) return false
+    if (filterStatus.value && !statusMatches(t, filterStatus.value)) return false
+    return true
+  })
+})
+
+// Hour-of-day bucket key for a task. Includes date prefix so multi-day
+// windows separate same-hour tasks across different days.
+function hourBucketKey(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return 'unknown'
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}`
+}
+function hourBucketLabel(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return 'No time'
+  const dateLabel = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  const hourLabel = d.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })
+  return `${dateLabel} · ${hourLabel}`
+}
+
+const groupedTasks = computed<TaskGroup[]>(() => {
+  if (groupBy.value === 'time') {
+    // Cluster by (date + hour) so the table reads as time blocks.
+    // Each hour with one or more tasks becomes its own group.
+    const byHour = new Map<string, UpcomingTask[]>()
+    for (const t of filteredTasks.value) {
+      const k = hourBucketKey(t.scheduled_at)
+      const arr = byHour.get(k) || []
+      arr.push(t)
+      byHour.set(k, arr)
+    }
+    const keys = [...byHour.keys()].sort()
+    return keys.map(k => {
+      const tasks = byHour.get(k)!
+      return { key: k, label: hourBucketLabel(tasks[0]!.scheduled_at), tasks }
+    })
+  }
+  const byKey = new Map<string, UpcomingTask[]>()
+  for (const t of filteredTasks.value) {
+    const arr = byKey.get(t.task_type_key) || []
+    arr.push(t)
+    byKey.set(t.task_type_key, arr)
+  }
+  const groups: TaskGroup[] = []
+  for (const { key, label } of TASK_TYPE_ORDER) {
+    const tasks = byKey.get(key)
+    if (tasks && tasks.length) groups.push({ key, label, tasks })
+  }
+  return groups
+})
+
+
+function toggleTypeFilter(key: string): void {
+  filterType.value = filterType.value === key ? null : key
+}
+function toggleStatusFilter(key: StatusFilter): void {
+  filterStatus.value = filterStatus.value === key ? null : key
+}
+function clearFilters(): void {
+  filterType.value = null
+  filterStatus.value = null
+}
+
+interface StatusTile { key: StatusFilter; label: string; count: number; iconKey: UpcomingTask['status']; tone: 'neutral' | 'progress' | 'done' | 'alert' }
+// Submitted is intentionally absent — the server filters submitted
+// tasks out of "upcoming". "Not Submitted" (crew complete, no RTR) is
+// the actionable state the PC needs to chase, so it takes that slot.
+const STATUS_TILE_ORDER: Array<{ key: StatusFilter; label: string; iconKey: UpcomingTask['status']; tone: StatusTile['tone'] }> = [
+  { key: 'scheduled', label: 'Scheduled', iconKey: 'scheduled', tone: 'neutral' },
+  { key: 'enroute', label: 'En Route', iconKey: 'enroute', tone: 'progress' },
+  { key: 'onsite', label: 'On Site', iconKey: 'onsite', tone: 'progress' },
+  { key: 'notsubmitted', label: 'No RTR', iconKey: 'notsubmitted', tone: 'alert' },
+  { key: 'late', label: 'Running Late', iconKey: 'overdue', tone: 'alert' },
+]
+function statusTileAccent(tone: StatusTile['tone']): string {
+  switch (tone) {
+    case 'progress': return 'text-sky-700'
+    case 'done': return 'text-emerald-700'
+    case 'alert': return 'text-rose-700'
+    default: return 'text-muted-foreground'
+  }
+}
+
+// Per `docs/ui-component-specs.md`: standard KPI tile uses a 3px top
+// accent strip + accent-600 number. Enumerated map so Tailwind can
+// statically extract classes (no dynamic interpolation). Active state
+// uses the matching ring color so the outline reads as "more of the
+// same accent" instead of a stark black border.
+const TILE_ACCENT: Record<string, { strip: string; text: string; ring: string }> = {
+  violet: { strip: 'bg-violet-500', text: 'text-violet-600', ring: 'ring-violet-500' },
+  sky: { strip: 'bg-sky-500', text: 'text-sky-600', ring: 'ring-sky-500' },
+  amber: { strip: 'bg-amber-500', text: 'text-amber-600', ring: 'ring-amber-500' },
+  teal: { strip: 'bg-teal-500', text: 'text-teal-600', ring: 'ring-teal-500' },
+  orange: { strip: 'bg-orange-500', text: 'text-orange-600', ring: 'ring-orange-500' },
+  fuchsia: { strip: 'bg-fuchsia-500', text: 'text-fuchsia-600', ring: 'ring-fuchsia-500' },
+  rose: { strip: 'bg-rose-500', text: 'text-rose-600', ring: 'ring-rose-500' },
+  emerald: { strip: 'bg-emerald-500', text: 'text-emerald-600', ring: 'ring-emerald-500' },
+  slate: { strip: 'bg-slate-400', text: 'text-slate-600', ring: 'ring-slate-400' },
+}
+function tileAccent(color: string): { strip: string; text: string; ring: string } {
+  return TILE_ACCENT[color] || TILE_ACCENT['slate']!
+}
+function typeAccentColor(key: string): string {
+  switch (key) {
+    case 'install': return 'violet'
+    case 'battery': return 'fuchsia'
+    case 'survey': return 'sky'
+    case 'final-inspection': return 'amber'
+    case 'inspection': return 'amber'
+    case 'service': return 'teal'
+    case 'rework': return 'orange'
+    default: return 'slate'
+  }
+}
+function statusAccentColor(key: StatusFilter): string {
+  switch (key) {
+    case 'enroute': return 'sky'
+    case 'onsite': return 'sky'
+    case 'notsubmitted': return 'amber'
+    case 'late': return 'rose'
+    default: return 'slate'
+  }
+}
+
+const lateCount = computed(() => upcomingTasks.value.filter(isTaskLate).length)
+
+// Top-of-view summary: type KPI tiles (Solar Install / Survey / …) and
+// parallel status KPI tiles (Scheduled / En Route / On Site / Submitted /
+// Late). Both are clickable filters; both row sets use the same tile
+// visual so they read as siblings.
+interface ActivitySummary {
+  total: number
+  byType: Array<{ key: string; label: string; count: number }>
+  statuses: StatusTile[]
+}
+
+// Cross-axis filter: TYPE tile counts respect the active status filter,
+// and STATUS tile counts respect the active type filter. So clicking
+// "Survey" makes the status row tally only Survey tasks — the counts
+// sum to the Survey total. Both filters cleared = full counts.
+const tasksForTypeCounts = computed<UpcomingTask[]>(() => {
+  return filterStatus.value
+    ? upcomingTasks.value.filter(t => statusMatches(t, filterStatus.value!))
+    : upcomingTasks.value
+})
+const tasksForStatusCounts = computed<UpcomingTask[]>(() => {
+  return filterType.value
+    ? upcomingTasks.value.filter(t => t.task_type_key === filterType.value)
+    : upcomingTasks.value
+})
+
+const activitySummary = computed<ActivitySummary>(() => {
+  // TYPE counts — population narrows when a status filter is active.
+  const typeMap = new Map<string, { label: string; count: number }>()
+  for (const t of tasksForTypeCounts.value) {
+    const ex = typeMap.get(t.task_type_key)
+    if (ex) ex.count += 1
+    else typeMap.set(t.task_type_key, { label: t.task_type_label, count: 1 })
+  }
+  const byType: Array<{ key: string; label: string; count: number }> = []
+  for (const { key } of TASK_TYPE_ORDER) {
+    const entry = typeMap.get(key)
+    if (entry) byType.push({ key, label: entry.label, count: entry.count })
+  }
+
+  // STATUS counts — population narrows when a type filter is active.
+  const byStatusCount = { scheduled: 0, enroute: 0, onsite: 0, submitted: 0, cancelled: 0, overdue: 0, notsubmitted: 0 }
+  let late = 0
+  for (const t of tasksForStatusCounts.value) {
+    byStatusCount[t.status] += 1
+    if (isTaskLate(t)) late += 1
+  }
+  const statuses: StatusTile[] = STATUS_TILE_ORDER.map(s => ({
+    ...s,
+    // 'late' is a derived signal; the rest map straight off the
+    // server-classified status field on each task.
+    count: s.key === 'late' ? late : (byStatusCount[s.key as keyof typeof byStatusCount] ?? 0),
+  }))
+
+  return {
+    total: upcomingTasks.value.length,
+    byType, statuses,
+  }
+})
 
 async function loadAdders() {
   const params = new URLSearchParams()
@@ -651,14 +1137,36 @@ watch([viewMode, fCoordinator, useBizDays, activePerfMilestone], () => { if (sho
 
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
 onMounted(() => {
+  // Hydrate tab + window from URL so a direct link / refresh lands you where you were.
+  activeTab.value = parseTab(route.query['tab'])
+  windowKey.value = parseWindow(route.query['window'])
+
   loadData().then(() => {
     const projectId = Number(new URLSearchParams(window.location.search).get('commsProject') || 0)
     if (projectId) openComms(projectId)
   })
   loadAdders()
-  registerRefresh?.(async () => { await loadData(); await loadAdders() })
+  if (activeTab.value === 'field-activity') loadUpcomingTasks()
+  registerRefresh?.(async () => {
+    await loadData(); await loadAdders()
+    if (activeTab.value === 'field-activity') await loadUpcomingTasks()
+  })
 })
 watch([viewMode, fCoordinator], () => { loadAdders() })
+
+// Field-activity tab: fetch on tab entry, on chip change, and on coordinator
+// changes while the tab is active. URL stays in sync with both.
+watch(activeTab, (next) => {
+  syncUrlFromState()
+  if (next === 'field-activity') loadUpcomingTasks()
+})
+watch(windowKey, () => {
+  syncUrlFromState()
+  if (activeTab.value === 'field-activity') loadUpcomingTasks()
+})
+watch([viewMode, fCoordinator], () => {
+  if (activeTab.value === 'field-activity') loadUpcomingTasks()
+})
 </script>
 
 <template>
@@ -689,6 +1197,16 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
       </div>
     </div>
 
+    <!-- Top-level tabs -->
+    <div class="flex border-b border-border">
+      <button v-for="t in [{ k: 'outreach' as DashboardTab, l: 'Outreach' }, { k: 'field-activity' as DashboardTab, l: 'Field Activity' }]" :key="t.k"
+        class="flex-1 py-2.5 px-4 text-sm font-medium border-b-2 transition-colors"
+        :class="activeTab === t.k ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground'"
+        @click="activeTab = t.k"
+      >{{ t.l }}</button>
+    </div>
+
+    <template v-if="activeTab === 'outreach'">
     <!-- KPI strip (matches Projects view layout) -->
     <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
       <button v-for="stage in STAGE_ORDER" :key="stage"
@@ -1066,12 +1584,172 @@ watch([viewMode, fCoordinator], () => { loadAdders() })
     </template>
 
     <p v-if="cacheInfo && cacheInfo.total > 0" class="text-center text-[10px] text-muted-foreground py-1">{{ cacheInfo.total }} outreach records · synced {{ cacheInfo.last_refresh }}</p>
+    </template>
+
+    <!-- ── Field Activity tab ── -->
+    <template v-else-if="activeTab === 'field-activity'">
+      <!-- Editorial chip strip: tonal background, no borders, active is
+           solid foreground. Group toggle uses sliding-pill pattern. -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 flex-1 min-w-0">
+          <button v-for="c in WINDOW_CHIPS" :key="c.k"
+            class="shrink-0 px-3 py-1.5 rounded-full text-[11.5px] font-medium tracking-tight transition-all duration-200 cursor-pointer"
+            :class="windowKey === c.k ? 'bg-foreground text-background shadow-sm' : 'bg-foreground/[0.04] text-foreground/70 hover:bg-foreground/[0.08] hover:text-foreground'"
+            @click="windowKey = c.k"
+          >{{ c.l }}</button>
+        </div>
+        <div class="flex rounded-full overflow-hidden shrink-0 bg-foreground/[0.04] p-0.5">
+          <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'time' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'time'" title="Sort chronologically">Time</button>
+          <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'type' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'type'" title="Group by task type">By Type</button>
+        </div>
+      </div>
+
+      <!-- Summary — type tiles and status tiles as parallel KPI rows,
+           each tile is an independent click-to-filter. Active tile is
+           elevated. Clear button surfaces when any filter is on. -->
+      <section v-if="!upcomingLoading && upcomingTasks.length"
+        class="rounded-2xl bg-card/60 supports-[backdrop-filter]:bg-card/40 backdrop-blur-xl shadow-sm p-3 grid gap-3"
+      >
+        <!-- TYPE row -->
+        <div class="grid gap-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-[9.5px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Type</p>
+            <button v-if="filterType" class="text-[10px] text-muted-foreground hover:text-foreground transition-colors" @click="filterType = null">Clear type</button>
+          </div>
+          <!-- Fixed-width tiles in a horizontal scroll strip — same
+               pattern as the Outreach tab's KPI row so widths match
+               app-wide. 3px accent strip + accent-600 number per
+               ui-component-specs.md. overflow-hidden keeps the strip
+               clipped to the rounded corners; the active-state ring
+               is a box-shadow and renders outside that clip. -->
+          <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 py-1">
+            <button v-for="bt in activitySummary.byType" :key="bt.key"
+              type="button"
+              class="flex-none w-[105px] sm:w-[115px] text-left rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden transition-all duration-200 cursor-pointer hover:shadow-md focus-visible:ring-2 focus-visible:ring-foreground/30 outline-none"
+              :class="filterType === bt.key ? 'ring-2 shadow-lg -translate-y-px bg-foreground/[0.025] ' + tileAccent(typeAccentColor(bt.key)).ring : 'shadow-sm'"
+              @click="toggleTypeFilter(bt.key)"
+              :title="`Filter by ${bt.label}`"
+            >
+              <div class="absolute top-0 left-0 right-0" :class="[tileAccent(typeAccentColor(bt.key)).strip, filterType === bt.key ? 'h-[6px]' : 'h-[3px]']" />
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">{{ bt.label }}</p>
+              <p class="mt-1 text-2xl font-extrabold tabular-nums leading-none" :class="tileAccent(typeAccentColor(bt.key)).text">{{ bt.count }}</p>
+            </button>
+          </div>
+        </div>
+
+        <!-- Subtle hairline divider -->
+        <div class="h-px bg-gradient-to-r from-transparent via-foreground/[0.08] to-transparent" />
+
+        <!-- STATUS row -->
+        <div class="grid gap-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-[9.5px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Status</p>
+            <button v-if="filterStatus" class="text-[10px] text-muted-foreground hover:text-foreground transition-colors" @click="filterStatus = null">Clear status</button>
+          </div>
+          <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 py-1">
+            <button v-for="st in activitySummary.statuses" :key="st.key"
+              type="button"
+              class="flex-none w-[105px] sm:w-[115px] text-left rounded-xl border bg-card p-3 min-w-0 relative overflow-hidden transition-all duration-200 cursor-pointer hover:shadow-md focus-visible:ring-2 focus-visible:ring-foreground/30 outline-none"
+              :class="filterStatus === st.key ? 'ring-2 shadow-lg -translate-y-px bg-foreground/[0.025] ' + tileAccent(statusAccentColor(st.key)).ring : 'shadow-sm'"
+              @click="toggleStatusFilter(st.key)"
+              :title="`Filter by ${st.label}`"
+            >
+              <div class="absolute top-0 left-0 right-0" :class="[tileAccent(statusAccentColor(st.key)).strip, filterStatus === st.key ? 'h-[6px]' : 'h-[3px]']" />
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">{{ st.label }}</p>
+              <p class="mt-1 text-2xl font-extrabold tabular-nums leading-none" :class="tileAccent(statusAccentColor(st.key)).text">{{ st.count }}</p>
+            </button>
+          </div>
+        </div>
+
+        <!-- Active filter summary line -->
+        <div v-if="filterType || filterStatus" class="flex items-center justify-between gap-2 pt-1">
+          <p class="text-[11px] text-muted-foreground">
+            Showing <span class="font-semibold text-foreground tabular-nums">{{ filteredTasks.length }}</span>
+            of {{ upcomingTasks.length }} tasks
+            <template v-if="filterType"> · type <span class="text-foreground">{{ activitySummary.byType.find(b => b.key === filterType)?.label }}</span></template>
+            <template v-if="filterStatus"> · status <span class="text-foreground">{{ STATUS_TILE_ORDER.find(s => s.key === filterStatus)?.label }}</span></template>
+          </p>
+          <button class="text-[11px] text-muted-foreground hover:text-foreground transition-colors" @click="clearFilters">Clear all</button>
+        </div>
+      </section>
+
+      <!-- Loading / error / empty — calm tonal surfaces, no hard borders. -->
+      <div v-if="upcomingLoading" class="rounded-2xl bg-card/60 supports-[backdrop-filter]:bg-card/40 backdrop-blur-xl shadow-sm p-10 text-center text-sm text-muted-foreground">Loading field activity…</div>
+      <div v-else-if="upcomingError" class="rounded-2xl bg-rose-50/70 ring-1 ring-rose-200/60 p-4 text-sm text-rose-900">{{ upcomingError }}</div>
+      <div v-else-if="upcomingTasks.length === 0" class="rounded-2xl bg-card/60 supports-[backdrop-filter]:bg-card/40 backdrop-blur-xl shadow-sm p-10 text-center text-sm text-muted-foreground">
+        <template v-if="viewMode === 'personal' && auth.user?.name">No field activity for {{ auth.user.name }} in this window.</template>
+        <template v-else-if="fCoordinator">No field activity for {{ fCoordinator }} in this window.</template>
+        <template v-else>No field activity scheduled in this window.</template>
+      </div>
+
+      <template v-else v-for="g in groupedTasks" :key="g.key">
+        <!-- Group header — renders for both By Type (e.g. "SOLAR
+             INSTALL · 3") and Time (e.g. "Wed Jun 3 · 9 AM · 2"). In
+             Time mode the header explicitly blocks the list by hour
+             so a PC can scan "what's happening at 10 AM" at a glance. -->
+        <header v-if="g.label" class="flex items-baseline gap-2 mt-3 mb-1">
+          <p class="text-[10.5px] font-semibold uppercase tracking-[0.18em]" :class="groupBy === 'type' ? taskTypeAccentTextCls(g.key) : 'text-foreground/70'">{{ g.label }}</p>
+          <span class="text-[10px] text-muted-foreground/80 tabular-nums">· {{ g.tasks.length }}</span>
+          <span class="flex-1 h-px bg-gradient-to-r from-foreground/10 via-foreground/[0.04] to-transparent" />
+        </header>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 min-w-0">
+          <button v-for="t in g.tasks" :key="t.arrivy_id" type="button"
+            class="text-left rounded-xl bg-card/60 supports-[backdrop-filter]:bg-card/40 backdrop-blur-xl shadow-sm hover:shadow-md focus-visible:shadow-md focus-visible:ring-2 focus-visible:ring-foreground/20 outline-none transition-all duration-200 cursor-pointer min-w-0 overflow-hidden px-3 py-2"
+            :class="[
+              t.status === 'cancelled' ? 'bg-rose-50/40 hover:bg-rose-50/60' : '',
+              isTaskLate(t) ? 'ring-1 ring-rose-200/70 hover:ring-rose-300/70' : '',
+            ]"
+            @click="openProjectPeek(Number(t.project_rid))"
+          >
+            <!-- Primary row: status dot · type chip · customer · LATE · status pill -->
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="size-1.5 shrink-0 rounded-full" :class="statusDotCls(t.status)" aria-hidden="true" />
+              <span class="shrink-0 px-1.5 py-0.5 rounded-md text-[9.5px] font-semibold tracking-tight" :class="taskTypeChipCls(t.task_type_key)">{{ t.task_type_label }}</span>
+              <p class="font-semibold text-[13px] flex-1 min-w-0 truncate text-foreground/90">
+                {{ t.customer_name || 'Unknown' }}
+              </p>
+              <span v-if="isTaskLate(t)" class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-bold tracking-wide bg-rose-100/80 text-rose-800 ring-1 ring-rose-200/60">
+                <span class="size-1 rounded-full bg-rose-500" />LATE
+              </span>
+              <span
+                class="inline-flex items-center gap-1 rounded-full font-medium shrink-0 whitespace-nowrap px-2 py-0.5 text-[10px] tracking-tight"
+                :class="statusPillCls(t.status)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-2.5" aria-hidden="true" v-html="STATUS_ICON_PATHS[t.status]" />
+                {{ t.status_label }}
+              </span>
+            </div>
+            <!-- Secondary row: 👷 contractor · time · coordinator +
+                 progress chips + Arrivy link. Hard-hat emoji marks
+                 the line as "who's doing the work". -->
+            <div class="flex items-center justify-between gap-2 mt-1 min-w-0">
+              <p class="text-[10.5px] truncate min-w-0 flex-1 text-muted-foreground" :class="t.status === 'cancelled' ? 'text-rose-800/70' : ''">
+                <span class="mr-0.5" aria-hidden="true">👷</span>{{ t.crew_names || 'Unassigned' }}<span class="text-foreground/30"> · </span><span class="tabular-nums">{{ fmtScheduled(t.scheduled_at) }}</span><template v-if="t.project_coordinator && viewMode === 'team'"><span class="text-foreground/30"> · </span>{{ t.project_coordinator }}</template>
+              </p>
+              <div class="flex items-center gap-1 shrink-0">
+                <span v-for="(c, i) in progressChips(t)" :key="i" class="text-[9px] font-semibold px-1 py-px rounded whitespace-nowrap tracking-wider" :class="c.cls">{{ c.label }}</span>
+                <a v-if="t.task_url" :href="t.task_url" target="_blank" rel="noopener" class="text-[10px] font-semibold ml-0.5 text-foreground/40 hover:text-foreground transition-colors" @click.stop title="Open in Arrivy">↗</a>
+              </div>
+            </div>
+          </button>
+        </div>
+      </template>
+      <p v-if="!upcomingLoading && upcomingTasks.length" class="text-center text-[10px] text-muted-foreground/70 py-2 tracking-wide">{{ upcomingTasks.length }} task{{ upcomingTasks.length === 1 ? '' : 's' }}</p>
+    </template>
 
     <!-- Comms slide-over — uses the same Liquid Glass language as
          SmsThreadDialog so the customer-thread visual is consistent
          across the app. Click-to-call wired into the header phone
          icon; calls render inline as compact pills mixed with SMS
          bubbles. -->
+    <!-- Project snapshot — shared ProjectDetailDialog used across the
+         milestone dashboards (PTO, Design, Permit, Inspx). Auto-opens
+         when selectedPeekProject is non-null; closes back to null. -->
+    <ProjectDetailDialog
+      :project="selectedPeekProject"
+      @update:open="(v) => { if (!v) selectedPeekProject = null }"
+    />
+
     <div v-if="commsOpen" class="fixed inset-0 z-[120]">
       <button class="absolute inset-0 bg-black/40 backdrop-blur-md hidden sm:block" aria-label="Close comms" @click="closeComms" />
       <aside class="absolute right-0 top-0 h-full w-full sm:max-w-[520px] bg-card/95 supports-[backdrop-filter]:bg-card/85 backdrop-blur-2xl shadow-2xl shadow-black/30 ring-1 ring-foreground/5 flex flex-col overflow-hidden">

@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { decorateCommsItems } from '../lib/callerAttribution'
+import { F, QB, SELECT_FIELDS, qbQuery, fieldValue, type QbRecord } from './field'
 
 const router = Router()
 
@@ -853,6 +854,212 @@ router.get('/', (req: Request, res: Response): void => {
     cache: cacheRow,
     stageOrder: STAGE_ORDER,
   })
+})
+
+// GET /api/pc-dashboard/upcoming-tasks?fromIso=…&toIso=…&coordinator=…
+//
+// Scheduled Arrivy tasks (table bvbqgs5yc) for projects currently on the
+// PC dashboard (i.e. present in outreach_cache). Window is supplied by
+// the client in UTC bounds — chips on the client resolve to bounds in
+// the user's local tz, so the server stays date-math-free.
+router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void> => {
+  const fromIso = String(req.query['fromIso'] || '')
+  const toIso = String(req.query['toIso'] || '')
+  const coordinator = (req.query['coordinator'] as string | undefined) || null
+
+  const from = new Date(fromIso)
+  const to = new Date(toIso)
+  if (!fromIso || !toIso || isNaN(from.getTime()) || isNaN(to.getTime())) {
+    res.status(400).json({ error: 'fromIso and toIso are required ISO timestamps' })
+    return
+  }
+  if (to.getTime() <= from.getTime()) {
+    res.status(400).json({ error: 'toIso must be after fromIso' })
+    return
+  }
+  const SIXTY_DAYS_MS = 60 * 24 * 60 * 60 * 1000
+  if (to.getTime() - from.getTime() > SIXTY_DAYS_MS) {
+    res.status(400).json({ error: 'window must be 60 days or less' })
+    return
+  }
+
+  // Project rids the PC dashboard cares about: the PC's full portfolio of
+  // active projects (project_cache), not just those currently in outreach.
+  // project_cache.record_id IS the QB project rid that Arrivy's field 6
+  // (relatedProject) points at. Dead statuses are excluded so a closed
+  // project doesn't surface a stale install.
+  const DEAD_STATUSES = ['Cancelled', 'Pending Cancel', 'Lost', 'ROR']
+  const deadPlaceholders = DEAD_STATUSES.map(() => '?').join(',')
+  const rows = coordinator
+    ? db.prepare(
+        `SELECT record_id, customer_name, coordinator
+           FROM project_cache
+          WHERE coordinator = ?
+            AND (status IS NULL OR status NOT IN (${deadPlaceholders}))`
+      ).all(coordinator, ...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string }>
+    : db.prepare(
+        `SELECT record_id, customer_name, coordinator
+           FROM project_cache
+          WHERE status IS NULL OR status NOT IN (${deadPlaceholders})`
+      ).all(...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string }>
+
+  if (rows.length === 0) { res.json({ tasks: [], window: { fromIso, toIso } }); return }
+
+  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string }>()
+  for (const r of rows) projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator })
+
+  // ONE QB call: date window only, then filter in-memory against the PC
+  // project rid set. Looping QB per 50-rid batch was the previous shape
+  // and it took the page from snappy to multi-second on busy weeks.
+  let collected: QbRecord[]
+  try {
+    const dateWhere = `{'${F.scheduledDateTime}'.OAF.'${fromIso}'}AND{'${F.scheduledDateTime}'.OBF.'${toIso}'}`
+    collected = await qbQuery(QB.arrivyTable, dateWhere, SELECT_FIELDS, {
+      sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+    })
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message || 'QB query failed' })
+    return
+  }
+  const _qbRawCount = collected.length
+  collected = collected.filter(rec => {
+    const projectRid = String(fieldValue(rec, F.relatedProject) || '')
+    return projectMeta.has(projectRid)
+  })
+  const _afterPcFilterCount = collected.length
+
+  // "Upcoming" means not-yet-done. A task with a submitted timestamp
+  // is fully complete — it shouldn't pad tomorrow's schedule. We
+  // deliberately DO NOT filter techCompleteDateTime — those tasks are
+  // the "Crew complete but no RTR" actionable state PCs need to chase.
+  // Cancelled stays visible (PC needs to reschedule).
+  collected = collected.filter(rec => {
+    if (fieldValue(rec, F.submittedDateTime)) return false
+    return true
+  })
+  const _afterDoneFilterCount = collected.length
+
+  // Merge duplicates by (project_rid + lowercase template). QB's Arrivy
+  // table often holds multiple records for the same project+task family
+  // (reschedules, mirrored multi-crew bookings, stale rows). Without
+  // this merge a single install can show up 2–5 times in one window.
+  // Within a merge group, prefer the record with the most progress
+  // signals; tie-break on latest scheduled time so the newest booking
+  // wins over a stale older one.
+  function progressScore(rec: QbRecord): number {
+    let s = 0
+    if (fieldValue(rec, F.submittedDateTime)) s += 8
+    if (fieldValue(rec, F.startedStatus)) s += 4
+    if (fieldValue(rec, F.enrouteStatus)) s += 2
+    return s
+  }
+  const byMergeKey = new Map<string, QbRecord>()
+  for (const rec of collected) {
+    const projectRid = String(fieldValue(rec, F.relatedProject) || '')
+    const tmpl = String(fieldValue(rec, F.templateName) || '').toLowerCase()
+    if (!projectRid || !tmpl) continue
+    const mergeKey = `${projectRid}|${tmpl}`
+    const existing = byMergeKey.get(mergeKey)
+    if (!existing) { byMergeKey.set(mergeKey, rec); continue }
+    const sExisting = progressScore(existing)
+    const sNew = progressScore(rec)
+    if (sNew > sExisting) {
+      byMergeKey.set(mergeKey, rec)
+    } else if (sNew === sExisting) {
+      const tExisting = String(fieldValue(existing, F.scheduledDateTime) || '')
+      const tNew = String(fieldValue(rec, F.scheduledDateTime) || '')
+      if (tNew > tExisting) byMergeKey.set(mergeKey, rec)
+    }
+  }
+  collected = [...byMergeKey.values()]
+
+  // Pre-normalize each row so the PC client doesn't have to know QB shape.
+  // Status classification mirrors getTaskStatus() in FieldDashboardView.vue,
+  // minus the task-log cancel detection (covered by row substring match).
+  type StatusKey = 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
+  function classify(rec: QbRecord): { status: StatusKey; label: string } {
+    const arrivyStatus = String(fieldValue(rec, F.taskStatus) || '').toLowerCase()
+    const submittedDt = fieldValue(rec, F.submittedDateTime)
+    const arrivedDt = fieldValue(rec, F.startedStatus)
+    const enrouteDt = fieldValue(rec, F.enrouteStatus)
+    const isArrivyComplete = /\bcomplete\b/i.test(arrivyStatus)
+    const isOverdue = /\boverdue\b/i.test(arrivyStatus)
+    const isCancelled = /cancel|exception|notdone|not\s*done/i.test(arrivyStatus)
+    if (isCancelled) return { status: 'cancelled', label: 'Cancelled' }
+    if (isArrivyComplete && !submittedDt) return { status: 'notsubmitted', label: 'Not Submitted' }
+    if (submittedDt) return { status: 'submitted', label: 'Submitted' }
+    if (isOverdue) return { status: 'overdue', label: 'Overdue' }
+    if (arrivedDt) return { status: 'onsite', label: 'On Site' }
+    if (enrouteDt) return { status: 'enroute', label: 'En Route' }
+    return { status: 'scheduled', label: 'Scheduled' }
+  }
+
+  function joinName(rec: QbRecord): string {
+    const first = String(fieldValue(rec, F.customerFirstName) || '').trim()
+    const last = String(fieldValue(rec, F.customerLastName) || '').trim()
+    return [first, last].filter(Boolean).join(' ')
+  }
+
+  function crewNames(rec: QbRecord): string {
+    const crew = String(fieldValue(rec, F.crew) || '').trim()
+    if (crew) return crew
+    const assigned = String(fieldValue(rec, F.assignedCrew) || '').trim()
+    return assigned
+  }
+
+  function deriveTaskType(template: string): { key: string; label: string } {
+    const t = template.toLowerCase()
+    if (t.includes('install') && !t.includes('reinstall')) return { key: 'install', label: 'Solar Install' }
+    if (t.includes('survey')) return { key: 'survey', label: 'Survey' }
+    if (t.includes('final inspection') || t.includes('final-inspection')) return { key: 'final-inspection', label: 'Final Inspection' }
+    if (t.includes('inspection')) return { key: 'inspection', label: 'Inspection' }
+    if (t.includes('service')) return { key: 'service', label: 'Service' }
+    if (t.includes('rework') || t.includes('repair')) return { key: 'rework', label: 'Rework' }
+    if (t.includes('battery') || t.includes('ess')) return { key: 'battery', label: 'Battery' }
+    return { key: 'other', label: template || 'Task' }
+  }
+
+  const tasks = collected.map(rec => {
+    const arrivyId = String(fieldValue(rec, 3) || '')
+    const projectRid = String(fieldValue(rec, F.relatedProject) || '')
+    const meta = projectMeta.get(projectRid)
+    const c = classify(rec)
+    const template = String(fieldValue(rec, F.templateName) || '').trim()
+    const tt = deriveTaskType(template)
+    const enroute = !!fieldValue(rec, F.enrouteStatus)
+    const onsite = !!fieldValue(rec, F.startedStatus)
+    const submitted = !!fieldValue(rec, F.submittedDateTime)
+    const installComplete = String(fieldValue(rec, F.installComplete) || '').toLowerCase() === 'yes'
+    const rtrStatusRaw = String(fieldValue(rec, F.rtrStatus) || '').trim()
+    const rtrReady = (Number(fieldValue(rec, F.rtrReadyCount)) || 0) > 0 || /ready|submitted|approved/i.test(rtrStatusRaw)
+    return {
+      arrivy_id: arrivyId,
+      project_rid: projectRid,
+      customer_name: meta?.customer_name || joinName(rec),
+      project_coordinator: meta?.project_coordinator || '',
+      task_title: template,
+      task_type_key: tt.key,
+      task_type_label: tt.label,
+      scheduled_at: String(fieldValue(rec, F.scheduledDateTime) || ''),
+      crew_names: crewNames(rec),
+      status: c.status,
+      status_label: c.label,
+      task_url: String(fieldValue(rec, F.taskUrl) || ''),
+      progress: { enroute, onsite, submitted, install_complete: installComplete, rtr_ready: rtrReady, rtr_status: rtrStatusRaw },
+    }
+  })
+
+  // QB sorts ascending already; sort again defensively in case batching
+  // interleaved out-of-order pages.
+  tasks.sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at))
+
+  // Funnel counts are kept in scope (unused) so future diagnostic runs
+  // can re-expose them without re-deriving — set NODE_DEBUG_PC=1 to log.
+  if (process.env['NODE_DEBUG_PC'] === '1') {
+    console.log(`[pc-upcoming] qb=${_qbRawCount} pc=${_afterPcFilterCount} done=${_afterDoneFilterCount} final=${tasks.length}`)
+  }
+
+  res.json({ tasks, window: { fromIso, toIso } })
 })
 
 router.get('/comms', (req: Request, res: Response): void => {

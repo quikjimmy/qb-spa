@@ -14,7 +14,7 @@ import { notifyPcOfSurveyCancel } from '../lib/notify'
 
 const router = Router()
 
-const QB = {
+export const QB = {
   realm: process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com',
   token: process.env['QB_USER_TOKEN'] || '',
   arrivyTable: 'bvbqgs5yc',
@@ -23,7 +23,7 @@ const QB = {
 
 // Field IDs lifted from context-files/Field/example view. Naming matches
 // the example's `F` constant for grep parity.
-const F = {
+export const F = {
   scheduledDateTime: 115,
   customerFirstName: 47,
   customerLastName: 48,
@@ -43,7 +43,7 @@ const F = {
   rtrStatus: 218,
   rtrReadyCount: 217,
 }
-const SELECT_FIELDS = [3, F.scheduledDateTime, F.customerFirstName, F.customerLastName, F.taskStatus, F.templateName, F.taskUrl, F.enrouteStatus, F.startedStatus, F.submittedDateTime, F.techCompleteDateTime, F.enrouteName, F.crew, F.assignedCrew, F.installComplete, F.kw, F.relatedProject, F.rtrStatus, F.rtrReadyCount]
+export const SELECT_FIELDS = [3, F.scheduledDateTime, F.customerFirstName, F.customerLastName, F.taskStatus, F.templateName, F.taskUrl, F.enrouteStatus, F.startedStatus, F.submittedDateTime, F.techCompleteDateTime, F.enrouteName, F.crew, F.assignedCrew, F.installComplete, F.kw, F.relatedProject, F.rtrStatus, F.rtrReadyCount]
 
 const LOG_F = {
   relatedProject: 193,
@@ -62,10 +62,10 @@ const LOG_F = {
 }
 const LOG_SELECT = [3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.statusSubType, LOG_F.reportedBy, LOG_F.title, LOG_F.description, LOG_F.timestamp, LOG_F.scheduled, LOG_F.reporterName, LOG_F.relatedProject]
 
-interface QbValue { value: unknown }
-type QbRecord = Record<string, QbValue>
+export interface QbValue { value: unknown }
+export type QbRecord = Record<string, QbValue>
 
-async function qbQuery(tableId: string, where: string, select: number[], extra: Record<string, unknown> = {}): Promise<QbRecord[]> {
+export async function qbQuery(tableId: string, where: string, select: number[], extra: Record<string, unknown> = {}): Promise<QbRecord[]> {
   if (!QB.token) throw new Error('QB_USER_TOKEN not set')
   const res = await fetch('https://api.quickbase.com/v1/records/query', {
     method: 'POST',
@@ -97,12 +97,12 @@ function fmtDateInTz(d: Date, tz: string): string {
     return d.toISOString().slice(0, 10)
   }
 }
-function chunk<T>(items: T[], size: number): T[][] {
+export function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
 }
-function fieldValue(rec: QbRecord, fieldId: number): unknown {
+export function fieldValue(rec: QbRecord, fieldId: number): unknown {
   return rec[String(fieldId)]?.value
 }
 function taskMergeKey(rec: QbRecord): string {
