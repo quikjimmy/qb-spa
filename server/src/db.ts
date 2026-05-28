@@ -1090,6 +1090,31 @@ db.exec(`
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_perms_dept ON department_permissions(department_id)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_perms_resource ON department_permissions(resource_type, resource_id)`)
 
+// --- Department ↔ Dialpad routing target bridge ---
+// Maps a portal department to one or more Dialpad routing targets so the
+// Comms Hub SSE fanout (PR-1c) can stamp should_show=1 for every member
+// of a department whose mapped target/entry_point matches the inbound
+// event. One Dialpad target can map to multiple portal departments and
+// vice versa; admin manages this on the departments admin screen.
+//
+// target_kind values follow Dialpad's vocabulary: user, callcenter,
+// department, room, coachinggroup, office. label is an admin-set hint
+// ("PC line", "Real-time review") so the UI doesn't show bare IDs.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS department_dialpad_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (department_id, target_kind, target_id)
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_dp_targets_dept ON department_dialpad_targets(department_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dept_dp_targets_target ON department_dialpad_targets(target_kind, target_id)`)
+
 // --- Production agent org model ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS agent_roles (
