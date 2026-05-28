@@ -941,12 +941,34 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   // can legitimately represent different units at the same address
   // (e.g. APT A / APT B / APT C of a multi-unit install) or distinct
   // projects for the same customer.
-  function progressScore(rec: QbRecord): number {
+  //
+  // Tie-break order:
+  //   1. Prefer un-submitted over submitted. When a stale completed
+  //      record and a freshly re-scheduled record share metadata,
+  //      the active job is the un-submitted one — that's what a PC
+  //      needs to act on.
+  //   2. Among same submitted-state, prefer more in-flight progress
+  //      (started > en route > scheduled).
+  //   3. Tie → prefer higher arrivy_id (most recently created QB row).
+  function inFlightScore(rec: QbRecord): number {
     let s = 0
-    if (fieldValue(rec, F.submittedDateTime)) s += 8
     if (fieldValue(rec, F.startedStatus)) s += 4
     if (fieldValue(rec, F.enrouteStatus)) s += 2
     return s
+  }
+  function isSubmitted(rec: QbRecord): boolean {
+    return !!fieldValue(rec, F.submittedDateTime)
+  }
+  function preferCandidate(existing: QbRecord, candidate: QbRecord): boolean {
+    const eSub = isSubmitted(existing)
+    const cSub = isSubmitted(candidate)
+    if (eSub !== cSub) return !cSub  // prefer the un-submitted one
+    const eScore = inFlightScore(existing)
+    const cScore = inFlightScore(candidate)
+    if (cScore !== eScore) return cScore > eScore
+    const eRid = Number(fieldValue(existing, 3)) || 0
+    const cRid = Number(fieldValue(candidate, 3)) || 0
+    return cRid > eRid
   }
   const byMergeKey = new Map<string, QbRecord>()
   for (const rec of collected) {
@@ -956,15 +978,7 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     const mergeKey = `${projectRid}|${tmpl}`
     const existing = byMergeKey.get(mergeKey)
     if (!existing) { byMergeKey.set(mergeKey, rec); continue }
-    const sExisting = progressScore(existing)
-    const sNew = progressScore(rec)
-    if (sNew > sExisting) {
-      byMergeKey.set(mergeKey, rec)
-    } else if (sNew === sExisting) {
-      const tExisting = String(fieldValue(existing, F.scheduledDateTime) || '')
-      const tNew = String(fieldValue(rec, F.scheduledDateTime) || '')
-      if (tNew > tExisting) byMergeKey.set(mergeKey, rec)
-    }
+    if (preferCandidate(existing, rec)) byMergeKey.set(mergeKey, rec)
   }
   collected = [...byMergeKey.values()]
 
