@@ -751,6 +751,59 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_call ON dialpad_events(call_id
   const names = new Set(cols.map(c => c.name))
   if (!names.has('text_body')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN text_body TEXT`)
   if (!names.has('text_body_fetched_at')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN text_body_fetched_at TEXT`)
+  // Routing-tree fields hoisted from raw_json. target_* identifies who
+  // Dialpad chose to ring (user, callcenter, department, …). entry_point_*
+  // identifies which public-facing line the call entered on. Together
+  // they're the join keys for department-bridge visibility (PR-1b/c).
+  // NULL on rows where the payload omits them — SMS, direct user-to-user
+  // calls without an IVR, etc.
+  if (!names.has('target_kind')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN target_kind TEXT`)
+  if (!names.has('target_id')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN target_id TEXT`)
+  if (!names.has('entry_point_target_kind')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN entry_point_target_kind TEXT`)
+  if (!names.has('entry_point_target_id')) db.exec(`ALTER TABLE dialpad_events ADD COLUMN entry_point_target_id TEXT`)
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_target ON dialpad_events(target_kind, target_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_dp_events_entry_point ON dialpad_events(entry_point_target_kind, entry_point_target_id)`)
+
+// One-shot backfill: for rows that pre-date the hoisted columns, parse
+// raw_json once and populate. Idempotent — only touches rows where the
+// columns are NULL. Bounded to 5,000 rows per boot so a huge backlog
+// doesn't stall startup; subsequent boots chip away at older rows.
+{
+  const pending = db.prepare(
+    `SELECT id, raw_json FROM dialpad_events
+      WHERE target_id IS NULL AND entry_point_target_id IS NULL
+      ORDER BY id DESC LIMIT 5000`
+  ).all() as Array<{ id: number; raw_json: string }>
+  if (pending.length > 0) {
+    const update = db.prepare(
+      `UPDATE dialpad_events
+          SET target_kind = ?, target_id = ?,
+              entry_point_target_kind = ?, entry_point_target_id = ?
+        WHERE id = ?`
+    )
+    const tx = db.transaction(() => {
+      let filled = 0
+      for (const row of pending) {
+        try {
+          const raw = JSON.parse(row.raw_json || '{}') as Record<string, unknown>
+          const t = raw['target'] as Record<string, unknown> | undefined
+          const ep = (raw['entry_point_target'] || raw['entry_point']) as Record<string, unknown> | undefined
+          const tk = t && t['type'] ? String(t['type']) : null
+          const ti = t && t['id'] != null ? String(t['id']) : null
+          const ek = ep && ep['type'] ? String(ep['type']) : null
+          const ei = ep && ep['id'] != null ? String(ep['id']) : null
+          if (tk || ti || ek || ei) {
+            update.run(tk, ti, ek, ei, row.id)
+            filled++
+          }
+        } catch { /* skip malformed rows */ }
+      }
+      return filled
+    })
+    const n = tx()
+    if (n > 0) console.log(`[db] backfilled target fields on ${n} dialpad_events rows`)
+  }
 }
 
 // Diagnostic log — every single POST that hits /api/webhooks/dialpad* is

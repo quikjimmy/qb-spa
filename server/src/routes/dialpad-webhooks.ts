@@ -57,7 +57,9 @@ interface CallPayload {
   call_state?: string
   type?: string
   direction?: string
-  target?: { email?: string; name?: string; type?: string }
+  target?: { email?: string; name?: string; type?: string; id?: string | number }
+  entry_point?: { type?: string; id?: string | number; name?: string }
+  entry_point_target?: { type?: string; id?: string | number; name?: string }
   user?: { email?: string; name?: string }
   operator?: { email?: string; name?: string }
   contact?: { phone?: string }
@@ -133,6 +135,13 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
       user_name: firstNonEmpty(user?.name),
       external_number: firstNonEmpty(dir.includes('in') ? p.from_number : p.to_number),
       direction: dir.includes('in') ? 'incoming' : dir.includes('out') ? 'outgoing' : null,
+      // SMS events don't carry routing-tree info — the recipient user is
+      // implicit in to_user/from_user. Leave the columns null so the
+      // dept-bridge lookup naturally skips them.
+      target_kind: null,
+      target_id: null,
+      entry_point_target_kind: null,
+      entry_point_target_id: null,
       raw_json: JSON.stringify(payload),
       // Populated when the subscription is configured with status:false
       // and Dialpad delivers the actual SMS event with text. Status-only
@@ -151,6 +160,11 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
   const rawState = firstNonEmpty(p.state, p.call_state, p.event_type, p.type) || ''
   const state = rawState.replace(/^call\./i, '').toLowerCase() || null
 
+  // Routing-tree fields. target.* names who Dialpad rang on this leg
+  // (user / callcenter / department / coachinggroup / room). Older tenants
+  // emit entry_point; newer ones emit entry_point_target — accept both.
+  const ep = p.entry_point_target || p.entry_point || null
+
   return {
     event_kind: kind || 'call',
     event_state: state,
@@ -162,6 +176,10 @@ function flatten(kind: string, payload: Record<string, unknown>): Omit<DialpadEv
     user_name: firstNonEmpty(user.name),
     external_number: firstNonEmpty(p.external_number, p.contact?.phone, dir.includes('out') ? p.to_number : p.from_number),
     direction: dir.includes('out') ? 'outbound' : dir.includes('in') ? 'inbound' : null,
+    target_kind: p.target?.type ? String(p.target.type) : null,
+    target_id: p.target?.id != null ? String(p.target.id) : null,
+    entry_point_target_kind: ep?.type ? String(ep.type) : null,
+    entry_point_target_id: ep?.id != null ? String(ep.id) : null,
     raw_json: JSON.stringify(payload),
   }
 }
@@ -229,16 +247,20 @@ function makeHandler(kind: 'call' | 'sms' | 'generic') {
 
     const flat = flatten(kind, payload)
     const result = db.prepare(
-      `INSERT INTO dialpad_events (event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, text_body, text_body_fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO dialpad_events (event_kind, event_state, call_id, user_email, user_name, external_number, direction, target_kind, target_id, entry_point_target_kind, entry_point_target_id, raw_json, text_body, text_body_fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       flat.event_kind, flat.event_state, flat.call_id, flat.user_email, flat.user_name,
-      flat.external_number, flat.direction, flat.raw_json,
+      flat.external_number, flat.direction,
+      flat.target_kind, flat.target_id, flat.entry_point_target_kind, flat.entry_point_target_id,
+      flat.raw_json,
       ('text_body' in flat ? flat.text_body : null) || null,
       ('text_body' in flat && flat.text_body) ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null,
     )
     const row = db.prepare(
-      `SELECT id, event_kind, event_state, call_id, user_email, user_name, external_number, direction, raw_json, received_at
+      `SELECT id, event_kind, event_state, call_id, user_email, user_name, external_number, direction,
+              target_kind, target_id, entry_point_target_kind, entry_point_target_id,
+              raw_json, received_at
        FROM dialpad_events WHERE id = ?`
     ).get(Number(result.lastInsertRowid)) as DialpadEvent
     publish(row)
