@@ -198,7 +198,7 @@ const commsScroller = ref<HTMLElement | null>(null)
 // Upcoming Arrivy tasks for projects currently on the PC dashboard. Tab
 // + window are persisted in the URL so refresh / direct-link works.
 type DashboardTab = 'outreach' | 'field-activity'
-type WindowKey = 'today' | 'tomorrow' | 'thisweek' | 'nextweek' | 'thismonth' | 'next7'
+type WindowKey = 'today' | 'tomorrow' | 'yesterday' | 'thisweek' | 'nextweek' | 'thismonth' | 'next7' | 'custom'
 
 interface UpcomingTask {
   arrivy_id: string
@@ -245,6 +245,7 @@ const filterType = ref<string | null>(null)
 const filterStatus = ref<StatusFilter | null>(null)
 
 const WINDOW_CHIPS: Array<{ k: WindowKey; l: string }> = [
+  { k: 'yesterday', l: 'Yesterday' },
   { k: 'today', l: 'Today' },
   { k: 'tomorrow', l: 'Tomorrow' },
   { k: 'thisweek', l: 'This Week' },
@@ -252,6 +253,13 @@ const WINDOW_CHIPS: Array<{ k: WindowKey; l: string }> = [
   { k: 'thismonth', l: 'This Month' },
   { k: 'next7', l: 'Next 7 Days' },
 ]
+
+// Custom range state — drives windowKey='custom'. Inputs use the
+// browser-native date picker (lib/dates.ts → localDayBoundsToUtc
+// converts to the user's local-day UTC bounds).
+const customFrom = ref<string>('')
+const customTo = ref<string>('')
+const showCustomRange = ref(false)
 
 // Resolve a chip key to UTC ISO bounds in the user's local tz. All windows
 // are forward-looking ("upcoming") — past portions of "this week" etc. are
@@ -270,8 +278,22 @@ function windowBounds(key: WindowKey): { fromIso: string; toIso: string } {
       const b = localDayBoundsToUtc(today, tz)
       return { fromIso: b.from, toIso: b.to }
     }
+    case 'yesterday': {
+      const b = localDayBoundsToUtc(shift(-1), tz)
+      return { fromIso: b.from, toIso: b.to }
+    }
     case 'tomorrow': {
       const b = localDayBoundsToUtc(shift(1), tz)
+      return { fromIso: b.from, toIso: b.to }
+    }
+    case 'custom': {
+      if (customFrom.value && customTo.value) {
+        const from = localDayBoundsToUtc(customFrom.value, tz).from
+        const to = localDayBoundsToUtc(customTo.value, tz).to
+        return { fromIso: from, toIso: to }
+      }
+      // Fall through to default if custom is selected without values set.
+      const b = localDayBoundsToUtc(today, tz)
       return { fromIso: b.from, toIso: b.to }
     }
     case 'thisweek': {
@@ -464,7 +486,7 @@ function parseTab(q: unknown): DashboardTab {
   return q === 'field-activity' ? 'field-activity' : 'outreach'
 }
 function parseWindow(q: unknown): WindowKey {
-  const valid: WindowKey[] = ['today', 'tomorrow', 'thisweek', 'nextweek', 'thismonth', 'next7']
+  const valid: WindowKey[] = ['today', 'yesterday', 'tomorrow', 'thisweek', 'nextweek', 'thismonth', 'next7', 'custom']
   return valid.includes(q as WindowKey) ? (q as WindowKey) : 'next7'
 }
 function syncUrlFromState() {
@@ -1162,9 +1184,18 @@ watch(activeTab, (next) => {
   syncUrlFromState()
   if (next === 'field-activity') loadUpcomingTasks()
 })
-watch(windowKey, () => {
+watch(windowKey, (next) => {
   syncUrlFromState()
+  // Auto-expand the custom range when the user picks the "Custom" chip
+  // so they don't have to hunt for the inputs. Collapse it on other
+  // chips so the strip stays clean.
+  showCustomRange.value = next === 'custom'
   if (activeTab.value === 'field-activity') loadUpcomingTasks()
+})
+watch([customFrom, customTo], () => {
+  if (windowKey.value === 'custom' && customFrom.value && customTo.value && activeTab.value === 'field-activity') {
+    loadUpcomingTasks()
+  }
 })
 watch([viewMode, fCoordinator], () => {
   if (activeTab.value === 'field-activity') loadUpcomingTasks()
@@ -1591,7 +1622,8 @@ watch([viewMode, fCoordinator], () => {
     <!-- ── Field Activity tab ── -->
     <template v-else-if="activeTab === 'field-activity'">
       <!-- Editorial chip strip: tonal background, no borders, active is
-           solid foreground. Group toggle uses sliding-pill pattern. -->
+           solid foreground. Custom chip reveals an inline date-range
+           picker below. Group toggle uses sliding-pill pattern. -->
       <div class="flex items-center gap-2 flex-wrap">
         <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 flex-1 min-w-0">
           <button v-for="c in WINDOW_CHIPS" :key="c.k"
@@ -1599,11 +1631,34 @@ watch([viewMode, fCoordinator], () => {
             :class="windowKey === c.k ? 'bg-foreground text-background shadow-sm' : 'bg-foreground/[0.04] text-foreground/70 hover:bg-foreground/[0.08] hover:text-foreground'"
             @click="windowKey = c.k"
           >{{ c.l }}</button>
+          <button
+            class="shrink-0 px-3 py-1.5 rounded-full text-[11.5px] font-medium tracking-tight transition-all duration-200 cursor-pointer inline-flex items-center gap-1"
+            :class="windowKey === 'custom' ? 'bg-foreground text-background shadow-sm' : 'bg-foreground/[0.04] text-foreground/70 hover:bg-foreground/[0.08] hover:text-foreground'"
+            @click="windowKey = 'custom'"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+            Custom
+          </button>
         </div>
         <div class="flex rounded-full overflow-hidden shrink-0 bg-foreground/[0.04] p-0.5">
           <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'time' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'time'" title="Sort chronologically">Time</button>
           <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'type' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'type'" title="Group by task type">By Type</button>
         </div>
+      </div>
+
+      <!-- Custom range inputs — only render when the Custom chip is
+           active. Browser-native date pickers; bounds resolve to UTC
+           in the user's local tz on submit. -->
+      <div v-if="windowKey === 'custom'" class="flex items-center gap-2 flex-wrap rounded-xl bg-card/60 supports-[backdrop-filter]:bg-card/40 backdrop-blur-xl shadow-sm p-2.5">
+        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          From
+          <input type="date" v-model="customFrom" :max="customTo || undefined" class="h-7 px-2 rounded-md border bg-card text-xs cursor-pointer" />
+        </label>
+        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          To
+          <input type="date" v-model="customTo" :min="customFrom || undefined" class="h-7 px-2 rounded-md border bg-card text-xs cursor-pointer" />
+        </label>
+        <p v-if="!customFrom || !customTo" class="text-[10.5px] text-muted-foreground/70">Pick a start and end date to load.</p>
       </div>
 
       <!-- Summary — type tiles and status tiles as parallel KPI rows,
