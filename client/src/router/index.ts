@@ -219,6 +219,12 @@ const router = createRouter({
           meta: { requiresView: 'funding' },
         },
         {
+          path: 'funding/m2-not-m3',
+          name: 'funding-m2-not-m3',
+          component: () => import('../views/M2NotM3View.vue'),
+          meta: { requiresView: 'funding' },
+        },
+        {
           path: 'chat',
           name: 'chat',
           component: () => import('../views/ChatView.vue'),
