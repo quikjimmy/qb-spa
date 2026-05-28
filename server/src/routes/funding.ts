@@ -70,7 +70,23 @@ const BUCKETS: Record<string, BucketDef> = {
   'DCA:pendingDeposit': { label: 'Pending Deposit',   where: `dca_status = 'Pending DCA Deposit'`, amountCol: 'dca_expected_amount' },
   'DCA:overdue':        { label: 'Overdue',           where: `dca_status = 'DCA Overdue'`,         amountCol: 'dca_expected_amount' },
   'DCA:pendingM3':      { label: 'Pending M3',        where: `dca_status = 'Pending M3'`,          amountCol: 'dca_expected_amount' },
+
+  // ─── M2 · Not M3 page · KPI tiles mirror six QB reports for the
+  // post-M2 / pre-M3-funding population. SQL uses m3_status and the
+  // m3_last_funding_check_date (FID 2593) recency gate. BASE_WHERE
+  // still applies (Kin Home + exclusion flags); QB's M3-Ready report
+  // 950 happens to omit the is_funded gate but a funded project can't
+  // be in 'Ready to Request M3' anyway, so layering BASE_WHERE is a
+  // no-op for that bucket and keeps the query shape consistent.
+  'M2NotM3:ready':     { label: 'Ready to Request',     where: `m3_status = 'Ready to Request M3'`,                                                                                                                                                                                                                              amountCol: 'm3_expected_amount' },
+  'M2NotM3:pending':   { label: 'Pending Approval',     where: `m3_status IN ('Pending M3 Approval', 'Pending M3 Deposit') AND m3_last_funding_check_date IS NOT NULL AND m3_last_funding_check_date != '' AND substr(m3_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                amountCol: 'm3_expected_amount' },
+  'M2NotM3:approved':  { label: 'Approved · Not Recv',  where: `m3_status = 'M3 Approved' AND m3_last_funding_check_date IS NOT NULL AND m3_last_funding_check_date != '' AND substr(m3_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                                                amountCol: 'm3_expected_amount' },
+  'M2NotM3:notReady':  { label: 'Not Ready',            where: `m3_status = 'Not Ready for M3' AND m3_last_funding_check_date IS NOT NULL AND m3_last_funding_check_date != '' AND substr(m3_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                                            amountCol: 'm3_expected_amount' },
+  'M2NotM3:followUp':  { label: 'Stale Follow-Up',      where: `m3_status = 'Not Ready for M3' AND m3_last_funding_check_date IS NOT NULL AND m3_last_funding_check_date != '' AND substr(m3_last_funding_check_date,1,10) <= date('now','-3 days')`,                                                                            amountCol: 'm3_expected_amount' },
+  'M2NotM3:rejected':  { label: 'Rejected',             where: `m3_status = 'M3 Rejected' AND m3_last_funding_check_date IS NOT NULL AND m3_last_funding_check_date != '' AND substr(m3_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                                                 amountCol: 'm3_expected_amount' },
 }
+
+const M2NOTM3_BUCKET_ORDER = ['M2NotM3:ready', 'M2NotM3:pending', 'M2NotM3:approved', 'M2NotM3:notReady', 'M2NotM3:followUp', 'M2NotM3:rejected'] as const
 
 // Bucket key order per milestone — drives which KPIs render and in what
 // order. Follow-up is intentionally last (it's a sub-callout of Not Ready).
@@ -206,6 +222,67 @@ router.get('/overview', (req: Request, res: Response): void => {
   }
 })
 
+// M2 · Not M3 overview — six KPI tiles mirroring QB reports 950 /
+// 1036 / 1039 / 1034 / 1035 / 1040, plus a flat row list for the
+// unified table below the tiles. The table holds every project sitting
+// in any actionable M3 state (union of the six bucket statuses) so
+// users have one sortable view; per-bucket drill-through lives on the
+// Funding Dashboard.
+router.get('/m2-not-m3', (req: Request, res: Response): void => {
+  const filters = parseFilters(req)
+  const fc = filterClauses(filters)
+  try {
+    const buckets: Record<string, { count: number; expectedAmount: number; label: string }> = {}
+    for (const key of M2NOTM3_BUCKET_ORDER) {
+      const s = bucketSummary(key, filters)
+      buckets[key] = { ...s, label: BUCKETS[key]!.label }
+    }
+    const ACTIONABLE_M3 = [
+      'Ready to Request M3', 'Pending M3 Approval', 'Pending M3 Deposit',
+      'M3 Approved', 'Not Ready for M3', 'M3 Rejected',
+    ]
+    const placeholders = ACTIONABLE_M3.map(() => '?').join(',')
+    const rows = db.prepare(`
+      SELECT
+        record_id AS recordId,
+        customer_name AS customerName,
+        COALESCE(state, '')  AS state,
+        COALESCE(status, '') AS status,
+        COALESCE(lender, '') AS lender,
+        COALESCE(closer, '') AS closer,
+        COALESCE(sales_date, '') AS salesDate,
+        COALESCE(m3_status, '')         AS m3Status,
+        COALESCE(m3_expected_amount, 0) AS m3ExpectedAmount,
+        COALESCE(m3_net_received, 0)    AS m3NetReceived,
+        COALESCE(m3_requested_date, '') AS m3RequestedDate,
+        COALESCE(m3_approved_date, '')  AS m3ApprovedDate,
+        COALESCE(m3_rejected_date, '')  AS m3RejectedDate,
+        COALESCE(m3_deposit_date, '')   AS m3DepositDate,
+        COALESCE(m3_last_funding_check_date, '') AS m3LastFundingCheckDate,
+        COALESCE(m2_status, '')         AS m2Status,
+        COALESCE(m2_requested_date, '') AS m2RequestedDate,
+        COALESCE(m2_approved_date, '')  AS m2ApprovedDate,
+        COALESCE(m2_rejected_date, '')  AS m2RejectedDate,
+        COALESCE(m2_deposit_date, '')   AS m2DepositDate,
+        COALESCE(m2_net_received, 0)    AS m2NetReceived,
+        COALESCE(system_price, 0)       AS systemPrice,
+        COALESCE(system_size_kw, 0)     AS systemSizeKw
+      FROM project_cache ${BASE_WHERE}
+        AND m3_status IN (${placeholders})${fc.sql}
+      ORDER BY COALESCE(m2_deposit_date, m2_approved_date, m2_requested_date, '') DESC
+      LIMIT 5000
+    `).all(...ACTIONABLE_M3, ...fc.params)
+    res.json({
+      asOf: new Date().toISOString().slice(0, 10),
+      buckets,
+      rows,
+      appliedFilters: filters,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
 // Distinct values for the filter chip strip — scoped to the same
 // BASE_WHERE so options never include archived/excluded/funded rows
 // the user can't see in any KPI anyway.
@@ -237,9 +314,19 @@ router.get('/audit', (req: Request, res: Response): void => {
   const def = BUCKETS[bucketKey]
   if (!def) { res.status(400).json({ error: 'invalid bucket' }); return }
   const isDca = bucketKey.startsWith('DCA:')
-  const milestonePrefix = isDca ? 'dca' : (bucketKey.startsWith('M1:') ? 'm1' : bucketKey.startsWith('M3:') ? 'm3' : 'm2')
+  const isM2NotM3 = bucketKey.startsWith('M2NotM3:')
+  // M2 · Not M3 buckets sit on M3 statuses but the view wants M2 dates
+  // alongside, so we set the primary milestone to M3 and unconditionally
+  // attach m2* fields below.
+  const milestonePrefix = isDca ? 'dca'
+    : isM2NotM3 ? 'm3'
+    : (bucketKey.startsWith('M1:') ? 'm1' : bucketKey.startsWith('M3:') ? 'm3' : 'm2')
   const filters = parseFilters(req)
   const fc = filterClauses(filters)
+  // Opt-in extra columns — drives the M2 → M3 Progress view's "is M3
+  // submitted/approved/rejected" columns without bloating the default
+  // audit response.
+  const includeM3 = String(req.query['include'] || '') === 'm3' && !isDca
 
   try {
     // DCA fields don't share the requested/approved/rejected/deposit
@@ -263,6 +350,26 @@ router.get('/audit', (req: Request, res: Response): void => {
           COALESCE(${milestonePrefix}_expected_amount, 0) AS milestoneExpectedAmount,
           COALESCE(${milestonePrefix}_net_received, 0)    AS milestoneNetReceived
       `
+    const m3Selects = includeM3
+      ? `,
+          COALESCE(m3_status, '')         AS m3Status,
+          COALESCE(m3_requested_date, '') AS m3SubmittedDate,
+          COALESCE(m3_approved_date, '')  AS m3ApprovedDate,
+          COALESCE(m3_rejected_date, '')  AS m3RejectedDate,
+          COALESCE(m3_deposit_date, '')   AS m3DepositDate`
+      : ''
+    // M2 supplemental fields when drilling M2-Not-M3 buckets — the
+    // page shows the M2 date (deposit > approved > requested) and
+    // "days since M2" alongside the M3 progress columns.
+    const m2Selects = isM2NotM3
+      ? `,
+          COALESCE(m2_status, '')         AS m2Status,
+          COALESCE(m2_requested_date, '') AS m2RequestedDate,
+          COALESCE(m2_approved_date, '')  AS m2ApprovedDate,
+          COALESCE(m2_rejected_date, '')  AS m2RejectedDate,
+          COALESCE(m2_deposit_date, '')   AS m2DepositDate,
+          COALESCE(m2_net_received, 0)    AS m2NetReceived`
+      : ''
 
     const sql = `SELECT
         record_id AS recordId,
@@ -275,7 +382,7 @@ router.get('/audit', (req: Request, res: Response): void => {
         COALESCE(install_completed, '') AS installCompleted,
         ${milestoneSelects},
         COALESCE(system_price, 0) AS systemPrice,
-        COALESCE(system_size_kw, 0) AS systemSizeKw
+        COALESCE(system_size_kw, 0) AS systemSizeKw${m3Selects}${m2Selects}
       FROM project_cache ${BASE_WHERE} AND ${def.where}${fc.sql}
       ORDER BY install_completed ASC
       LIMIT 5000`
