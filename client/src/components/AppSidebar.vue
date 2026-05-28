@@ -98,6 +98,7 @@ const adminItems = [
 const fundingSubItems = [
   { label: 'Dashboard',   to: '/funding' },
   { label: 'M1 · Not M2', to: '/funding/m1-not-m2' },
+  { label: 'M2 · Not M3', to: '/funding/m2-not-m3' },
 ]
 const showFunding = computed(() => auth.hasViewPermission('funding'))
 const fundingOpen = computed(() => route.path.startsWith('/funding'))
