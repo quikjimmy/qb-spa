@@ -12,6 +12,14 @@ export interface DialpadEvent {
   user_name: string | null
   external_number: string | null
   direction: string | null
+  // Routing-tree fields hoisted from raw_json. target_* = who Dialpad
+  // chose to ring; entry_point_target_* = the public-facing line the
+  // call entered on. Optional so legacy SELECT lists that omit them still
+  // satisfy the type — PR-1b/c will tighten where they're actually used.
+  target_kind?: string | null
+  target_id?: string | null
+  entry_point_target_kind?: string | null
+  entry_point_target_id?: string | null
   raw_json: string
   received_at: string
 }
