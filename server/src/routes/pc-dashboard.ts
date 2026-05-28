@@ -934,13 +934,16 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   // No status-based filtering happens here.
   const _afterDoneFilterCount = collected.length
 
-  // Merge duplicates by (project_rid + lowercase template). QB's Arrivy
-  // table often holds multiple records for the same project+task family
-  // (reschedules, mirrored multi-crew bookings, stale rows). Without
-  // this merge a single install can show up 2–5 times in one window.
-  // Within a merge group, prefer the record with the most progress
-  // signals; tie-break on latest scheduled time so the newest booking
-  // wins over a stale older one.
+  // Merge duplicates by (customer + scheduled time + template). QB
+  // commonly holds multiple project records for the same household
+  // (duplicate intakes, parent/child rebuilds) and Arrivy mirrors a
+  // task into each one — so a single install can appear 3+ times in
+  // the upcoming list across different project_rids. The customer
+  // fields (47/48) come straight from Arrivy and are stable, so
+  // "same person + same minute + same template" is treated as one
+  // job. Within a merge group, prefer the record with the most
+  // progress signals; tie-break on highest project_rid so the most
+  // recent project record wins over stale older ones.
   function progressScore(rec: QbRecord): number {
     let s = 0
     if (fieldValue(rec, F.submittedDateTime)) s += 8
@@ -948,12 +951,17 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     if (fieldValue(rec, F.enrouteStatus)) s += 2
     return s
   }
+  function norm(v: unknown): string {
+    return String(v || '').trim().toLowerCase()
+  }
   const byMergeKey = new Map<string, QbRecord>()
   for (const rec of collected) {
-    const projectRid = String(fieldValue(rec, F.relatedProject) || '')
-    const tmpl = String(fieldValue(rec, F.templateName) || '').toLowerCase()
-    if (!projectRid || !tmpl) continue
-    const mergeKey = `${projectRid}|${tmpl}`
+    const first = norm(fieldValue(rec, F.customerFirstName))
+    const last = norm(fieldValue(rec, F.customerLastName))
+    const tmpl = norm(fieldValue(rec, F.templateName))
+    const sched = String(fieldValue(rec, F.scheduledDateTime) || '')
+    if (!last || !sched || !tmpl) continue
+    const mergeKey = `${first}|${last}|${sched}|${tmpl}`
     const existing = byMergeKey.get(mergeKey)
     if (!existing) { byMergeKey.set(mergeKey, rec); continue }
     const sExisting = progressScore(existing)
@@ -961,9 +969,9 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     if (sNew > sExisting) {
       byMergeKey.set(mergeKey, rec)
     } else if (sNew === sExisting) {
-      const tExisting = String(fieldValue(existing, F.scheduledDateTime) || '')
-      const tNew = String(fieldValue(rec, F.scheduledDateTime) || '')
-      if (tNew > tExisting) byMergeKey.set(mergeKey, rec)
+      const ridExisting = Number(fieldValue(existing, F.relatedProject)) || 0
+      const ridNew = Number(fieldValue(rec, F.relatedProject)) || 0
+      if (ridNew > ridExisting) byMergeKey.set(mergeKey, rec)
     }
   }
   collected = [...byMergeKey.values()]
