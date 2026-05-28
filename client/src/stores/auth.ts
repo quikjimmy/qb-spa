@@ -7,6 +7,7 @@ interface User {
   email: string
   name: string
   roles: string[]
+  commsRingScope?: 'mine' | 'all'
 }
 
 interface Permission {

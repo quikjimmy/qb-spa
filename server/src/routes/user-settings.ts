@@ -236,6 +236,18 @@ router.get('/usage', (req: Request, res: Response): void => {
   })
 })
 
+// PATCH /api/user-settings/comms-ring-scope — set the audio-ring policy
+// for the Comms Hub. 'mine' rings only on events Dialpad routed to this
+// user; 'all' rings on every event. Visual fanout is unaffected.
+router.patch('/comms-ring-scope', (req: Request, res: Response): void => {
+  const scope = (req.body as { scope?: unknown })?.scope
+  if (scope !== 'mine' && scope !== 'all') {
+    res.status(400).json({ error: "scope must be 'mine' or 'all'" }); return
+  }
+  db.prepare(`UPDATE users SET comms_ring_scope = ? WHERE id = ?`).run(scope, req.user!.userId)
+  res.json({ commsRingScope: scope })
+})
+
 // GET /api/user-settings/my-departments — departments the current user is in
 router.get('/my-departments', (req: Request, res: Response): void => {
   const rows = db.prepare(
