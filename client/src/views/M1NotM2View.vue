@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { openProjectWithEvent } from '@/lib/openProject'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { localTodayIso } from '@/lib/dates'
 
 interface AuditRow {
@@ -89,7 +90,26 @@ onBeforeUnmount(() => {
   }
 })
 
-function openProject(rid: number, e?: MouseEvent) { openProjectWithEvent(router, rid, e) }
+// Project drawer — plain click opens the lite right-side bump-out
+// (same component the PTO / Design / Permit / PC / Inspx dashboards
+// use). Modifier clicks fall through to the full /projects/:id route
+// in a new tab.
+type ProjectRow = Record<string, unknown> & { record_id: number; customer_name: string }
+const selectedProject = ref<ProjectRow | null>(null)
+async function openProject(rid: number, e?: MouseEvent) {
+  if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)) {
+    openProjectWithEvent(router, rid, e)
+    return
+  }
+  try {
+    const res = await fetch(`/api/projects/${rid}?live=0`, { headers: hdrs() })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json() as { project: ProjectRow }
+    selectedProject.value = data.project
+  } catch {
+    openProjectWithEvent(router, rid, e)
+  }
+}
 
 function fmtMoney(n: number): string {
   if (!n) return '$0'
@@ -277,4 +297,9 @@ function totals() {
       </div>
     </div>
   </div>
+
+  <ProjectDetailDialog
+    :project="selectedProject"
+    @update:open="(v) => { if (!v) selectedProject = null }"
+  />
 </template>
