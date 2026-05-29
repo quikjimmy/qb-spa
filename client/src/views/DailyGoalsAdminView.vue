@@ -33,6 +33,7 @@ interface GoalRow {
   sort_order: number
   active: number
   data_source: string | null
+  target_source: string | null
   today_target: number
   yesterday_target: number
   target_window: TargetWindowEntry[]
@@ -72,6 +73,7 @@ interface EditState {
   departmentId: string  // bound to <select>; "" means unchanged
   active: boolean
   dataSource: string  // "" = mock fallback (NULL in DB)
+  targetSource: string  // "" = manual targets only; otherwise a source key (auto-target)
   // Per-date target inputs, keyed by ISO date. Only entries for
   // editable dates are written back.
   targets: Record<string, string>
@@ -130,8 +132,17 @@ const newDeptName = ref('')
 const newDeptError = ref('')
 const newDeptSaving = ref(false)
 
+// Department filter — '' = show all. Set via the dropdown above the
+// goal list. Filters down `goals` purely client-side so the API
+// roundtrip stays the same.
+const filterDeptId = ref<string>('')
+
 const rows = computed(() =>
   goals.value
+    .filter(goal => {
+      if (filterDeptId.value === '') return true
+      return goal.department_id === Number(filterDeptId.value)
+    })
     .map(goal => {
       const edit = edits.value[goal.id]
       return edit ? { goal, edit } : null
@@ -154,6 +165,7 @@ function seedEdit(g: GoalRow, expanded: boolean = false): EditState {
     departmentId: g.department_id != null ? String(g.department_id) : '',
     active: !!g.active,
     dataSource: g.data_source ?? '',
+    targetSource: g.target_source ?? '',
     targets,
     dirty: false,
     expanded,
@@ -244,6 +256,7 @@ async function save(g: GoalRow): Promise<void> {
     active: e.active,
     // "" → server reads this as null (mock fallback)
     data_source: e.dataSource === '' ? null : e.dataSource,
+    target_source: e.targetSource === '' ? null : e.targetSource,
   }
   if (e.departmentId !== '') {
     body['department_id'] = Number(e.departmentId)
@@ -726,8 +739,32 @@ onMounted(() => {
         <p v-if="loadError" class="text-sm text-red-600">{{ loadError }}</p>
         <p v-if="loading" class="text-sm text-muted-foreground">Loading…</p>
 
-        <div v-else-if="rows.length === 0" class="text-sm text-muted-foreground">
-          No goals configured.
+        <!-- Department filter — narrows the goal list to a single
+             dept while keeping the underlying data intact. -->
+        <div v-if="!loading" class="flex items-center gap-2 pb-1">
+          <Label for="goals-dept-filter" class="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Filter by department
+          </Label>
+          <select
+            id="goals-dept-filter"
+            v-model="filterDeptId"
+            class="h-8 px-2 rounded-md border bg-background text-sm"
+          >
+            <option value="">All departments ({{ goals.length }})</option>
+            <option v-for="d in departments" :key="d.id" :value="String(d.id)">
+              {{ d.name }} ({{ goals.filter(g => g.department_id === d.id).length }})
+            </option>
+          </select>
+          <button
+            v-if="filterDeptId !== ''"
+            type="button"
+            class="text-[11px] text-muted-foreground hover:text-foreground underline cursor-pointer"
+            @click="filterDeptId = ''"
+          >clear</button>
+        </div>
+
+        <div v-if="!loading && rows.length === 0" class="text-sm text-muted-foreground">
+          {{ filterDeptId === '' ? 'No goals configured.' : 'No goals in this department.' }}
         </div>
 
         <div v-for="{ goal: g, edit: e } in rows" :key="g.id" class="rounded-xl border bg-card">
@@ -833,6 +870,33 @@ onMounted(() => {
               </select>
               <span v-if="e.dataSource" class="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
                 LIVE
+              </span>
+            </div>
+            <!-- Auto-target: lets the per-day target default come from a
+                 live source (e.g. Arrivy scheduled events). Manual edits
+                 on the 15-day strip below still override on a per-day
+                 basis — see server targetForDate() for the resolution
+                 order. -->
+            <div class="flex items-center gap-2 flex-wrap" v-if="g.kind !== 'empty_bucket'">
+              <Label :for="`tgt-src-${g.id}`" class="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Auto-target source
+              </Label>
+              <select
+                :id="`tgt-src-${g.id}`"
+                v-model="e.targetSource"
+                class="h-8 px-2 rounded-md border bg-background text-xs"
+                @change="markDirty(g.id)"
+              >
+                <option value="">Manual targets only</option>
+                <option v-for="s in sources" :key="s.key" :value="s.key">
+                  {{ s.label }}
+                </option>
+              </select>
+              <span v-if="e.targetSource" class="text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded">
+                AUTO
+              </span>
+              <span v-if="e.targetSource" class="text-[10px] text-muted-foreground">
+                Blank cells below auto-fill; typed values override per-day.
               </span>
             </div>
             <p class="text-[10px] uppercase tracking-wider text-muted-foreground">

@@ -128,6 +128,14 @@ db.exec(`
   if (!names.has('data_source')) {
     db.exec(`ALTER TABLE daily_goals ADD COLUMN data_source TEXT`)
   }
+  // `target_source` (NULL = manual targets only) lets a goal derive
+  // its per-day target from a registered source. Use case: Field Ops
+  // goals where the target should equal the count of events scheduled
+  // for that day. Manual edits on daily_goal_targets still win — see
+  // targetForDate() for the resolution order.
+  if (!names.has('target_source')) {
+    db.exec(`ALTER TABLE daily_goals ADD COLUMN target_source TEXT`)
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_daily_goals_dept ON daily_goals(department_id)`)
 }
 
@@ -561,6 +569,131 @@ function installScheduledCount(dateIso: string): number {
   return installScheduledCache.byDate.get(dateIso) ?? 0
 }
 
+// ─── Arrivy tasks scheduled FOR a given day ───────────────
+// Powers the "events scheduled for today" auto-target for Field Ops
+// goals (site surveys completed, service appts completed, installs
+// completed). Different from `install.first_scheduled` above, which
+// counts by when an Installation event was *created*; this counts by
+// the task's scheduled appointment date.
+//
+// Source: Arrivy QB table bvbqgs5yc. Field 115 = scheduled datetime
+// (UTC ISO), Field 56 = template name (free-text — we match by
+// substring so admins can rename templates without code edits).
+// Window: 30 days back + 30 days forward, since the target window
+// shown in the admin UI is only ±7 days but the seed mock data
+// occasionally peeks further.
+
+const ARRIVY_TABLE = 'bvbqgs5yc'
+const ARRIVY_F_SCHEDULED = 115
+const ARRIVY_F_TEMPLATE = 56
+const ARRIVY_SCHED_TTL_MS = 60_000
+
+type ArrivyKind = 'site_survey' | 'service_appt' | 'install'
+
+function classifyArrivyTemplate(tpl: string): ArrivyKind | null {
+  const t = tpl.toLowerCase()
+  // Order matters: "install" appears in some long names; check the
+  // more specific markers first.
+  if (t.includes('service')) return 'service_appt'
+  if (t.includes('survey') || t.includes('site visit')) return 'site_survey'
+  if (t.includes('install')) return 'install'
+  return null
+}
+
+let arrivyScheduledCache: {
+  site_survey: Map<string, number>
+  service_appt: Map<string, number>
+  install: Map<string, number>
+  refreshedAt: number
+} = {
+  site_survey: new Map(),
+  service_appt: new Map(),
+  install: new Map(),
+  refreshedAt: 0,
+}
+let arrivyScheduledInFlight: Promise<void> | null = null
+
+async function refreshArrivyScheduled(): Promise<void> {
+  if (arrivyScheduledInFlight) return arrivyScheduledInFlight
+  arrivyScheduledInFlight = (async () => {
+    try {
+      const realm = process.env['QB_REALM_HOSTNAME'] || 'kin.quickbase.com'
+      const token = process.env['QB_USER_TOKEN'] || ''
+      if (!token) {
+        console.warn('[daily-goals] QB_USER_TOKEN missing — arrivy.*.scheduled_for_date disabled')
+        return
+      }
+      // Bound the scan to a ±30-day window so we never page through
+      // years of historical Arrivy rows.
+      const now = new Date()
+      const from = new Date(now); from.setDate(from.getDate() - 30)
+      const to = new Date(now);   to.setDate(to.getDate() + 30)
+      const fromIso = `${from.toISOString().slice(0, 10)}T00:00:00Z`
+      const toIso = `${to.toISOString().slice(0, 10)}T23:59:59Z`
+
+      const buckets = {
+        site_survey: new Map<string, number>(),
+        service_appt: new Map<string, number>(),
+        install: new Map<string, number>(),
+      }
+
+      let skip = 0
+      const top = 1000
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: ARRIVY_TABLE,
+            select: [ARRIVY_F_SCHEDULED, ARRIVY_F_TEMPLATE],
+            where: `{'${ARRIVY_F_SCHEDULED}'.OAF.'${fromIso}'}AND{'${ARRIVY_F_SCHEDULED}'.OBF.'${toIso}'}`,
+            sortBy: [{ fieldId: ARRIVY_F_SCHEDULED, order: 'ASC' }],
+            options: { skip, top },
+          }),
+        })
+        if (!res.ok) {
+          throw new Error(`QB arrivy query failed (${res.status}): ${(await res.text()).slice(0, 200)}`)
+        }
+        const data = await res.json() as { data?: QbRecord[] }
+        const records = data.data || []
+        for (const rec of records) {
+          const dateRaw = qbVal(rec, ARRIVY_F_SCHEDULED)
+          const tpl = qbVal(rec, ARRIVY_F_TEMPLATE)
+          if (!dateRaw || !tpl) continue
+          const kind = classifyArrivyTemplate(String(tpl))
+          if (!kind) continue
+          // Bucket by the task's scheduled date in office TZ — the
+          // scoreboard's date math is also office-TZ-anchored, so we
+          // need to match. isoDate() handles tz formatting.
+          const dateIso = isoDate(new Date(String(dateRaw)))
+          buckets[kind].set(dateIso, (buckets[kind].get(dateIso) ?? 0) + 1)
+        }
+        if (records.length < top || skip > 20_000) break
+        skip += top
+      }
+      arrivyScheduledCache = { ...buckets, refreshedAt: Date.now() }
+    } catch (e) {
+      console.warn('[daily-goals] arrivy-scheduled refresh failed:', e)
+    } finally {
+      arrivyScheduledInFlight = null
+    }
+  })()
+  return arrivyScheduledInFlight
+}
+
+function arrivyScheduledCount(kind: ArrivyKind, dateIso: string): number {
+  if (Date.now() - arrivyScheduledCache.refreshedAt > ARRIVY_SCHED_TTL_MS) {
+    refreshArrivyScheduled().catch(() => { /* logged inside */ })
+  }
+  return arrivyScheduledCache[kind].get(dateIso) ?? 0
+}
+
+refreshArrivyScheduled().catch(() => { /* logged inside */ })
+
 refreshInstallScheduled().catch(() => { /* logged inside */ })
 
 // ─── "KCA Cleared" — per-day count ────────────────────────
@@ -736,6 +869,13 @@ const DATA_SOURCES: DataSource[] = [
   } },
   { key: 'design.cad_completed_initial', label: 'Initial CAD Designs Completed (Design Type = Initial Design)', fetch: designInitialCompletedCount },
   { key: 'install.first_scheduled', label: 'Installs First Scheduled (QB report 123, Events table)', fetch: installScheduledCount },
+  // Arrivy tasks counted by their scheduled appointment date (not the
+  // date they were placed on the schedule). Powers auto-target for
+  // Field Ops "completed today" goals — target = "how many are on the
+  // schedule for today".
+  { key: 'arrivy.site_survey.scheduled_for_date', label: 'Site surveys scheduled for date (Arrivy)',     fetch: d => arrivyScheduledCount('site_survey',  d) },
+  { key: 'arrivy.service_appt.scheduled_for_date', label: 'Service appts scheduled for date (Arrivy)',    fetch: d => arrivyScheduledCount('service_appt', d) },
+  { key: 'arrivy.install.scheduled_for_date',     label: 'Installs scheduled for date (Arrivy)',         fetch: d => arrivyScheduledCount('install',      d) },
   { key: 'intake.kca_cleared', label: 'KCA Cleared (prior status Rejected, intake completed) — QB report 24', fetch: kcaClearedCount },
   { key: 'design.cad_started',  label: 'Designs started (CAD submitted)',     fetch: d => countProjects('cad_submitted',     d) },
   { key: 'design.completed',    label: 'Designs completed',   fetch: d => countProjects('design_completed',  d) },
@@ -813,12 +953,36 @@ function valueForGoalDate(
 const defaultTargetBySlug = new Map(seedGoals.map(g => [g.slug, g.defaultTarget]))
 
 function targetForDate(goalId: number, _slug: string, dateIso: string): number {
-  const row = db.prepare(`
+  // 1. Exact-day manual override always wins. Admins type a number
+  //    into the 15-day strip → daily_goal_targets row for that date.
+  const exact = db.prepare(
+    `SELECT target FROM daily_goal_targets WHERE goal_id = ? AND date_iso = ?`
+  ).get(goalId, dateIso) as { target: number } | undefined
+  if (exact) return exact.target
+
+  // 2. If the goal binds a target_source (Field Ops auto-target), let
+  //    the source provide the per-day default. No rolling — each day
+  //    is computed fresh from the source. A failed/missing source
+  //    returns 0 rather than rolling forward to avoid stale numbers.
+  const goal = db.prepare(
+    `SELECT target_source FROM daily_goals WHERE id = ?`
+  ).get(goalId) as { target_source: string | null } | undefined
+  if (goal?.target_source) {
+    const src = getSource(goal.target_source)
+    if (src) {
+      try { return Math.max(0, Math.round(src.fetch(dateIso))) } catch { /* fall through */ }
+    }
+    return 0
+  }
+
+  // 3. Legacy fallback: rolling-forward from the most recent target
+  //    row on or before this date. Used by goals without a target_source.
+  const rolling = db.prepare(`
     SELECT target FROM daily_goal_targets
     WHERE goal_id = ? AND date_iso <= ?
     ORDER BY date_iso DESC LIMIT 1
   `).get(goalId, dateIso) as { target: number } | undefined
-  return row?.target ?? 0
+  return rolling?.target ?? 0
 }
 
 function mockTargetForDate(goalId: number, slug: string, dateIso: string): number {
@@ -1098,6 +1262,7 @@ interface AdminGoalRow {
   sort_order: number
   active: number
   data_source: string | null
+  target_source: string | null
 }
 
 interface TargetWindowEntry {
@@ -1131,7 +1296,7 @@ router.get('/', requireRole('admin'), (_req: Request, res: Response): void => {
 
   const rows = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
-            g.label, g.kind, g.sort_order, g.active, g.data_source
+            g.label, g.kind, g.sort_order, g.active, g.data_source, g.target_source
      FROM daily_goals g
      LEFT JOIN departments d ON d.id = g.department_id
      ORDER BY g.sort_order ASC, g.id ASC`
@@ -1258,6 +1423,19 @@ router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => 
       res.status(400).json({ error: `Unknown data_source: ${ds}` }); return
     }
   }
+  // target_source: same shape as data_source. NULL = use manual per-day
+  // targets only (legacy behavior). A registered source key = auto-derive
+  // the default target from that source; manual per-day edits still win.
+  if ('target_source' in body) {
+    const ts = body.target_source
+    if (ts === null || ts === '') {
+      fields.push({ col: 'target_source', val: null })
+    } else if (typeof ts === 'string' && hasSource(ts)) {
+      fields.push({ col: 'target_source', val: ts })
+    } else {
+      res.status(400).json({ error: `Unknown target_source: ${ts}` }); return
+    }
+  }
 
   // ── Per-day target edits ────────────────────────────────
   // Past dates are immutable (lock-in semantic). Empty-bucket goals
@@ -1308,7 +1486,7 @@ router.put('/:id', requireRole('admin'), (req: Request, res: Response): void => 
   const yesterday = addDaysIso(isoDate(now), -1)
   const updated = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
-            g.label, g.kind, g.sort_order, g.active, g.data_source
+            g.label, g.kind, g.sort_order, g.active, g.data_source, g.target_source
      FROM daily_goals g
      LEFT JOIN departments d ON d.id = g.department_id
      WHERE g.id = ?`
@@ -1375,6 +1553,13 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
     }
     dataSource = body.data_source
   }
+  let targetSource: string | null = null
+  if (typeof body.target_source === 'string' && body.target_source.length > 0) {
+    if (!hasSource(body.target_source)) {
+      res.status(400).json({ error: `Unknown target_source: ${body.target_source}` }); return
+    }
+    targetSource = body.target_source
+  }
 
   const slugBase = typeof body.slug === 'string' && body.slug.length > 0
     ? kebabSlug(body.slug)
@@ -1389,9 +1574,9 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
 
   const tx = db.transaction(() => {
     const info = db.prepare(
-      `INSERT INTO daily_goals (slug, department, department_id, label, kind, sort_order, active, data_source)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
-    ).run(slug, dept.name, dept.id, label, kind, maxRow.next, dataSource)
+      `INSERT INTO daily_goals (slug, department, department_id, label, kind, sort_order, active, data_source, target_source)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    ).run(slug, dept.name, dept.id, label, kind, maxRow.next, dataSource, targetSource)
     const newId = info.lastInsertRowid as number
     if (kind !== 'empty_bucket' && initialTarget > 0) {
       db.prepare(
@@ -1414,7 +1599,7 @@ router.post('/', requireRole('admin'), (req: Request, res: Response): void => {
   const yesterday = addDaysIso(isoDate(now), -1)
   const created = db.prepare(
     `SELECT g.id, g.slug, g.department_id, COALESCE(d.name, g.department) AS department,
-            g.label, g.kind, g.sort_order, g.active, g.data_source
+            g.label, g.kind, g.sort_order, g.active, g.data_source, g.target_source
      FROM daily_goals g
      LEFT JOIN departments d ON d.id = g.department_id
      WHERE g.id = ?`

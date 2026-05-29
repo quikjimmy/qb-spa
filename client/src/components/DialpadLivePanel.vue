@@ -20,6 +20,8 @@ const {
   reconnectAttempt,
   scope,
   setScope,
+  ringScope,
+  setRingScope,
   soundEnabled,
   toggleSound,
   loadingOlder,
@@ -185,9 +187,16 @@ function visualFor(e: LiveEvent): EventVisual {
         </span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
-        <div class="flex rounded-md border overflow-hidden">
+        <div class="flex rounded-md border overflow-hidden" title="Filter the panel view">
           <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="scope === 'me' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setScope('me')">Me</button>
           <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="scope === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setScope('all')">All</button>
+        </div>
+        <div class="flex rounded-md border overflow-hidden" :title="ringScope === 'mine' ? 'Ringing only for events routed to you' : 'Ringing for every event in the org'">
+          <span class="inline-flex items-center px-1.5 text-muted-foreground" aria-hidden="true">
+            <DtIconBellRing class="size-3" />
+          </span>
+          <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="ringScope === 'mine' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setRingScope('mine')">Mine</button>
+          <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="ringScope === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setRingScope('all')">All</button>
         </div>
         <button
           class="inline-flex items-center justify-center size-6 rounded-md border transition-colors"

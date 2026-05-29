@@ -32,9 +32,20 @@ function getUserRoles(userId: number): string[] {
   return rows.map(r => r.name)
 }
 
+function getCommsRingScope(userId: number): 'mine' | 'all' {
+  const row = db.prepare(`SELECT comms_ring_scope FROM users WHERE id = ?`).get(userId) as { comms_ring_scope: string | null } | undefined
+  return row?.comms_ring_scope === 'all' ? 'all' : 'mine'
+}
+
 function buildUserResponse(user: DbUser) {
   const roles = getUserRoles(user.id)
-  return { id: user.id, email: user.email, name: user.name, roles }
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    roles,
+    commsRingScope: getCommsRingScope(user.id),
+  }
 }
 
 router.post('/register', (req: Request, res: Response): void => {
@@ -85,7 +96,7 @@ router.post('/register', (req: Request, res: Response): void => {
 
   res.status(201).json({
     token,
-    user: { id: userId, email, name, roles },
+    user: { id: userId, email, name, roles, commsRingScope: 'mine' as const },
   })
 })
 
@@ -354,7 +365,7 @@ router.post('/invite/:token', (req: Request, res: Response): void => {
 
   res.json({
     token,
-    user: { id: user.id, email: user.email, name: user.name, roles },
+    user: { id: user.id, email: user.email, name: user.name, roles, commsRingScope: getCommsRingScope(user.id) },
   })
 })
 
@@ -491,7 +502,7 @@ router.post('/reset/:token', (req: Request, res: Response): void => {
 
   res.json({
     token,
-    user: { id: user.id, email: user.email, name: user.name, roles },
+    user: { id: user.id, email: user.email, name: user.name, roles, commsRingScope: getCommsRingScope(user.id) },
   })
 })
 
