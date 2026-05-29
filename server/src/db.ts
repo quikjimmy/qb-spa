@@ -32,6 +32,11 @@ db.exec(`
   // (debounced to once per minute per user). Powers the admin user
   // list "Active 4 min ago" presence column.
   if (!names.has('last_active_at')) db.exec(`ALTER TABLE users ADD COLUMN last_active_at TEXT`)
+  // Comms Hub ring scope. 'mine' = audio only fires when the event is
+  // routed to this user (is_mine=1); 'all' = ring on every event. Default
+  // 'mine' so a fresh user isn't audibly notified for the entire org.
+  // Visibility in the live panel is a separate concept; this is audio-only.
+  if (!names.has('comms_ring_scope')) db.exec(`ALTER TABLE users ADD COLUMN comms_ring_scope TEXT NOT NULL DEFAULT 'mine'`)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_reset_token ON users(reset_token) WHERE reset_token IS NOT NULL`)
 }
 

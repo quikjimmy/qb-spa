@@ -71,6 +71,26 @@ export function setScope(s: 'me' | 'all') {
   try { localStorage.setItem(SCOPE_KEY, s) } catch { /* ignore */ }
 }
 
+// ── Ring scope ──
+// Audio-only policy: which events should ring. 'mine' = only events Dialpad
+// routed to this user (is_mine=1); 'all' = every event. Hydrated from the
+// server (users.comms_ring_scope) on auth load — see watch on auth.user below.
+// Default 'mine' so a stale localStorage / pre-hydration state never lets
+// the org-wide ring fire by accident.
+const ringScope = ref<'mine' | 'all'>('mine')
+export function setRingScope(s: 'mine' | 'all') {
+  ringScope.value = s
+  if (!auth?.token) return
+  // Fire-and-forget; the optimistic local update is the source of truth.
+  // If the PATCH fails, the next /me hydration will pull whatever the
+  // server actually has.
+  fetch('/api/user-settings/comms-ring-scope', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+    body: JSON.stringify({ scope: s }),
+  }).catch(() => { /* ignore — best effort */ })
+}
+
 // ── Sound ──
 const soundEnabled = ref(typeof localStorage !== 'undefined' ? localStorage.getItem('comms.live.sound') !== '0' : true)
 const audioUnlocked = ref(false)
@@ -255,9 +275,23 @@ function ingest(ev: LiveEvent): void {
   events.value = [ev, ...events.value].slice(0, MAX_EVENTS)
   if (ev.id > lastId.value) lastId.value = ev.id
 
-  // Play sound on truly new events that match scope.
-  const scopeOk = scope.value === 'all' || (myEmail.value && (ev.user_email || '').toLowerCase() === myEmail.value)
-  if (!scopeOk) return
+  // Play sound on truly new events that match the ring-scope policy.
+  // Ring is decoupled from the visual scope filter: visibility is what you
+  // see in the panel, ring is what you hear. 'mine' rings only on events
+  // routed to this user (Dialpad-side, via is_mine); 'all' rings on every
+  // event. Fallback to the email match if is_mine isn't stamped (older
+  // events ingested before the lookup view existed).
+  let ringOk: boolean
+  if (ringScope.value === 'all') {
+    ringOk = true
+  } else if (ev.is_mine === 1) {
+    ringOk = true
+  } else if (ev.is_mine === 0) {
+    ringOk = false
+  } else {
+    ringOk = !!myEmail.value && (ev.user_email || '').toLowerCase() === myEmail.value
+  }
+  if (!ringOk) return
   const state = (ev.event_state || '').toLowerCase()
   const isRinging = ev.event_kind === 'call' && RINGING_STATES.has(state)
   const isNewCall = ev.event_kind === 'call' && !stateHistory.value[ev.call_id || '']?.length
@@ -355,6 +389,12 @@ export function useDialpadLive() {
       }
       backfill().then(connect)
     }, { immediate: true })
+    // Hydrate ringScope from the server-side user pref whenever the
+    // current user is (re)loaded. Keeps the audio policy consistent
+    // across devices without relying on localStorage.
+    watch(() => auth!.user?.commsRingScope, (s) => {
+      if (s === 'mine' || s === 'all') ringScope.value = s
+    }, { immediate: true })
   }
   return {
     events,
@@ -367,6 +407,8 @@ export function useDialpadLive() {
     loadOlderEvents,
     scope,
     setScope,
+    ringScope,
+    setRingScope,
     soundEnabled,
     toggleSound,
     unlockAudio,
