@@ -5,6 +5,7 @@ import { encryptSecret, decryptSecret, previewSecret } from '../lib/crypto'
 import { loadDialpadConfig, runStatsExport, fetchSmsRecords, DialpadError, type CsvRow } from '../lib/dialpad'
 import { attachSseStream, type DialpadEvent } from '../lib/dialpadEvents'
 import { decorateCommsItems } from '../lib/callerAttribution'
+import { loadUserDeptIds, shouldShowEvent } from '../lib/commsVisibility'
 import { toE164, canonicalPhone } from '../lib/phone'
 
 // Vocabulary the Add Contact dialog offers. Anything else is rejected.
@@ -1422,11 +1423,17 @@ router.get('/events/stream', (req: Request, res: Response): void => {
     `SELECT email FROM user_email_lookup WHERE user_id = ?`
   ).all(req.user.userId) as Array<{ email: string }>
   for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+  // Department membership drives the routing-tree visibility check (PR-1c).
+  // Snapshotted once per SSE connection; if an admin reassigns the user
+  // mid-stream they'll see the change on next reconnect.
+  const myDeptIds = loadUserDeptIds(req.user.userId)
 
   attachSseStream(res, (event) => {
     const email = String(event.user_email || '').toLowerCase().trim()
+    const isMine = !!email && myEmails.has(email)
     const decorated: Record<string, unknown> = { ...event }
-    decorated['is_mine'] = email && myEmails.has(email) ? 1 : 0
+    decorated['is_mine'] = isMine ? 1 : 0
+    decorated['should_show'] = shouldShowEvent(event, isMine, myDeptIds)
     // Reuse the same caller-attribution decorator the /events/recent
     // endpoint uses so live arrivals carry the same chips as backfill.
     decorateCommsItems([decorated])
@@ -1457,7 +1464,9 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   params.push(limit)
   const rows = db.prepare(
     `SELECT e.id, e.event_kind, e.event_state, e.call_id, e.user_email, e.user_name,
-            e.external_number, e.direction, e.raw_json, e.received_at,
+            e.external_number, e.direction,
+            e.target_kind, e.target_id, e.entry_point_target_kind, e.entry_point_target_id,
+            e.raw_json, e.received_at,
             CASE
               WHEN e.event_kind = 'sms' AND sr.event_id IS NOT NULL THEN 1
               WHEN e.event_kind = 'call' AND ir.call_id IS NOT NULL THEN 1
@@ -1480,16 +1489,25 @@ router.get('/events/recent', (req: Request, res: Response): void => {
   // user_email='james@dialpad.com' was filtered out of Me when the portal
   // login was 'james@kinhome.com'. Anonymous (no JWT) requests get is_mine=0.
   const myEmails = new Set<string>()
+  let myDeptIds = new Set<number>()
   if (req.user) {
     myEmails.add(req.user.email.toLowerCase())
     const aliasRows = db.prepare(
       `SELECT email FROM user_email_lookup WHERE user_id = ?`
     ).all(req.user.userId) as Array<{ email: string }>
     for (const r of aliasRows) myEmails.add(r.email.toLowerCase())
+    myDeptIds = loadUserDeptIds(req.user.userId)
   }
   for (const r of rows as unknown as Array<Record<string, unknown>>) {
     const email = String(r['user_email'] || '').toLowerCase().trim()
-    r['is_mine'] = email && myEmails.has(email) ? 1 : 0
+    const isMine = !!email && myEmails.has(email)
+    r['is_mine'] = isMine ? 1 : 0
+    // should_show mirrors the SSE per-subscriber stamping so backfill
+    // matches live arrivals. Anonymous callers (no JWT) always see
+    // everything — the route gates write-actions separately.
+    r['should_show'] = req.user
+      ? shouldShowEvent(r as { target_kind?: string | null; target_id?: string | null; entry_point_target_kind?: string | null; entry_point_target_id?: string | null }, isMine, myDeptIds)
+      : 1
   }
 
   // oldest_id lets the client paginate further back (use as before_id on

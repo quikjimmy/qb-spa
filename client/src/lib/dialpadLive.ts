@@ -32,6 +32,11 @@ export interface LiveEvent {
   // requesting portal user (matched through user_email_lookup so
   // primary + Dialpad email aliases both resolve)? Drives the Me filter.
   is_mine?: number
+  // Server-stamped routing-tree visibility (PR-1c). 1 = the user should
+  // see this event in their Live panel, 0 = it belongs to a routing
+  // target claimed by departments the user isn't in. Admins can override
+  // with the Show-all toggle.
+  should_show?: number
 }
 
 // Cap on the in-memory ring buffer. Bumped from 50 → 200 so refresh
@@ -69,6 +74,20 @@ const myEmail = computed(() => (auth?.user?.email || '').toLowerCase().trim())
 export function setScope(s: 'me' | 'all') {
   scope.value = s
   try { localStorage.setItem(SCOPE_KEY, s) } catch { /* ignore */ }
+}
+
+// ── Admin Show-all visibility override ──
+// PR-1c narrows the live panel to routing-tree members. Admins still need a
+// "show me literally everything" mode for spot-checks and coverage. This is
+// a client-only override on top of the server's should_show stamp — the
+// server still computes the per-user view, the client just stops filtering.
+// localStorage-backed so admins don't have to re-enable per session. Default
+// off so the narrowed model is the steady-state experience.
+const SHOW_ALL_KEY = 'comms.live.showAll'
+const showAll = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem(SHOW_ALL_KEY) === '1' : false)
+export function setShowAll(v: boolean) {
+  showAll.value = v
+  try { localStorage.setItem(SHOW_ALL_KEY, v ? '1' : '0') } catch { /* ignore */ }
 }
 
 // ── Ring scope ──
@@ -170,14 +189,17 @@ export function playTone(kind: 'call' | 'sms' | 'ringing'): void {
 }
 
 // ── Scope-aware visible events ──
-// Me filter trusts the server-stamped `is_mine` flag — the server has
-// access to user_email_lookup and resolves portal + Dialpad email aliases
-// in one place. Falls back to the old client-side email match for events
-// from older webhook rows that haven't been re-fetched (paranoia — should
-// be rare since /events/recent re-stamps everything on each backfill).
+// Two filters applied in sequence:
+//   1. Routing-tree visibility (PR-1c): drop events the server stamped
+//      should_show=0. Admins with the Show-all toggle bypass this.
+//   2. Personal Me/All scope: same as before — Me trusts the server-
+//      stamped is_mine flag, with an email fallback for legacy rows.
 export const visibleEvents = computed<LiveEvent[]>(() => {
-  if (scope.value === 'all') return events.value
-  return events.value.filter(e => {
+  const afterRouting = showAll.value
+    ? events.value
+    : events.value.filter(e => e.should_show !== 0)
+  if (scope.value === 'all') return afterRouting
+  return afterRouting.filter(e => {
     if (e.is_mine === 1) return true
     if (e.is_mine === 0) return false
     if (!myEmail.value) return true
@@ -202,6 +224,10 @@ export const activeRinging = computed<LiveEvent[]>(() => {
   const byNumber = new Map<string, LiveEvent>()
   for (const e of events.value) {
     if (e.event_kind !== 'call' || !e.call_id) continue
+    // Routing-tree filter (PR-1c): don't pop the global incoming-call
+    // alert for users outside the routing tree, even when the visual
+    // panel is set to All. Admins with Show-all bypass this.
+    if (!showAll.value && e.should_show === 0) continue
     const s = (e.event_state || '').toLowerCase()
     const history = stateHistory.value[e.call_id] || []
     const hasResolution = history.some(st => RESOLVED_STATES.has(st))
@@ -291,6 +317,9 @@ function ingest(ev: LiveEvent): void {
   } else {
     ringOk = !!myEmail.value && (ev.user_email || '').toLowerCase() === myEmail.value
   }
+  // Routing-tree gate (PR-1c): never ring on an event the user shouldn't
+  // even see. Admins with Show-all bypass — they've opted in to the noise.
+  if (!showAll.value && ev.should_show === 0) ringOk = false
   if (!ringOk) return
   const state = (ev.event_state || '').toLowerCase()
   const isRinging = ev.event_kind === 'call' && RINGING_STATES.has(state)
@@ -409,6 +438,8 @@ export function useDialpadLive() {
     setScope,
     ringScope,
     setRingScope,
+    showAll,
+    setShowAll,
     soundEnabled,
     toggleSound,
     unlockAudio,

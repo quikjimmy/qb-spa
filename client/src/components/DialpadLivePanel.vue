@@ -22,6 +22,8 @@ const {
   setScope,
   ringScope,
   setRingScope,
+  showAll,
+  setShowAll,
   soundEnabled,
   toggleSound,
   loadingOlder,
@@ -198,6 +200,13 @@ function visualFor(e: LiveEvent): EventVisual {
           <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="ringScope === 'mine' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setRingScope('mine')">Mine</button>
           <button class="px-2 h-6 text-[10px] font-medium transition-colors" :class="ringScope === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setRingScope('all')">All</button>
         </div>
+        <button
+          v-if="auth.isAdmin"
+          class="inline-flex items-center justify-center h-6 px-2 rounded-md border text-[10px] font-medium transition-colors"
+          :class="showAll ? 'bg-amber-500 text-white border-amber-500' : 'hover:bg-muted text-muted-foreground'"
+          :title="showAll ? 'Admin override on — showing every event in the org, ignoring routing-tree visibility' : 'Show every event regardless of department routing (admin override)'"
+          @click="setShowAll(!showAll)"
+        >Show all</button>
         <button
           class="inline-flex items-center justify-center size-6 rounded-md border transition-colors"
           :class="soundEnabled ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
