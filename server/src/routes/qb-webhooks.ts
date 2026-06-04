@@ -143,7 +143,12 @@ function enqueueProjectRefresh(projectRecordId: number, eventId: number): 'queue
   return 'queued'
 }
 
-function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
+function acceptProjectRefresh(
+  kind: string,
+  req: Request,
+  res: Response,
+  opts: { selfIsProject?: boolean } = {},
+): void {
   const verdict = verifySecret(req)
   if (verdict === false) {
     console.warn(`[qb-webhook] ${kind} — bad/missing secret, dropping`)
@@ -154,8 +159,14 @@ function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
     console.warn(`[qb-webhook] ${kind} — QB_WEBHOOK_SECRET not set, accepting anonymously (dev mode)`)
   }
 
-  const projectRecordId = pickProjectRecordId(req.body)
   const sourceRecordId = pickRecordId(req.body)
+  // For edits on the Projects table itself (install completed, PTO, status,
+  // M2/M3/DCA dates + amounts — all fields on br9kwm8na), the changed record
+  // IS the project, so a Pipeline there sends only its own record id in the
+  // generic record_id/rid slot. Fall back to that when no explicit
+  // related-project field is present.
+  const projectRecordId = pickProjectRecordId(req.body)
+    ?? (opts.selfIsProject ? sourceRecordId : null)
   const sourceTable = pickSourceTable(req.body)
   const changedFieldIds = pickChangedFieldIds(req.body)
   const payloadJson = JSON.stringify(req.body ?? {})
@@ -226,6 +237,47 @@ router.post('/project-dirty', (req: Request, res: Response): void => {
 // table easier to read.
 router.post('/permit', (req: Request, res: Response): void => {
   acceptProjectRefresh('permit', req, res)
+})
+
+// POST /api/webhooks/qb/project-changed
+//
+// Fired by a QB Pipeline on the Projects table itself (br9kwm8na) whenever a
+// milestone field changes — install completed, PTO approved, status, M2/M3/DCA
+// deposit dates + received amounts, etc. The changed record IS the project, so
+// we refresh project_cache straight from its own record id. This is the path
+// that keeps milestone data live; /project-refresh remains for child tables
+// that carry a separate related-project field.
+router.post('/project-changed', (req: Request, res: Response): void => {
+  acceptProjectRefresh('project-changed', req, res, { selfIsProject: true })
+})
+
+// GET /api/webhooks/qb/recent
+//
+// Diagnostic view of what QB Pipelines are actually delivering — so a stale
+// field is debuggable instead of a black box. Guarded by the same shared
+// secret as the inbound webhooks (header or ?secret=). Returns status counts
+// plus the last 50 events (no payloads, to avoid leaking PII). 'ignored' rows
+// = a Pipeline fired but carried no usable project id; zero rows = no Pipeline
+// is firing at all.
+router.get('/recent', (req: Request, res: Response): void => {
+  const expected = process.env['QB_WEBHOOK_SECRET']
+  if (expected) {
+    const got = String(
+      req.header('x-qb-webhook-secret') || req.query['secret'] || '',
+    ).trim()
+    if (got !== expected) { res.status(403).json({ error: 'forbidden' }); return }
+  }
+  const byStatus = db.prepare(`
+    SELECT kind, status, COUNT(*) AS n, MAX(received_at) AS latest
+    FROM qb_webhook_events GROUP BY kind, status ORDER BY n DESC
+  `).all()
+  const recent = db.prepare(`
+    SELECT id, kind, status, project_record_id AS projectRecordId,
+           source_table AS sourceTable, changed_field_ids AS changedFieldIds,
+           error, received_at AS receivedAt, processed_at AS processedAt
+    FROM qb_webhook_events ORDER BY id DESC LIMIT 50
+  `).all()
+  res.json({ byStatus, recent, secretConfigured: Boolean(expected) })
 })
 
 export { router as qbWebhookRouter }
