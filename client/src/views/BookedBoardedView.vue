@@ -8,6 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import DataFreshness from '@/components/DataFreshness.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { localTodayIso } from '@/lib/dates'
 import { openProjectWithEvent } from '@/lib/openProject'
 
@@ -435,8 +436,28 @@ onMounted(() => {
 })
 watch([asOf, customFrom, customTo], () => { persist(); load() })
 
-function openProject(rid: number, e?: MouseEvent) {
-  openProjectWithEvent(router, rid, e)
+// Project drawer — plain click opens the lite right-side bump-out
+// (same ProjectDetailDialog component the Funding / PTO / Design /
+// Permit / PC / Inspx dashboards use). Modifier clicks fall through
+// to the full /projects/:id route in a new tab so power users keep
+// their tab-stack flow.
+type ProjectRow = Record<string, unknown> & { record_id: number; customer_name: string }
+const selectedProject = ref<ProjectRow | null>(null)
+async function openProject(rid: number, e?: MouseEvent) {
+  if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)) {
+    openProjectWithEvent(router, rid, e)
+    return
+  }
+  try {
+    const res = await fetch(`/api/projects/${rid}?live=0`, { headers: hdrs() })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json() as { project: ProjectRow }
+    selectedProject.value = data.project
+  } catch {
+    // If the cache lookup fails, fall through to the full view rather
+    // than silently swallowing the click.
+    openProjectWithEvent(router, rid, e)
+  }
 }
 
 // Dimensions for the drill switcher.
@@ -782,11 +803,8 @@ function sortedAuditRows(key: GapKey): AuditRow[] {
                 <th class="text-right font-semibold p-1.5" :class="timeframe === '7d' ? 'text-foreground' : ''">7d</th>
                 <th class="text-right font-semibold p-1.5" :class="timeframe === 'mtd' ? 'text-foreground' : ''">MTD</th>
                 <th class="text-right font-semibold p-1.5">Δ vs Last MTD</th>
-                <th class="text-right font-semibold p-1.5">MTD Pace</th>
                 <th class="text-right font-semibold p-1.5 hidden sm:table-cell" :class="timeframe === '30d' ? 'text-foreground' : ''">30d</th>
-                <th class="text-right font-semibold p-1.5 hidden sm:table-cell">30d Pace</th>
                 <th class="text-right font-semibold p-1.5 hidden md:table-cell" :class="timeframe === '60d' ? 'text-foreground' : ''">60d</th>
-                <th class="text-right font-semibold p-1.5 hidden md:table-cell">60d Pace</th>
                 <th class="text-right font-semibold p-1.5 hidden md:table-cell" :class="timeframe === 'ytd' ? 'text-foreground' : ''">YTD</th>
                 <th class="text-right font-semibold p-1.5 hidden md:table-cell">Last YTD</th>
               </tr>
@@ -805,11 +823,8 @@ function sortedAuditRows(key: GapKey): AuditRow[] {
                 <td class="p-1.5 text-right font-mono tabular-nums" :class="flashDelta(s).tone">
                   {{ flashDelta(s).symbol }}{{ fmtDeltaValue(flashDelta(s).value) }}
                 </td>
-                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ metricValue(s.mtdPace) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums hidden sm:table-cell" :class="timeframe === '30d' ? 'bg-foreground/5 font-bold' : ''">{{ metricValue(s.pace30) }}</td>
-                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">{{ metricValue(s.pace30Monthly) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums hidden md:table-cell" :class="timeframe === '60d' ? 'bg-foreground/5 font-bold' : ''">{{ metricValue(s.pace60) }}</td>
-                <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden md:table-cell">{{ metricValue(s.pace60Monthly) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums hidden md:table-cell" :class="timeframe === 'ytd' ? 'bg-foreground/5 font-bold' : ''">{{ metricValue(s.ytd) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground hidden md:table-cell">{{ metricValue(s.lastYtd) }}</td>
               </tr>
@@ -1229,6 +1244,14 @@ function sortedAuditRows(key: GapKey): AuditRow[] {
       </section>
     </template>
   </div>
+
+  <!-- Lite project view — right-side bump-out (bottom-sheet on mobile).
+       Setting selectedProject to null on close keeps the report's
+       timeframe / drill / audit state intact underneath. -->
+  <ProjectDetailDialog
+    :project="selectedProject"
+    @update:open="(v) => { if (!v) selectedProject = null }"
+  />
 </template>
 
 <style scoped>
