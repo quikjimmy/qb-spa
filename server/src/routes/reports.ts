@@ -1,11 +1,6 @@
 // Booked & Boarded executive flash report — admin-only.
 //
-// Reads project_cache directly. Each endpoint first awaits
-// refreshFundingPopulationLive() — the same live QuickBase pull the funding
-// dashboard uses — so every field on the report (booked/install/PTO dates,
-// system price, and the M2/M3/DCA dates + received amounts) is current before
-// we read. The pull is coalesced to one real QB hit per 20s, so repeated loads
-// are cheap; the background tier scheduler still keeps the cache warm between.
+// Reads project_cache directly (kept fresh by the project tier scheduler).
 // Two endpoints:
 //   GET /booked-and-boarded             — full report payload
 //   GET /booked-and-boarded/drill       — per-dimension breakdown for one gap
@@ -22,7 +17,6 @@
 
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
-import { refreshFundingPopulationLive } from './projects'
 
 const router = Router()
 
@@ -1160,8 +1154,7 @@ function resolveTimeframe(tf: string, asOf: Date, customFrom?: string, customTo?
 
 // ─── Routes ──────────────────────────────────────────────
 
-router.get('/booked-and-boarded', async (req: Request, res: Response): Promise<void> => {
-  await refreshFundingPopulationLive()
+router.get('/booked-and-boarded', (req: Request, res: Response): void => {
   const asOfRaw = (req.query['asOf'] as string) || ''
   const asOf = /^\d{4}-\d{2}-\d{2}$/.test(asOfRaw) ? parseDate(asOfRaw) : new Date()
   const filters: Filters = {
@@ -1240,8 +1233,7 @@ export function buildM1NotM2(filters: Filters) {
 }
 export type { Filters }
 
-router.get('/booked-and-boarded/drill', async (req: Request, res: Response): Promise<void> => {
-  await refreshFundingPopulationLive()
+router.get('/booked-and-boarded/drill', (req: Request, res: Response): void => {
   const gap = (req.query['gap'] as string) as DrillGap
   const dimension = (req.query['dimension'] as string) || 'state'
   if (!DRILL_GAPS.includes(gap)) { res.status(400).json({ error: 'invalid gap' }); return }
@@ -1280,8 +1272,7 @@ const CYCLE_COLS = new Set([
 ])
 const CYCLE_WINDOWS: Record<string, number> = { '30d': 30, '60d': 60, '90d': 90 }
 
-router.get('/booked-and-boarded/cycle-drill', async (req: Request, res: Response): Promise<void> => {
-  await refreshFundingPopulationLive()
+router.get('/booked-and-boarded/cycle-drill', (req: Request, res: Response): void => {
   const fromCol = String(req.query['from'] || '')
   const toCol = String(req.query['to'] || '')
   const dimension = (req.query['dimension'] as string) || 'state'
