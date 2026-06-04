@@ -14,6 +14,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { RouterLink } from 'vue-router'
 import { fmtDate } from '@/lib/dates'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
+import FundingChips, { type FundingProject } from '@/components/project-detail/FundingChips.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
 
 interface ProjectRow {
@@ -47,6 +48,9 @@ interface ProjectRow {
   inspection_passed?: string | null
   pto_submitted?: string | null
   pto_approved?: string | null
+  ntp_submitted?: string | null
+  ntp_approved?: string | null
+  m1_status?: string | null
   [k: string]: unknown
 }
 
@@ -91,6 +95,20 @@ const emailHref = computed(() => {
 const mapHref = computed(() => {
   const a = props.project?.customer_address
   return a ? `https://maps.google.com/?q=${encodeURIComponent(String(a))}` : null
+})
+
+// Funding pills — reuse the project view's FundingChips (NTP/M1/M2/M3/DCA).
+// The drawer receives the full project_cache row, so all the fields it reads
+// are already present. Gate the labeled section on FundingChips' own
+// visibility rule (m1 status / install scheduled / NTP) so early-stage
+// projects show no empty "Funding" header.
+function has(v: unknown): boolean {
+  return !!(v && String(v).trim() !== '' && v !== '0')
+}
+const hasFunding = computed(() => {
+  const p = props.project
+  if (!p) return false
+  return !!(p.m1_status || has(p.install_scheduled) || has(p.ntp_submitted) || has(p.ntp_approved))
 })
 </script>
 
@@ -151,6 +169,12 @@ const mapHref = computed(() => {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></svg>
             Map
           </a>
+        </div>
+
+        <!-- Funding pills (NTP / M1 / M2 / M3 / DCA) — same component as the full project view -->
+        <div v-if="hasFunding" class="px-4 pb-3">
+          <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Funding</p>
+          <FundingChips :p="project as unknown as FundingProject" />
         </div>
 
         <!-- Milestone strip -->

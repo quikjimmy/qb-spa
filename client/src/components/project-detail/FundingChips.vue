@@ -11,7 +11,7 @@ import { computed } from 'vue'
 //
 // NTP is special — there's no status text; color comes from dates only.
 
-interface FundingProject {
+export interface FundingProject {
   lender?: string | null
   lender_loan_id?: string | null
   ntp_submitted?: string | null
