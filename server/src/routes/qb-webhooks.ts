@@ -3,12 +3,21 @@
 // Pipelines doesn't sign payloads natively, so a header-based shared
 // secret is the simplest auth surface to configure on their side.
 
-import { Router, type Request, type Response } from 'express'
+import express, { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { invalidateIntakeCaches } from './intake'
 import { fetchOneLive } from './projects'
 
 const router = Router()
+
+// QuickBase Pipelines' webhook action sends a JSON body but does NOT set
+// Content-Type: application/json, so the app-level express.json() (which only
+// parses application/json) skips it and req.body comes through empty — every
+// event logged 'ignored' with a {} payload despite a correctly-mapped
+// project_record_id. Parse the body here regardless of content-type so QB's
+// payload is honored without depending on a header we don't control. Requests
+// that already matched the global JSON parser are a no-op (express sets _body).
+router.use(express.json({ type: '*/*', limit: '1mb' }))
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS qb_webhook_events (
