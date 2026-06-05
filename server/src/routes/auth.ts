@@ -37,8 +37,11 @@ function getCommsRingScope(userId: number): 'mine' | 'all' {
   return row?.comms_ring_scope === 'all' ? 'all' : 'mine'
 }
 
-function buildUserResponse(user: DbUser) {
-  const roles = getUserRoles(user.id)
+// rolesOverride lets the "View as role" flow present the impersonated role to
+// the client (so role-based UI gating behaves exactly as that role would)
+// without touching the admin's real role assignments.
+function buildUserResponse(user: DbUser, rolesOverride?: string[]) {
+  const roles = rolesOverride ?? getUserRoles(user.id)
   return {
     id: user.id,
     email: user.email,
@@ -46,6 +49,10 @@ function buildUserResponse(user: DbUser) {
     roles,
     commsRingScope: getCommsRingScope(user.id),
   }
+}
+
+function roleExists(name: string): boolean {
+  return !!db.prepare('SELECT 1 FROM roles WHERE name = ?').get(name)
 }
 
 router.post('/register', (req: Request, res: Response): void => {
@@ -143,7 +150,7 @@ router.get('/me', (req: Request, res: Response): void => {
 
   try {
     const payload = jwt.verify(header.slice(7), getJwtSecret()) as {
-      userId: number; actAsDepartmentId?: number
+      userId: number; actAsDepartmentId?: number; actAsRole?: string
     }
     const user = db.prepare('SELECT id, email, name, is_active FROM users WHERE id = ?').get(payload.userId) as DbUser | undefined
 
@@ -153,14 +160,19 @@ router.get('/me', (req: Request, res: Response): void => {
     }
 
     // Surface the active View-as scope so the client can render the
-    // banner + dropdown state without a separate request.
-    let scope: { departmentId: number; departmentName: string } | null = null
-    if (payload.actAsDepartmentId != null) {
+    // banner + dropdown state without a separate request. Two flavours:
+    // department scope (permission-based) and role scope (role-based).
+    let scope: { departmentId?: number; departmentName?: string; role?: string } | null = null
+    let rolesOverride: string[] | undefined
+    if (payload.actAsRole != null) {
+      scope = { role: payload.actAsRole }
+      rolesOverride = [payload.actAsRole]
+    } else if (payload.actAsDepartmentId != null) {
       const dept = db.prepare('SELECT id, name FROM departments WHERE id = ?').get(payload.actAsDepartmentId) as { id: number; name: string } | undefined
       if (dept) scope = { departmentId: dept.id, departmentName: dept.name }
     }
 
-    res.json({ user: buildUserResponse(user), scope })
+    res.json({ user: buildUserResponse(user, rolesOverride), scope })
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' })
   }
@@ -175,7 +187,21 @@ router.get('/my-permissions', (req: Request, res: Response): void => {
   }
 
   try {
-    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number; actAsDepartmentId?: number }
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number; actAsDepartmentId?: number; actAsRole?: string }
+
+    // View-as role: return only that role's grants so view/table/field gates
+    // behave as the role would (role-based middleware reads the token roles).
+    if (payload.actAsRole != null) {
+      const perms = db.prepare(`
+        SELECT p.resource_type, p.resource_id, p.can_read, p.can_write
+        FROM permissions p
+        JOIN roles r ON r.id = p.role_id
+        WHERE r.name = ?
+        ORDER BY p.resource_type, p.resource_id
+      `).all(payload.actAsRole)
+      res.json({ permissions: perms })
+      return
+    }
 
     // View-as scope: return only the active department's grants so the
     // client behaves exactly as a department member would.
@@ -304,6 +330,67 @@ router.post('/scope/clear', (req: Request, res: Response): void => {
       { expiresIn: '7d' },
     )
     res.json({ token, user: buildUserResponse(user), scope: null })
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+})
+
+// ─── Admin "View-as role" scope ──────────────────────────────
+// Issues a JWT whose `roles` claim is replaced by the single impersonated
+// role (admin dropped) + an `actAsRole` marker. Role-based middleware
+// (requireRole, isReferralAgent) and the client's role gating then behave
+// exactly as that role. Admin status is resolved from the DB userId, so the
+// admin can still switch/exit while impersonating.
+router.get('/scope/roles', (req: Request, res: Response): void => {
+  const header = req.headers['authorization']
+  if (!header?.startsWith('Bearer ')) { res.status(401).json({ error: 'Not authenticated' }); return }
+  try {
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    if (!callerIsDbAdmin(payload.userId)) {
+      res.status(403).json({ error: 'View-as is admin-only' })
+      return
+    }
+    // Only the app's own system roles are impersonable (is_system = 1) —
+    // the dozens of QB-synced roles aren't wired to client gating. Exclude
+    // admin and the legacy lowercase aliases (crew/customer/lender).
+    const roles = db.prepare(
+      `SELECT name, description FROM roles
+       WHERE is_system = 1 AND name NOT IN ('admin', 'crew', 'customer', 'lender')
+       ORDER BY name`
+    ).all()
+    res.json({ roles })
+  } catch {
+    res.status(401).json({ error: 'Invalid or expired token' })
+  }
+})
+
+router.post('/scope/role', (req: Request, res: Response): void => {
+  const header = req.headers['authorization']
+  if (!header?.startsWith('Bearer ')) { res.status(401).json({ error: 'Not authenticated' }); return }
+  try {
+    const payload = jwt.verify(header.slice(7), getJwtSecret()) as { userId: number }
+    if (!callerIsDbAdmin(payload.userId)) {
+      res.status(403).json({ error: 'View-as is admin-only' })
+      return
+    }
+    const role = String((req.body as { role?: unknown })?.role || '').trim()
+    if (!role) { res.status(400).json({ error: 'role is required' }); return }
+    if (role === 'admin') { res.status(400).json({ error: 'Cannot impersonate admin' }); return }
+    if (!roleExists(role)) { res.status(404).json({ error: 'Role not found' }); return }
+
+    const user = db.prepare('SELECT id, email, name, is_active FROM users WHERE id = ?').get(payload.userId) as DbUser | undefined
+    if (!user) { res.status(404).json({ error: 'User not found' }); return }
+
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, roles: [role], actAsRole: role },
+      getJwtSecret(),
+      { expiresIn: '8h' }, // testing window, not a place to live
+    )
+    res.json({
+      token,
+      user: buildUserResponse(user, [role]),
+      scope: { role },
+    })
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' })
   }

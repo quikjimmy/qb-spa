@@ -6,7 +6,7 @@ import fs from 'fs'
 import { UPLOADS_DIR } from './lib/upload'
 import { authRouter } from './routes/auth'
 import { qbRouter } from './routes/qb'
-import { adminRouter } from './routes/admin'
+import { adminRouter, ensureAppRoles } from './routes/admin'
 import { qbSyncRouter } from './routes/qb-sync'
 import { feedRouter } from './routes/feed'
 import { feedIngestRouter } from './routes/feed-ingest'
@@ -51,6 +51,7 @@ import { fundingRouter } from './routes/funding'
 import { qbWebhookRouter } from './routes/qb-webhooks'
 import { githubWebhookRouter } from './routes/github-webhooks'
 import { dailyGoalsRouter } from './routes/daily-goals'
+import { referralAgentScope, referralAgentFieldScope, denyReferralAgent } from './lib/referralAgent'
 
 const app = express()
 const PORT = Number(process.env['PORT']) || 3001
@@ -96,36 +97,43 @@ app.use('/api/webhooks/qb', qbWebhookRouter)
 // Listens for pull_request events to flip approved proposals to shipped.
 app.use('/api/webhooks', githubWebhookRouter)
 
-// Protected routes — require JWT
-app.use('/api/qb', authenticate, qbRouter)
-app.use('/api/feed', authenticate, feedRouter)
+// Protected routes — require JWT.
+//
+// Referral Agents (read-only, activation-bucket-only) are gated here too:
+//   • referralAgentScope     → project-scoped routers: only a visible project,
+//                              param-less "global" calls are 403
+//   • referralAgentFieldScope → Arrivy router: only the 3 project-detail endpoints
+//   • denyReferralAgent      → routers they must never touch
+// Every guard no-ops for all other roles.
+app.use('/api/qb', authenticate, denyReferralAgent, qbRouter)
+app.use('/api/feed', authenticate, referralAgentScope, feedRouter)
 app.use('/api/notifications', authenticate, notificationsRouter)
 app.use('/api/projects', authenticate, projectsRouter)
-app.use('/api/tickets', authenticate, ticketsRouter)
+app.use('/api/tickets', authenticate, referralAgentScope, ticketsRouter)
 app.use('/api/adders', authenticate, addersRouter)
-app.use('/api/attachments', authenticate, attachmentsRouter)
-app.use('/api/notes', authenticate, notesRouter)
-app.use('/api/intake', authenticate, intakeRouter)
-app.use('/api/retention', authenticate, retentionRouter)
-app.use('/api/analytics/pto', authenticate, ptoAnalyticsRouter)
-app.use('/api/pto', authenticate, ptoCacheRouter)
-app.use('/api/analytics/inspx', authenticate, inspxAnalyticsRouter)
-app.use('/api/analytics/design', authenticate, designAnalyticsRouter)
-app.use('/api/analytics/permit', authenticate, permitAnalyticsRouter)
-app.use('/api/daily-goals', authenticate, dailyGoalsRouter)
+app.use('/api/attachments', authenticate, referralAgentScope, attachmentsRouter)
+app.use('/api/notes', authenticate, referralAgentScope, notesRouter)
+app.use('/api/intake', authenticate, denyReferralAgent, intakeRouter)
+app.use('/api/retention', authenticate, referralAgentScope, retentionRouter)
+app.use('/api/analytics/pto', authenticate, denyReferralAgent, ptoAnalyticsRouter)
+app.use('/api/pto', authenticate, denyReferralAgent, ptoCacheRouter)
+app.use('/api/analytics/inspx', authenticate, denyReferralAgent, inspxAnalyticsRouter)
+app.use('/api/analytics/design', authenticate, denyReferralAgent, designAnalyticsRouter)
+app.use('/api/analytics/permit', authenticate, denyReferralAgent, permitAnalyticsRouter)
+app.use('/api/daily-goals', authenticate, denyReferralAgent, dailyGoalsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
-app.use('/api/pc-dashboard', authenticate, pcDashboardRouter)
+app.use('/api/pc-dashboard', authenticate, referralAgentScope, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
 app.use('/api/improvement-proposals', authenticate, improvementProposalsRouter)
 app.use('/api/user-agents', authenticate, userAgentsRouter)
 app.use('/api/user-settings', authenticate, userSettingsRouter)
-app.use('/api/chat', authenticate, chatRouter)
+app.use('/api/chat', authenticate, denyReferralAgent, chatRouter)
 app.use('/api/agent-org', authenticate, agentOrgRouter)
 app.use('/api/agent-org/approvals', authenticate, agentApprovalsRouter)
 app.use('/api/agent-lab', authenticate, agentLabRouter)
 app.use('/api/agent-approvals', authenticate, agentApprovalsRouter)
-app.use('/api/dialpad', authenticate, dialpadRouter)
-app.use('/api/field', authenticate, fieldRouter)
+app.use('/api/dialpad', authenticate, denyReferralAgent, dialpadRouter)
+app.use('/api/field', authenticate, referralAgentFieldScope, fieldRouter)
 
 // Admin routes — require JWT + admin role
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)
@@ -164,6 +172,9 @@ if (isProd) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT} (${isProd ? 'production' : 'development'})`)
+  // Seed app roles at boot so new roles (e.g. Referral Agent) exist for the
+  // View-as picker without first visiting the admin page.
+  try { ensureAppRoles() } catch (e) { console.error('[startup] ensureAppRoles failed:', e) }
   // Each scheduler is wrapped so a single one's failure can't cascade
   // into the others or take down the listen. Errors get logged but
   // the server keeps responding to /api/health for Railway.

@@ -919,7 +919,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             <span class="text-slate-400">By</span>
             <span class="ml-1 text-slate-600">{{ lastUpdatedBy }}</span>
           </span>
-          <span class="ml-auto">
+          <span v-if="!auth.isReferralAgent" class="ml-auto">
             <a
               :href="qbHref"
               target="_blank"
@@ -935,7 +935,9 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
 
       <!-- Floating Chat FAB — bottom-LEFT to keep clear of the global
            FeedbackLauncher (bottom-right). Mirrors FeedbackLauncher's
-           pattern: tap pill to open, ✕ to minimize to a left-edge tab. -->
+           pattern: tap pill to open, ✕ to minimize to a left-edge tab.
+           Hidden entirely for Referral Agents (no AI chat). -->
+      <template v-if="!auth.isReferralAgent">
       <div
         v-if="!chatMinimized"
         class="fixed bottom-4 right-4 z-50 inline-flex items-stretch rounded-full bg-slate-900 text-white shadow-lg hover:shadow-xl transition-all overflow-hidden"
@@ -974,6 +976,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
       >
         <span class="text-[10px] font-semibold uppercase tracking-widest [writing-mode:vertical-rl] [text-orientation:mixed]">AI Chat</span>
       </button>
+      </template>
 
       <SmsThreadDialog
         v-if="project.phone"

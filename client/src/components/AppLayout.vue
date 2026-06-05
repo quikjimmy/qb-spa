@@ -22,6 +22,9 @@ import ProjectJumpSearch from '@/components/project-detail/ProjectJumpSearch.vue
 import { useDialpadLive, unlockAudio } from '@/lib/dialpadLive'
 import { useCommsRail } from '@/composables/useCommsRail'
 import DtIconPhone from '@dialpad/dialtone-icons/vue3/phone'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 // Initialize the singleton Dialpad live connection at the app shell level
 // so ringing alerts pop no matter which view is active. useDialpadLive()
@@ -150,26 +153,29 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
           <!-- View-as-department picker — admin only. Issues a scoped
                JWT so the rest of the app behaves as that department. -->
           <ScopeAsDepartment />
-          <!-- Global ⌘K project search — page-agnostic jump-to. Lives in the
-               topbar so coordinators can switch projects from anywhere. -->
-          <ProjectJumpSearch />
-          <!-- Live Hub toggle — sits next to the bell on every breakpoint
-               so the mobile entry point doesn't collide with the feedback
-               FAB. Badge shows current live event count so users have an
-               at-a-glance "is something happening?" cue. -->
-          <button
-            class="relative inline-flex items-center justify-center size-8 rounded-md transition-colors"
-            :class="railOpen ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
-            :title="railOpen ? 'Close Live Hub' : 'Open Live Hub'"
-            @click="toggleRail"
-          >
-            <component :is="DtIconPhone" class="w-4 h-4" />
-            <span
-              v-if="visibleEvents.length > 0 && !railOpen"
-              class="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full bg-sky-500 text-white text-[9px] font-bold tabular-nums flex items-center justify-center ring-2 ring-background"
-            >{{ visibleEvents.length > 99 ? '99+' : visibleEvents.length }}</span>
-          </button>
-          <NotificationBell />
+          <!-- Referral Agents get none of the comms/notification surfaces. -->
+          <template v-if="!auth.isReferralAgent">
+            <!-- Global ⌘K project search — page-agnostic jump-to. Lives in the
+                 topbar so coordinators can switch projects from anywhere. -->
+            <ProjectJumpSearch />
+            <!-- Live Hub toggle — sits next to the bell on every breakpoint
+                 so the mobile entry point doesn't collide with the feedback
+                 FAB. Badge shows current live event count so users have an
+                 at-a-glance "is something happening?" cue. -->
+            <button
+              class="relative inline-flex items-center justify-center size-8 rounded-md transition-colors"
+              :class="railOpen ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
+              :title="railOpen ? 'Close Live Hub' : 'Open Live Hub'"
+              @click="toggleRail"
+            >
+              <component :is="DtIconPhone" class="w-4 h-4" />
+              <span
+                v-if="visibleEvents.length > 0 && !railOpen"
+                class="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full bg-sky-500 text-white text-[9px] font-bold tabular-nums flex items-center justify-center ring-2 ring-background"
+              >{{ visibleEvents.length > 99 ? '99+' : visibleEvents.length }}</span>
+            </button>
+            <NotificationBell />
+          </template>
         </div>
       </header>
       <ScopeAsBanner />
@@ -190,10 +196,10 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
     <FeedbackLauncher />
     <!-- Sits above everything else; inner component is absent until a live
          ringing event arrives, so zero cost on render when idle. -->
-    <GlobalIncomingCallAlert />
+    <GlobalIncomingCallAlert v-if="!auth.isReferralAgent" />
     <!-- Persistent Live Hub — desktop right rail, mobile bottom sheet.
          Toggled via the topbar phone button (desktop) or floating FAB
          (mobile). Hidden by default until the user opens it. -->
-    <CommsLiveRail />
+    <CommsLiveRail v-if="!auth.isReferralAgent" />
   </SidebarProvider>
 </template>

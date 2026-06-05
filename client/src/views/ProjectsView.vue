@@ -375,11 +375,12 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <DataFreshness label="Cache" />
+        <p v-if="auth.isReferralAgent" class="text-xs text-muted-foreground">Completed projects · PTO-approved 30+ days ago</p>
       </div>
     </div>
 
-    <!-- KPI strip -->
-    <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
+    <!-- KPI strip (hidden for Referral Agents — their list is a single fixed bucket) -->
+    <div v-if="!auth.isReferralAgent" class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
       <button v-for="chip in [
         { key: 'preInstall', label: 'Pre-Inst', count: kpi.preInstall.count, kw: kpi.preInstall.kw, color: 'text-blue-600', bar: 'bg-blue-500' },
         { key: 'hold', label: 'Hold ' + kpi.hold.pct + '%', count: kpi.hold.count, kw: kpi.hold.kw, color: 'text-amber-600', bar: 'bg-amber-400' },
@@ -410,10 +411,10 @@ onBeforeUnmount(() => {
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
-      <button class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites; loadProjects()" title="Favorites">
+      <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites; loadProjects()" title="Favorites">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="showFavorites ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
       </button>
-      <button class="relative inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer" title="Filters">
+      <button v-if="!auth.isReferralAgent" class="relative inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer" title="Filters">
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
         <span v-if="drawerFilterCount > 0" class="absolute -top-1 -right-1 size-4 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center font-bold">{{ drawerFilterCount }}</span>
       </button>
