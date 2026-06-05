@@ -148,10 +148,10 @@ export async function dispatchToAri(opts: AriDispatchOptions): Promise<AriDispat
   }
 }
 
-// Default mapping: any project-attached thread routes to Ari's PC workspace.
-// As more agents come online, this becomes a router (by department, by
-// project type, etc.). Keeping it as a function makes future expansion
-// non-breaking: callers don't need to know the rules.
-export function workspaceForProjectThread(_projectId: number): string {
+// Default mapping: every thread (project-attached or general) routes to Ari's
+// 'coord' workspace for now. As more agents come online, this becomes a router
+// (by department, by project type, etc.). Keeping it as a function makes future
+// expansion non-breaking: callers don't need to know the rules.
+export function workspaceForProjectThread(_projectId: number | null): string {
   return 'coord'
 }
