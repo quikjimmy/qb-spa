@@ -523,12 +523,13 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   }
   if (!projectIdForThread && thread.project_id) projectIdForThread = thread.project_id
 
-  // 3. Ari path — project-attached threads dispatch to the OpenClaw VPS shim
-  //    (see docs/ari-chat-routing.md). Per-user identity flows through. On
-  //    success we persist Ari's reply as the assistant message and return
+  // 3. Ari path — when the shim is enabled, EVERY thread (project-attached or
+  //    general) dispatches to the OpenClaw VPS shim (see docs/ari-chat-routing.md).
+  //    Per-user identity flows through; project_id is null for general threads.
+  //    On success we persist Ari's reply as the assistant message and return
   //    early. On failure (shim down, misconfigured, timeout) we fall through
   //    to the local LLM + QB MCP path so the user still gets an answer.
-  if (projectIdForThread && ariStatus().enabled) {
+  if (ariStatus().enabled) {
     // Session key is stable per thread. We deliberately don't bake the
     // user_id in — same thread should resume the same Ari session across
     // page reloads or device switches.
