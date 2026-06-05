@@ -137,10 +137,18 @@ async function sendMessage() {
   await nextTick()
   scrollToBottom()
 
+  // Hard ceiling so the typing dots can never spin forever. Sits just above
+  // the server's 320s Ari-shim abort, so the server's own graceful "Ari
+  // unavailable" notice wins whenever it can respond; this only fires if the
+  // request truly hangs (server crash, dropped connection, proxy black-hole).
+  const REQUEST_TIMEOUT_MS = 330_000
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
   try {
     const res = await fetch(`/api/chat/threads/${thread.id}/messages`, {
       method: 'POST', headers: hdrs(),
       body: JSON.stringify({ content: text }),
+      signal: ctrl.signal,
     })
     const data = await res.json()
     messages.value = messages.value.filter(m => m.id !== optimisticUser.id)
@@ -154,9 +162,15 @@ async function sendMessage() {
     await nextTick()
     scrollToBottom()
   } catch (e) {
-    sendError.value = e instanceof Error ? e.message : 'Send failed'
+    const aborted = e instanceof DOMException && e.name === 'AbortError'
+    sendError.value = aborted
+      ? 'That took too long to respond. Ari may be busy — please try again.'
+      : (e instanceof Error ? e.message : 'Send failed')
     messages.value = messages.value.filter(m => m.id !== optimisticUser.id)
-  } finally { sending.value = false }
+  } finally {
+    clearTimeout(timer)
+    sending.value = false
+  }
 }
 
 // ─── Slash commands ──────────────────
