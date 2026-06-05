@@ -572,15 +572,35 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
       })
       return
     }
-    // Ari path failed — log and fall through. We don't surface the error to
-    // the user because the local path is about to try; a "(provider_error)"
-    // bubble appearing only when BOTH paths fail keeps the UX clean.
-    console.warn('[ari] dispatch failed, falling back to local LLM:', ari.reason, ari.error)
+    // Ari path failed. We deliberately do NOT fall back to the local LLM:
+    // it has none of Ari's context (QB MCP access, workspace memory), so it
+    // would confidently hallucinate an answer. An honest "unavailable" notice
+    // is better than a wrong one. Persist it as an assistant message flagged
+    // with `error` so the UI can render it as a system notice, and return.
+    console.warn('[ari] dispatch failed:', ari.reason, ari.error)
+    const notice = "Ari isn't responding right now. Please try again in a moment — if it keeps happening, contact your admin."
+    const noticeInsert = db.prepare(
+      `INSERT INTO chat_messages (thread_id, role, content, provider, error) VALUES (?, 'assistant', ?, 'ari', ?)`
+    ).run(id, notice, `ari_unavailable (${ari.reason}): ${ari.error}`)
+    const noticeId = Number(noticeInsert.lastInsertRowid)
+    db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
+    const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
+    const noticeMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(noticeId) as MessageRow
+    res.status(200).json({
+      ok: false,
+      reason: 'ari_unavailable',
+      error: ari.error,
+      user_message: shapeMessage(userMsg),
+      assistant_message: shapeMessage(noticeMsg),
+    })
+    return
   }
 
-  // 4. Local fallback path — same code that handles general (project-less)
-  //    threads. Build system context, fetch QB MCP tools, call the LLM with
-  //    an agentic tool loop.
+  // 4. Local LLM path — only reached when Ari is NOT configured at all
+  //    (e.g. local dev without ARI_SHIM_URL). When Ari IS enabled but a
+  //    dispatch fails, we return the "unavailable" notice above instead of
+  //    falling through, so users never get a context-less hallucinated reply.
+  //    Build system context, fetch QB MCP tools, call the LLM with a tool loop.
   const qbTools = await getQbTools()
   const mcpEnabled = qbTools.length > 0
 

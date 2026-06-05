@@ -1,0 +1,20 @@
+[Unit]
+Description=ari-chat-shim — HTTP wrapper around `claude --print` for qb-spa chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Match whatever user owns the workspace dirs + the claude session store.
+# bot.py runs as root on this box; keep parity unless you've de-privileged it.
+User=root
+WorkingDirectory=/opt/ari-chat-shim
+EnvironmentFile=/etc/ari-chat-shim/config.env
+ExecStart=/usr/bin/python3 /opt/ari-chat-shim/shim.py
+Restart=on-failure
+RestartSec=3
+# Give long claude runs room; matches ARI_SHIM_TIMEOUT_SEC + headroom.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
