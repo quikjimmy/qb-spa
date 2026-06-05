@@ -1,0 +1,22 @@
+# Add inside the existing `ai.kinhome.com { ... }` site block in the VPS Caddyfile.
+#
+# qb-spa posts to https://ai.kinhome.com/api/agent-runs/chat. The shim listens
+# on /chat, so we strip the /api/agent-runs prefix with handle_path. Long read
+# timeout because a claude run can take minutes (must be >= ARI_SHIM_TIMEOUT_SEC
+# and >= qb-spa's 320s ariClient abort).
+
+handle_path /api/agent-runs/* {
+    reverse_proxy 127.0.0.1:18790 {
+        transport http {
+            read_timeout 320s
+            write_timeout 320s
+        }
+    }
+}
+
+# After editing: `caddy validate --config /etc/caddy/Caddyfile` then
+# `systemctl reload caddy`.
+#
+# NOTE: handle_path strips the matched prefix, so /api/agent-runs/chat → /chat
+# and /api/agent-runs/health → /health at the shim. The shim also accepts the
+# un-stripped paths as a fail-safe, so a misconfigured strip won't 404.
