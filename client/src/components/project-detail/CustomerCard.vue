@@ -2,6 +2,9 @@
 import { computed } from 'vue'
 import ProjectStatusBadge from './ProjectStatusBadge.vue'
 import FundingChips from './FundingChips.vue'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 interface Project {
   record_id: number
@@ -68,10 +71,12 @@ const mapHref = computed(() => {
   const a = props.p.customer_address || ''
   return a ? `https://maps.google.com/?q=${encodeURIComponent(a)}` : ''
 })
-const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=${props.p.record_id}`)
-const driveHref = computed(() => props.p.google_drive_link || '')
-const enerfloHref = computed(() => props.p.project_number ? `https://enerflo.io/installs/${props.p.project_number}` : '')
-const arrivyHref = computed(() => props.p.max_arrivy_task_id ? `https://app.arrivy.com/tasks/${props.p.max_arrivy_task_id}` : '')
+// Referral Agents get no external deep-links (Quickbase, Drive, Enerflo,
+// Arrivy, lender portals). Returning empty/null collapses every link + divider.
+const qbHref = computed(() => auth.isReferralAgent ? '' : `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=${props.p.record_id}`)
+const driveHref = computed(() => auth.isReferralAgent ? '' : (props.p.google_drive_link || ''))
+const enerfloHref = computed(() => auth.isReferralAgent ? '' : (props.p.project_number ? `https://enerflo.io/installs/${props.p.project_number}` : ''))
+const arrivyHref = computed(() => auth.isReferralAgent ? '' : (props.p.max_arrivy_task_id ? `https://app.arrivy.com/tasks/${props.p.max_arrivy_task_id}` : ''))
 
 const utilityShort = computed(() => {
   const s = props.p.utility_company ?? ''
@@ -81,6 +86,7 @@ const utilityShort = computed(() => {
 
 // Lender link mapping — same brands as the QB Status Bar formula
 const lenderLink = computed(() => {
+  if (auth.isReferralAgent) return null
   const n = (props.p.lender ?? '').toLowerCase()
   if (!n) return null
   if (n.includes('lightreach') || n.includes('palmetto')) return { href: 'https://palmetto.finance/', label: 'Palmetto' }

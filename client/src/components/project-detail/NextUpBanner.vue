@@ -169,7 +169,7 @@ function fmtTime(d: Date): string {
       <div class="flex-1 min-w-0 flex flex-col justify-center">
         <div class="flex items-center gap-1.5 flex-wrap">
           <a
-            v-if="next.taskUrl"
+            v-if="next.taskUrl && !auth.isReferralAgent"
             :href="next.taskUrl"
             target="_blank"
             rel="noopener"

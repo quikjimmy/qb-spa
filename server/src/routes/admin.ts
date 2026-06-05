@@ -5,7 +5,7 @@ import { getRecordFilterForRole } from '../middleware/auth'
 
 const router = Router()
 
-const APP_ROLE_NAMES = ['admin', 'Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep']
+const APP_ROLE_NAMES = ['admin', 'Internal Ops', 'Customer Support', 'Field Ops', 'Customer', 'Sales Manager', 'Sales Rep', 'Referral Agent']
 
 function tableExists(name: string): boolean {
   const row = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name)
@@ -29,7 +29,7 @@ function isValidEmail(value: string): boolean {
   return EMAIL_RE.test(value.trim())
 }
 
-function ensureAppRoles(): void {
+export function ensureAppRoles(): void {
   const descriptions: Record<string, string> = {
     admin: 'Full access to all portal features and settings',
     'Internal Ops': 'Internal operations team member',
@@ -38,6 +38,7 @@ function ensureAppRoles(): void {
     Customer: 'Customer portal access',
     'Sales Manager': 'Sales management access',
     'Sales Rep': 'Sales representative access',
+    'Referral Agent': 'Read-only view of completed projects PTO-approved 30+ days ago. No Quickbase, no external links, no other app surfaces.',
   }
   const stmt = db.prepare(
     `INSERT INTO roles (name, description, is_system)

@@ -583,7 +583,7 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                 <div class="flex-1 min-w-0 flex flex-col justify-center">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <a
-                      v-if="t.taskUrl"
+                      v-if="t.taskUrl && !auth.isReferralAgent"
                       :href="t.taskUrl"
                       target="_blank"
                       rel="noopener"
@@ -750,8 +750,8 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                     <div v-else class="text-[11px] text-slate-400">No photos attached on Arrivy.</div>
                   </div>
 
-                  <!-- Open-in-Arrivy footer -->
-                  <div v-if="t.taskUrl" class="mt-3 flex items-center justify-between">
+                  <!-- Open-in-Arrivy footer (hidden for Referral Agents) -->
+                  <div v-if="t.taskUrl && !auth.isReferralAgent" class="mt-3 flex items-center justify-between">
                     <a
                       :href="t.taskUrl"
                       target="_blank"

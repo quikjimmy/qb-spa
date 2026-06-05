@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { isReferralAgent, activationWhere, canViewerSeeProject } from '../lib/referralAgent'
 
 const router = Router()
 
@@ -909,6 +910,10 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
 // Get projects from cache with search + filters
 router.get('/', (req: Request, res: Response): void => {
   const userId = req.user!.userId
+  // Referral Agents are hard-restricted to the activation bucket — their
+  // client-supplied status/pto filters are ignored and the mandatory rule
+  // is ANDed on below (it can only narrow the result set).
+  const referral = isReferralAgent(req)
   const q = (req.query['q'] as string || '').trim().toLowerCase()
   const status = req.query['status'] as string | undefined
   const office = req.query['office'] as string | undefined
@@ -979,7 +984,7 @@ router.get('/', (req: Request, res: Response): void => {
     params.push(like, like, like, phoneLike, like)
   }
 
-  if (status) { where += ' AND status = ?'; params.push(status) }
+  if (status && !referral) { where += ' AND status = ?'; params.push(status) }
   if (office) { where += ' AND sales_office = ?'; params.push(office) }
   if (coordinator) { where += ' AND coordinator = ?'; params.push(coordinator) }
   if (state) { where += ' AND state = ?'; params.push(state) }
@@ -1000,8 +1005,13 @@ router.get('/', (req: Request, res: Response): void => {
   if (permitApprTo) { where += " AND permit_approved <= ?"; params.push(permitApprTo) }
   if (inspectionFrom) { where += " AND inspection_scheduled >= ?"; params.push(inspectionFrom) }
   if (inspectionTo) { where += " AND inspection_scheduled <= ?"; params.push(inspectionTo) }
-  if (ptoFrom) { where += " AND pto_approved >= ?"; params.push(ptoFrom) }
-  if (ptoTo) { where += " AND pto_approved <= ?"; params.push(ptoTo) }
+  if (ptoFrom && !referral) { where += " AND pto_approved >= ?"; params.push(ptoFrom) }
+  if (ptoTo && !referral) { where += " AND pto_approved <= ?"; params.push(ptoTo) }
+
+  // Mandatory activation-bucket filter for Referral Agents. Applied last so
+  // it overrides everything else; pipeline KPI shortcuts below are also moot
+  // since this user never sees those controls.
+  if (referral) { where += ` AND ${activationWhere()}` }
 
   // Pipeline KPI filter — use client's local date if provided, fall back to
   // server-computed Denver date. Server fallback used to be UTC, which
@@ -1145,14 +1155,26 @@ router.get('/', (req: Request, res: Response): void => {
     is_favorite: favSet.has(item.record_id as number),
   }))
 
+  // Referral Agents see no KPI strip or filter dimensions — don't ship those
+  // org-wide aggregates in their response either.
+  const emptyKpi = {
+    preInstall: { count: 0, kw: 0 },
+    hold: { count: 0, kw: 0, pct: 0 },
+    futureInstall: { count: 0, kw: 0 },
+    wip: { count: 0, kw: 0 },
+    needInspx: { count: 0, kw: 0 },
+    needPto: { count: 0, kw: 0 },
+  }
+  const emptyFilters = { statuses: [], coordinators: [], states: [], offices: [], closers: [], lenders: [], epcs: [] }
+
   res.json({
     projects: enriched,
     total: countResult.count,
     total_kw: Math.round(countResult.total_kw * 10) / 10,
-    kpi,
+    kpi: referral ? emptyKpi : kpi,
     limit,
     offset,
-    filters: {
+    filters: referral ? emptyFilters : {
       statuses,
       coordinators,
       states,
@@ -1221,7 +1243,11 @@ router.get('/freshness', (_req: Request, res: Response): void => {
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   const recordId = parseInt(String(req.params['id'] || ''), 10)
   if (!Number.isFinite(recordId) || recordId <= 0) { res.status(400).json({ error: 'invalid id' }); return }
-  const live = req.query['live'] === '1' || req.query['live'] === undefined  // default ON
+  // Referral Agents can only open projects inside their activation bucket, and
+  // always from cache (never a live QB fetch — they have no Quickbase access).
+  const referral = isReferralAgent(req)
+  if (referral && !canViewerSeeProject(recordId)) { res.status(404).json({ error: 'not found' }); return }
+  const live = !referral && (req.query['live'] === '1' || req.query['live'] === undefined)  // default ON
   try {
     if (live) {
       const fresh = await fetchOneLive(recordId)

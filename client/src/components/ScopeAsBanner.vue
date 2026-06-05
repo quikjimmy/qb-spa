@@ -31,8 +31,8 @@ async function exit() {
     <div class="flex items-center gap-2 min-w-0">
       <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
       <span class="truncate">
-        <span class="font-semibold">Viewing as {{ auth.scope.departmentName }}</span>
-        <span class="hidden sm:inline"> — admin role bypass is off. Server enforces this department's permissions only.</span>
+        <span class="font-semibold">Viewing as {{ auth.scope.role || auth.scope.departmentName }}</span>
+        <span class="hidden sm:inline"> — admin bypass is off. Server enforces {{ auth.scope.role ? 'this role' : "this department's permissions" }} only.</span>
       </span>
     </div>
     <button

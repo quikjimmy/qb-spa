@@ -37,7 +37,9 @@ const route = useRoute()
 const auth = useAuthStore()
 const ticketBadges = useTicketBadgesStore()
 
-onMounted(() => ticketBadges.startPolling())
+// Referral Agents never see the Tickets nav, so skip its badge polling
+// (the endpoint is 403 for them anyway).
+onMounted(() => { if (!auth.isReferralAgent) ticketBadges.startPolling() })
 
 const initials = computed(() => {
   if (!auth.user?.name) return '?'
@@ -132,8 +134,28 @@ function isActive(path: string) {
         <SidebarGroupLabel>Navigation</SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
+            <!-- Referral Agent: minimal nav — Home + Projects only. -->
+            <template v-if="auth.isReferralAgent">
+              <SidebarMenuItem>
+                <SidebarMenuButton as-child :is-active="isActive('/')">
+                  <RouterLink to="/">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                    <span>Home</span>
+                  </RouterLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton as-child :is-active="isActive('/projects')">
+                  <RouterLink to="/projects">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                    <span>Projects</span>
+                  </RouterLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </template>
+
             <!-- Home, Feed -->
-            <SidebarMenuItem v-for="item in navTop" :key="item.to">
+            <SidebarMenuItem v-for="item in navTop" v-show="!auth.isReferralAgent" :key="item.to">
               <SidebarMenuButton as-child :is-active="isActive(item.to)">
                 <RouterLink :to="item.to">
                   <svg v-if="item.icon === 'home'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -144,7 +166,7 @@ function isActive(path: string) {
             </SidebarMenuItem>
 
             <!-- Pipeline (collapsible with sub-menu, funnel icon) -->
-            <Collapsible as-child :default-open="projectsOpen">
+            <Collapsible v-if="!auth.isReferralAgent" as-child :default-open="projectsOpen">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
                   <SidebarMenuButton :is-active="projectsOpen">
@@ -166,7 +188,7 @@ function isActive(path: string) {
             </Collapsible>
 
             <!-- Funding (collapsible department, dollar-sign icon) -->
-            <Collapsible v-if="showFunding" as-child :default-open="fundingOpen">
+            <Collapsible v-if="showFunding && !auth.isReferralAgent" as-child :default-open="fundingOpen">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
                   <SidebarMenuButton :is-active="fundingOpen">
@@ -188,7 +210,7 @@ function isActive(path: string) {
             </Collapsible>
 
             <!-- Agents, Tickets -->
-            <SidebarMenuItem v-for="item in navBottom" :key="item.to">
+            <SidebarMenuItem v-for="item in navBottom" v-show="!auth.isReferralAgent" :key="item.to">
               <SidebarMenuButton as-child :is-active="isActive(item.to)">
                 <RouterLink :to="item.to">
                   <img v-if="item.icon === 'chat'" src="/img/ai-chat-icon.png" alt="" class="w-4 h-4 shrink-0" aria-hidden="true" />

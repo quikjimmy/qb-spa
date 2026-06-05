@@ -5,6 +5,9 @@ import { fmtFull } from '@/lib/milestoneStrip'
 import { STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 import IntakeChecklist from './IntakeChecklist.vue'
 import RetentionCard from './RetentionCard.vue'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 interface FeedRow {
   id: string | number
@@ -140,7 +143,7 @@ function fmtTime(s: string): string {
         :class="arrivyInfo.pillCls"
       >{{ arrivyInfo.label }}</span>
       <a
-        v-if="arrivyTaskUrl"
+        v-if="arrivyTaskUrl && !auth.isReferralAgent"
         :href="arrivyTaskUrl"
         target="_blank"
         rel="noopener"

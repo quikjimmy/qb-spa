@@ -17,7 +17,9 @@ interface Permission {
   can_write: number
 }
 
-interface Scope { departmentId: number; departmentName: string }
+// A View-as scope is either a department (permission-based) or a role
+// (role-based). Exactly one of the two flavours is populated.
+interface Scope { departmentId?: number; departmentName?: string; role?: string }
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem('token'))
@@ -36,6 +38,12 @@ export const useAuthStore = defineStore('auth', () => {
   // scoped so the test session reflects what a department member sees.
   const isAdmin = computed(() => isAccountAdmin.value && !scope.value)
   const isScoped = computed(() => scope.value != null)
+  // Referral Agent — read-only, activation-bucket-only. Drives the minimal
+  // nav, the router allowlist, and external-link suppression. Admins are
+  // never treated as referral agents so they retain full access.
+  const isReferralAgent = computed(
+    () => (user.value?.roles.includes('Referral Agent') ?? false) && !isAdmin.value,
+  )
 
   // True if the user has a per-view read permission. Admin bypass when
   // not scoped. Mirrors `requireViewPermission` on the server.
@@ -99,6 +107,25 @@ export const useAuthStore = defineStore('auth', () => {
     await fetchPermissions()
   }
 
+  // Admin-only: scope the session to a single role (e.g. "Referral Agent").
+  // Server re-issues a JWT whose roles claim IS that role, so role-based
+  // gating + UI behave exactly as that role. Exit via clearScope().
+  async function scopeToRole(role: string) {
+    if (!token.value) return
+    const res = await fetch('/api/auth/scope/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ role }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Failed to set role scope')
+    token.value = data.token
+    localStorage.setItem('token', data.token)
+    user.value = data.user
+    scope.value = data.scope
+    await fetchPermissions()
+  }
+
   async function clearScope() {
     if (!token.value) return
     const res = await fetch('/api/auth/scope/clear', {
@@ -155,8 +182,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     token, user, permissions, scope,
-    isAuthenticated, isAdmin, isAccountAdmin, isScoped,
+    isAuthenticated, isAdmin, isAccountAdmin, isScoped, isReferralAgent,
     hasViewPermission, setAuth, login, register, logout, fetchUser,
-    scopeToDepartment, clearScope,
+    scopeToDepartment, scopeToRole, clearScope,
   }
 })

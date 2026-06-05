@@ -296,6 +296,16 @@ router.beforeEach(async (to) => {
   if (!auth.user && auth.token) {
     try { await auth.fetchUser() } catch { /* ignore — fall through as non-admin */ }
   }
+  // Referral Agents get a tiny slice of the app: the minimal Home tile, the
+  // (server-filtered) projects list, and project detail. Anything else bounces
+  // to Home. Server routes enforce this too — this just keeps the URLs out of
+  // reach in the UI.
+  if (auth.isReferralAgent) {
+    const allowed = new Set(['home', 'projects', 'project-detail'])
+    if (typeof to.name === 'string' && !allowed.has(to.name)) {
+      return { name: 'home' }
+    }
+  }
   if (shouldShowAgentsTeaser(to.path, to.query as Record<string, unknown>, auth.isAdmin)) {
     return { path: '/agents/coming-soon' }
   }

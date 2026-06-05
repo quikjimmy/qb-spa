@@ -17,6 +17,10 @@ export interface AuthPayload {
   // grants — so a scoped admin sees exactly what a Funding-team
   // member would see, app-wide. Cleared by issuing a fresh JWT.
   actAsDepartmentId?: number
+  // Admin-only "View as role": the token's `roles` is replaced by this single
+  // role so role-based gating (requireRole, isReferralAgent) reflects it.
+  // Permission/department checks are unaffected (resolved by DB userId).
+  actAsRole?: string
 }
 
 declare global {

@@ -105,6 +105,14 @@ function attachmentHref(a: Attachment): string {
   return `https://${QB_REALM}/db/br9kwm8ke?a=dr&rid=${a.record_id}`
 }
 
+// Referral Agents have no Quickbase access — for internal attachments (which
+// only have a QB-record link) render the row as plain text (no href) rather
+// than a click-through into QB. External document links still open normally.
+function rowHref(a: Attachment): string | undefined {
+  if (auth.isReferralAgent && !a.link_url) return undefined
+  return attachmentHref(a)
+}
+
 function isExternal(a: Attachment): boolean {
   return !!a.link_url && !a.file_name
 }
@@ -196,11 +204,12 @@ function relatedContext(a: Attachment): string {
         class="py-2.5"
       >
         <a
-          :href="attachmentHref(a)"
+          :href="rowHref(a)"
           target="_blank"
           rel="noopener"
-          class="flex items-center gap-3 group cursor-pointer"
-          :title="(a.link_url || a.file_name) ?? 'Open in Quickbase'"
+          class="flex items-center gap-3 group"
+          :class="rowHref(a) ? 'cursor-pointer' : 'cursor-default'"
+          :title="(a.link_url || a.file_name) ?? 'Document'"
         >
           <!-- Thumbnail / type chip -->
           <div class="size-9 rounded-md bg-slate-50 flex items-center justify-center shrink-0 overflow-hidden ring-1 ring-slate-100">
