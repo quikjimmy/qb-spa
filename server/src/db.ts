@@ -349,6 +349,15 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)`)
 
+// Async chat: an assistant message starts 'pending' (POST returns immediately),
+// then a background runner flips it to 'completed' or 'failed'. Existing rows
+// predate async and are already final, so they default to 'completed'.
+{
+  const cols = db.prepare(`PRAGMA table_info(chat_messages)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('status')) db.exec(`ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'`)
+}
+
 // Per-thread model + provider preference (sticks across messages once set via /model)
 {
   const cols = db.prepare(`PRAGMA table_info(chat_threads)`).all() as Array<{ name: string }>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
@@ -75,6 +76,34 @@ const threadsBySpace = computed(() => {
   return map
 })
 
+// Per-thread unread bot responses (red dots in the sidebar). Derived from
+// unread chat_complete notifications; polled so it stays fresh, and cleared
+// optimistically when a thread is opened.
+const unreadThreadIds = ref<Set<number>>(new Set())
+let unreadPoll: ReturnType<typeof setInterval> | null = null
+async function loadUnreadThreads() {
+  if (!auth.token) return
+  try {
+    const res = await fetch('/api/chat/unread-threads', { headers: hdrs() })
+    if (res.ok) unreadThreadIds.value = new Set<number>((await res.json()).threadIds || [])
+  } catch { /* silent */ }
+}
+function threadHasUnread(id: number): boolean { return unreadThreadIds.value.has(id) }
+function spaceHasUnread(spaceId: number): boolean {
+  return (threadsBySpace.value.get(spaceId) || []).some(t => unreadThreadIds.value.has(t.id))
+}
+function clearThreadUnread(id: number) {
+  if (!unreadThreadIds.value.has(id)) return
+  const next = new Set(unreadThreadIds.value)
+  next.delete(id)
+  unreadThreadIds.value = next
+}
+function ackThread(id: number) {
+  if (!unreadThreadIds.value.has(id)) return
+  fetch(`/api/chat/threads/${id}/ack`, { method: 'POST', headers: hdrs() }).catch(() => {})
+  clearThreadUnread(id)
+}
+
 async function loadAll() {
   const [tRes, sRes, qRes] = await Promise.all([
     fetch('/api/chat/threads', { headers: hdrs() }),
@@ -109,6 +138,7 @@ function selectThread(t: { id: number; space_id: number | null }) {
   activeThreadId.value = t.id
   activeSpaceId.value = t.space_id
   mobileDrawerOpen.value = false
+  ackThread(t.id)  // opening a thread clears its unread bot-response dot
 }
 
 function selectGeneral() {
@@ -192,7 +222,29 @@ const paneMode = computed<'thread' | 'project' | 'welcome'>(() => {
   return 'welcome'
 })
 
-onMounted(loadAll)
+// Deep-link support: a notification (e.g. "Ari answered") links to
+// /chat?thread=<id>. Open that thread once threads are loaded, and react if the
+// query changes while already on the page.
+const route = useRoute()
+function applyThreadQuery() {
+  const q = route.query.thread
+  if (q == null) return
+  const tid = parseInt(String(q), 10)
+  if (Number.isNaN(tid)) return
+  const t = threads.value.find(x => x.id === tid)
+  activeThreadId.value = tid
+  activeSpaceId.value = t ? t.space_id : null
+  clearThreadUnread(tid)  // arrived via bell/deep-link → drop the dot (bell already marked read)
+}
+
+onMounted(async () => {
+  await loadAll()
+  applyThreadQuery()
+  loadUnreadThreads()
+  unreadPoll = setInterval(loadUnreadThreads, 25000)
+})
+onUnmounted(() => { if (unreadPoll) clearInterval(unreadPoll) })
+watch(() => route.query.thread, applyThreadQuery)
 </script>
 
 <template>
@@ -228,7 +280,10 @@ onMounted(loadAll)
                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="text-foreground/60"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
               </div>
               <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{{ s.name }}</div>
+                <div class="text-sm font-medium truncate flex items-center gap-1.5">
+                  <span class="truncate">{{ s.name }}</span>
+                  <span v-if="spaceHasUnread(s.id)" class="size-2 rounded-full bg-red-500 shrink-0" title="New response in this project"></span>
+                </div>
                 <div class="text-[10px] text-muted-foreground/70">{{ s.thread_count }} chat{{ s.thread_count === 1 ? '' : 's' }}</div>
               </div>
             </button>
@@ -265,7 +320,10 @@ onMounted(loadAll)
               : 'hover:bg-foreground/[0.04]'"
           >
             <div class="flex items-baseline justify-between gap-2">
-              <div class="text-sm font-medium truncate flex-1 min-w-0">{{ t.title }}</div>
+              <div class="text-sm font-medium truncate flex-1 min-w-0 flex items-center gap-1.5">
+                <span v-if="threadHasUnread(t.id)" class="size-2 rounded-full bg-red-500 shrink-0" title="New response"></span>
+                <span class="truncate">{{ t.title }}</span>
+              </div>
               <div class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ fmtRelativeTime(t.last_message_at || t.created_at) }}</div>
             </div>
           </button>
@@ -304,6 +362,7 @@ onMounted(loadAll)
                   :class="activeSpaceId === s.id ? 'bg-foreground/[0.06]' : 'hover:bg-foreground/[0.03]'"
                 >
                   <span class="text-sm font-medium truncate flex-1">{{ s.name }}</span>
+                  <span v-if="spaceHasUnread(s.id)" class="size-2 rounded-full bg-red-500 shrink-0"></span>
                   <span class="text-[10px] text-muted-foreground">{{ s.thread_count }}</span>
                 </button>
               </div>
@@ -314,7 +373,10 @@ onMounted(loadAll)
                   class="w-full text-left rounded-lg px-3 py-2"
                   :class="activeThreadId === t.id ? 'bg-foreground/[0.06]' : 'hover:bg-foreground/[0.03]'"
                 >
-                  <div class="text-sm font-medium truncate">{{ t.title }}</div>
+                  <div class="text-sm font-medium truncate flex items-center gap-1.5">
+                    <span v-if="threadHasUnread(t.id)" class="size-2 rounded-full bg-red-500 shrink-0"></span>
+                    <span class="truncate">{{ t.title }}</span>
+                  </div>
                   <div class="text-[10px] text-muted-foreground tabular-nums">{{ fmtRelativeTime(t.last_message_at || t.created_at) }}</div>
                 </button>
               </div>
@@ -410,6 +472,7 @@ onMounted(loadAll)
           :default-space-id="activeSpaceId"
           @thread-created="onThreadCreated"
           @thread-updated="onThreadUpdated"
+          @thread-read="clearThreadUnread"
         />
       </div>
     </main>

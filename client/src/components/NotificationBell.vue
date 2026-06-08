@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { playChime, unlockChime } from '@/lib/chime'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -28,6 +29,13 @@ const unreadCount = ref(0)
 const open = ref(false)
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
+// Chat-completion chime: when the unread count rises and a fresh chat_complete
+// is the cause, play a sound. Baseline-primed on mount so pre-existing ones
+// don't ding, and tracked by id so we ding each new one exactly once.
+let lastUnread = 0
+let lastChimedChatId = 0
+let primed = false
+
 function hdrs() {
   return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' }
 }
@@ -39,8 +47,45 @@ async function fetchUnreadCount() {
     if (res.ok) {
       const data = await res.json()
       unreadCount.value = data.count
+      if (primed && data.count > lastUnread) await maybeChimeForChat()
+      lastUnread = data.count
     }
   } catch { /* silent */ }
+}
+
+// Fetch the list once (only when the count went up) and chime if the newest
+// unread notification is a chat completion we haven't dinged for yet.
+async function maybeChimeForChat() {
+  try {
+    const res = await fetch('/api/notifications?limit=10', { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    const list: Notification[] = data.notifications || []
+    const newestChat = list.find(n => n.type === 'chat_complete' && !n.is_read)
+    if (newestChat && newestChat.id > lastChimedChatId) {
+      lastChimedChatId = newestChat.id
+      playChime()
+    }
+  } catch { /* silent */ }
+}
+
+// Establish a baseline so we never ding for notifications that already existed
+// when the bell mounted.
+async function primeBaseline() {
+  if (!auth.token) { primed = true; return }
+  try {
+    const res = await fetch('/api/notifications?limit=15', { headers: hdrs() })
+    if (res.ok) {
+      const data = await res.json()
+      const list: Notification[] = data.notifications || []
+      notifications.value = list
+      unreadCount.value = data.unreadCount
+      lastUnread = data.unreadCount
+      const newestChat = list.find(n => n.type === 'chat_complete')
+      lastChimedChatId = newestChat ? newestChat.id : 0
+    }
+  } catch { /* silent */ }
+  primed = true
 }
 
 async function fetchNotifications() {
@@ -80,7 +125,7 @@ function handleClick(notif: Notification) {
 
 function onOpen(isOpen: boolean) {
   open.value = isOpen
-  if (isOpen) fetchNotifications()
+  if (isOpen) { unlockChime(); fetchNotifications() }
 }
 
 function timeAgo(dateStr: string) {
@@ -99,10 +144,11 @@ const typeIcon: Record<string, string> = {
   warning: 'text-amber-500',
   error: 'text-red-500',
   agent: 'text-purple-500',
+  chat_complete: 'text-indigo-500',
 }
 
 onMounted(() => {
-  fetchUnreadCount()
+  primeBaseline()
   pollInterval = setInterval(fetchUnreadCount, 30000)
 })
 

@@ -5,6 +5,7 @@ import { getDefaultKeyFor, type ProviderId } from '../lib/userProviderKeys'
 import { getSnapshot } from '../lib/providerRateLimits'
 import { getQbTools, callQbTool, qbMcpStatus } from '../lib/qbMcp'
 import { dispatchToAri, ariStatus, workspaceForProjectThread } from '../lib/ariClient'
+import { notifyChatComplete } from '../lib/notify'
 
 const router = Router()
 
@@ -47,6 +48,7 @@ interface MessageRow {
   used_own_key: number | null
   tool_calls_json: string | null
   error: string | null
+  status: string
   created_at: string
 }
 
@@ -267,7 +269,7 @@ function shapeMessage(m: MessageRow): Record<string, unknown> {
     tokens_in: m.tokens_in, tokens_out: m.tokens_out, cost_cents: m.cost_cents,
     used_own_key: m.used_own_key === 1,
     tool_calls: toolCalls,
-    error: m.error, created_at: m.created_at,
+    error: m.error, status: m.status, created_at: m.created_at,
   }
 }
 
@@ -487,7 +489,7 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   const thread = db.prepare(`SELECT * FROM chat_threads WHERE id = ? AND user_id = ?`).get(id, userId) as ThreadRow | undefined
   if (!thread) { res.status(404).json({ error: 'Thread not found' }); return }
 
-  const { content, prefer_provider, model } = req.body as { content?: string; prefer_provider?: 'anthropic' | 'openai' | 'ollama'; model?: string }
+  const { content, prefer_provider, model, notify } = req.body as { content?: string; prefer_provider?: 'anthropic' | 'openai' | 'ollama'; model?: string; notify?: boolean }
   const text = (content || '').trim()
   if (!text) { res.status(400).json({ error: 'content is required' }); return }
   if (text.length > 8000) { res.status(400).json({ error: 'Message too long (8000 char max)' }); return }
@@ -523,152 +525,211 @@ router.post('/threads/:id/messages', async (req: Request, res: Response): Promis
   }
   if (!projectIdForThread && thread.project_id) projectIdForThread = thread.project_id
 
-  // 3. Ari path — when the shim is enabled, EVERY thread (project-attached or
-  //    general) dispatches to the OpenClaw VPS shim (see docs/ari-chat-routing.md).
-  //    Per-user identity flows through; project_id is null for general threads.
-  //    On success we persist Ari's reply as the assistant message and return
-  //    early. On failure (shim down, misconfigured, timeout) we fall through
-  //    to the local LLM + QB MCP path so the user still gets an answer.
-  if (ariStatus().enabled) {
-    // Session key is stable per thread. We deliberately don't bake the
-    // user_id in — same thread should resume the same Ari session across
-    // page reloads or device switches.
-    let sessionKey = thread.openclaw_session_key
-    if (!sessionKey) {
-      sessionKey = `qbspa-thread-${id}`
-      db.prepare(`UPDATE chat_threads SET openclaw_session_key = ? WHERE id = ?`).run(sessionKey, id)
-    }
-
-    const ari = await dispatchToAri({
-      workspace: workspaceForProjectThread(projectIdForThread),
-      content: text,
-      sessionKey,
-      actor: {
-        email: req.user!.email,
-        roles: req.user!.roles,
-        project_id: projectIdForThread,
-      },
-    })
-
-    if (ari.ok) {
-      // Persist with provider='ari' so we can tell at a glance in chat_messages
-      // (and on the API) which path served each turn.
-      const assistantInsert = db.prepare(
-        `INSERT INTO chat_messages (thread_id, role, content, provider, model, tokens_in, tokens_out, cost_cents, used_own_key)
-         VALUES (?, 'assistant', ?, 'ari', ?, ?, ?, 0, 0)`
-      ).run(id, ari.content, workspaceForProjectThread(projectIdForThread), ari.tokens_in ?? 0, ari.tokens_out ?? 0)
-      const assistantId = Number(assistantInsert.lastInsertRowid)
-      db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
-
-      const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
-      const assistantMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(assistantId) as MessageRow
-      const updatedThread = db.prepare(`SELECT * FROM chat_threads WHERE id = ?`).get(id) as ThreadRow
-
-      res.json({
-        ok: true,
-        user_message: shapeMessage(userMsg),
-        assistant_message: shapeMessage(assistantMsg),
-        thread: shapeThread(updatedThread),
-      })
-      return
-    }
-    // Ari path failed. We deliberately do NOT fall back to the local LLM:
-    // it has none of Ari's context (QB MCP access, workspace memory), so it
-    // would confidently hallucinate an answer. An honest "unavailable" notice
-    // is better than a wrong one. Persist it as an assistant message flagged
-    // with `error` so the UI can render it as a system notice, and return.
-    console.warn('[ari] dispatch failed:', ari.reason, ari.error)
-    const notice = "Ari isn't responding right now. Please try again in a moment — if it keeps happening, contact your admin."
-    const noticeInsert = db.prepare(
-      `INSERT INTO chat_messages (thread_id, role, content, provider, error) VALUES (?, 'assistant', ?, 'ari', ?)`
-    ).run(id, notice, `ari_unavailable (${ari.reason}): ${ari.error}`)
-    const noticeId = Number(noticeInsert.lastInsertRowid)
-    db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
-    const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
-    const noticeMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(noticeId) as MessageRow
-    res.status(200).json({
-      ok: false,
-      reason: 'ari_unavailable',
-      error: ari.error,
-      user_message: shapeMessage(userMsg),
-      assistant_message: shapeMessage(noticeMsg),
-    })
-    return
-  }
-
-  // 4. Local LLM path — only reached when Ari is NOT configured at all
-  //    (e.g. local dev without ARI_SHIM_URL). When Ari IS enabled but a
-  //    dispatch fails, we return the "unavailable" notice above instead of
-  //    falling through, so users never get a context-less hallucinated reply.
-  //    Build system context, fetch QB MCP tools, call the LLM with a tool loop.
-  const qbTools = await getQbTools()
-  const mcpEnabled = qbTools.length > 0
-
-  const history = db.prepare(
-    `SELECT role, content FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT ?`
-  ).all(id, MAX_HISTORY) as Array<{ role: string; content: string }>
-  history.reverse()
-
-  const messages: ChatMessage[] = [
-    { role: 'system', content: buildSystemContext(thread, mcpEnabled) },
-    ...history.map(h => ({ role: h.role as ChatMessage['role'], content: h.content })),
-  ]
-
-  // Body params override; otherwise fall back to the thread's stored preference.
-  // Low temperature for chatbot — factual answers grounded in injected context
-  // rather than creative completion. Drops hallucination rate noticeably on smaller models.
-  // When QB MCP is wired, the model gets read-only QuickBase tools and the call
-  // runs as an agentic loop (up to 5 tool round-trips).
-  const llm = await callUserLlm({
-    userId,
-    feature: 'chatbot',
-    messages,
-    preferProvider: prefer_provider || (thread.preferred_provider as ProviderId | null) || undefined,
-    model: model || thread.preferred_model || undefined,
-    maxOutputTokens: 800,
-    temperature: 0.1,
-    ...(mcpEnabled ? { tools: qbTools, executeTool: callQbTool } : {}),
-  })
-
-  if (!llm.ok) {
-    // Persist a failed assistant message so the user sees what happened in the thread.
-    const errInsert = db.prepare(
-      `INSERT INTO chat_messages (thread_id, role, content, error) VALUES (?, 'assistant', ?, ?)`
-    ).run(id, `(${llm.reason}) ${llm.error}`, llm.error)
-    const errId = Number(errInsert.lastInsertRowid)
-    const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
-    const errMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(errId) as MessageRow
-    res.status(200).json({
-      ok: false,
-      reason: llm.reason,
-      error: llm.error,
-      user_message: shapeMessage(userMsg),
-      assistant_message: shapeMessage(errMsg),
-    })
-    return
-  }
-
-  // 5. Persist the assistant reply with cost metadata + any tool calls the model
-  //    made (for transparency / debugging — the context-preview endpoint and
-  //    future per-message UI can render these inline).
-  const toolCallsJson = llm.tool_calls.length ? JSON.stringify(llm.tool_calls) : null
-  const assistantInsert = db.prepare(
-    `INSERT INTO chat_messages (thread_id, role, content, provider, model, tokens_in, tokens_out, cost_cents, used_own_key, tool_calls_json)
-     VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, llm.output, llm.provider, llm.model, llm.tokens_in, llm.tokens_out, llm.cost_cents, llm.used_own_key ? 1 : 0, toolCallsJson)
-  const assistantId = Number(assistantInsert.lastInsertRowid)
-  db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(id)
+  // 3. Insert a PENDING assistant message and return immediately. The real
+  //    Ari/LLM work runs in the background (runAssistantCompletion) and flips
+  //    this row to 'completed' / 'failed'. This frees the HTTP request from the
+  //    multi-minute round-trip and lets us ping the user when it lands.
+  const pendingInsert = db.prepare(
+    `INSERT INTO chat_messages (thread_id, role, content, provider, status)
+     VALUES (?, 'assistant', '', ?, 'pending')`
+  ).run(id, ariStatus().enabled ? 'ari' : null)
+  const assistantMsgId = Number(pendingInsert.lastInsertRowid)
 
   const userMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(userMsgId) as MessageRow
-  const assistantMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(assistantId) as MessageRow
+  const pendingMsg = db.prepare(`SELECT * FROM chat_messages WHERE id = ?`).get(assistantMsgId) as MessageRow
   const updatedThread = db.prepare(`SELECT * FROM chat_threads WHERE id = ?`).get(id) as ThreadRow
 
   res.json({
     ok: true,
     user_message: shapeMessage(userMsg),
-    assistant_message: shapeMessage(assistantMsg),
+    assistant_message: shapeMessage(pendingMsg),
     thread: shapeThread(updatedThread),
   })
+
+  // Fire-and-forget. The runner catches its own errors and writes them to the
+  // message row, so a rejection here would be a bug — guard anyway.
+  void runAssistantCompletion({
+    thread,
+    assistantMsgId,
+    userId,
+    userEmail: req.user!.email,
+    userRoles: req.user!.roles,
+    text,
+    projectIdForThread,
+    preferProvider: prefer_provider || (thread.preferred_provider as ProviderId | null) || undefined,
+    model: model || thread.preferred_model || undefined,
+    notify: notify === true,
+  }).catch(e => console.error('[chat] runAssistantCompletion rejected:', e))
+})
+
+// Background runner — does the actual Ari dispatch (or local-LLM fallback for
+// dev where Ari isn't configured) for a pending assistant message, flips the
+// row to completed/failed, and records a chat_complete notification. Never
+// throws: any failure is written into the message row so the user sees it.
+async function runAssistantCompletion(opts: {
+  thread: ThreadRow
+  assistantMsgId: number
+  userId: number
+  userEmail: string
+  userRoles: string[]
+  text: string
+  projectIdForThread: number | null
+  preferProvider?: ProviderId
+  model?: string
+  notify: boolean
+}): Promise<void> {
+  const { thread, assistantMsgId, userId, userEmail, userRoles, text, projectIdForThread, notify } = opts
+  const id = thread.id
+  try {
+    // Ari path — every thread when the shim is enabled.
+    if (ariStatus().enabled) {
+      let sessionKey = thread.openclaw_session_key
+      if (!sessionKey) {
+        sessionKey = `qbspa-thread-${id}`
+        db.prepare(`UPDATE chat_threads SET openclaw_session_key = ? WHERE id = ?`).run(sessionKey, id)
+      }
+      const ari = await dispatchToAri({
+        workspace: workspaceForProjectThread(projectIdForThread),
+        content: text,
+        sessionKey,
+        actor: { email: userEmail, roles: userRoles, project_id: projectIdForThread },
+      })
+      if (ari.ok) {
+        finalizeMessage({
+          assistantMsgId, threadId: id, userId, notify,
+          status: 'completed', content: ari.content, provider: 'ari',
+          model: workspaceForProjectThread(projectIdForThread),
+          tokens_in: ari.tokens_in ?? 0, tokens_out: ari.tokens_out ?? 0,
+        })
+        return
+      }
+      // Ari failed. We deliberately do NOT fall back to the local LLM — it has
+      // none of Ari's context, so it would hallucinate. Honest notice instead.
+      console.warn('[ari] dispatch failed:', ari.reason, ari.error)
+      finalizeMessage({
+        assistantMsgId, threadId: id, userId, notify,
+        status: 'failed', provider: 'ari',
+        content: "Ari isn't responding right now. Please try again in a moment — if it keeps happening, contact your admin.",
+        error: `ari_unavailable (${ari.reason}): ${ari.error}`,
+      })
+      return
+    }
+
+    // Local LLM path — only when Ari is NOT configured at all (e.g. local dev
+    // without ARI_SHIM_URL). Exclude the empty pending row from history.
+    const qbTools = await getQbTools()
+    const mcpEnabled = qbTools.length > 0
+    const history = db.prepare(
+      `SELECT role, content FROM chat_messages WHERE thread_id = ? AND id < ? AND content != '' ORDER BY id DESC LIMIT ?`
+    ).all(id, assistantMsgId, MAX_HISTORY) as Array<{ role: string; content: string }>
+    history.reverse()
+    const messages: ChatMessage[] = [
+      { role: 'system', content: buildSystemContext(thread, mcpEnabled) },
+      ...history.map(h => ({ role: h.role as ChatMessage['role'], content: h.content })),
+    ]
+    const llm = await callUserLlm({
+      userId,
+      feature: 'chatbot',
+      messages,
+      preferProvider: opts.preferProvider,
+      model: opts.model,
+      maxOutputTokens: 800,
+      temperature: 0.1,
+      ...(mcpEnabled ? { tools: qbTools, executeTool: callQbTool } : {}),
+    })
+    if (!llm.ok) {
+      finalizeMessage({
+        assistantMsgId, threadId: id, userId, notify,
+        status: 'failed', content: `(${llm.reason}) ${llm.error}`, error: llm.error,
+      })
+      return
+    }
+    finalizeMessage({
+      assistantMsgId, threadId: id, userId, notify,
+      status: 'completed', content: llm.output, provider: llm.provider, model: llm.model,
+      tokens_in: llm.tokens_in, tokens_out: llm.tokens_out, cost_cents: llm.cost_cents,
+      used_own_key: llm.used_own_key,
+      tool_calls_json: llm.tool_calls.length ? JSON.stringify(llm.tool_calls) : null,
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('[chat] completion runner crashed:', msg)
+    finalizeMessage({
+      assistantMsgId, threadId: id, userId, notify,
+      status: 'failed', content: 'Something went wrong generating a reply. Please try again.', error: msg,
+    })
+  }
+}
+
+// Write the final content into the pending assistant row and drop a
+// chat_complete notification. The notification always lands (collapsed
+// per-thread while unread) so both "notify me" and auto-notify-when-away work;
+// the client acks (marks read) when it showed the answer inline without opt-in.
+function finalizeMessage(opts: {
+  assistantMsgId: number
+  threadId: number
+  userId: number
+  notify: boolean
+  status: 'completed' | 'failed'
+  content: string
+  provider?: string | null
+  model?: string | null
+  tokens_in?: number
+  tokens_out?: number
+  cost_cents?: number
+  used_own_key?: boolean
+  tool_calls_json?: string | null
+  error?: string | null
+}): void {
+  db.prepare(
+    `UPDATE chat_messages
+       SET content = ?, provider = ?, model = ?, tokens_in = ?, tokens_out = ?,
+           cost_cents = ?, used_own_key = ?, tool_calls_json = ?, error = ?, status = ?
+     WHERE id = ?`
+  ).run(
+    opts.content, opts.provider ?? null, opts.model ?? null,
+    opts.tokens_in ?? 0, opts.tokens_out ?? 0, opts.cost_cents ?? 0,
+    opts.used_own_key ? 1 : 0, opts.tool_calls_json ?? null, opts.error ?? null,
+    opts.status, opts.assistantMsgId,
+  )
+  db.prepare(`UPDATE chat_threads SET last_message_at = datetime('now') WHERE id = ?`).run(opts.threadId)
+  try {
+    const preview = opts.content.replace(/\s+/g, ' ').trim().slice(0, 90)
+    notifyChatComplete({
+      userId: opts.userId,
+      threadId: opts.threadId,
+      title: opts.status === 'failed' ? 'Ari couldn’t answer your question' : 'Ari answered your question',
+      body: preview || null,
+    })
+  } catch (e) {
+    console.warn('[chat] notification insert failed:', e instanceof Error ? e.message : e)
+  }
+}
+
+// POST /api/chat/threads/:id/ack — mark this thread's unread chat_complete
+// notifications read. The client calls this when it has shown the completed
+// answer inline and the user didn't opt into a ping, keeping the bell quiet.
+router.post('/threads/:id/ack', (req: Request, res: Response): void => {
+  const userId = req.user!.userId
+  const id = parseInt(String(req.params['id']), 10)
+  db.prepare(
+    `UPDATE notifications SET is_read = 1 WHERE user_id = ? AND type = 'chat_complete' AND link = ? AND is_read = 0`
+  ).run(userId, `/chat?thread=${id}`)
+  res.json({ ok: true })
+})
+
+// GET /api/chat/unread-threads — thread ids that currently have an unread bot
+// response, derived from unread chat_complete notifications. Drives the red
+// unread dots in the chat sidebar so users can clear them without the bell.
+router.get('/unread-threads', (req: Request, res: Response): void => {
+  const userId = req.user!.userId
+  const rows = db.prepare(
+    `SELECT link FROM notifications WHERE user_id = ? AND type = 'chat_complete' AND is_read = 0`
+  ).all(userId) as Array<{ link: string | null }>
+  const threadIds = rows
+    .map(r => { const m = /thread=(\d+)/.exec(r.link || ''); return m ? parseInt(m[1], 10) : null })
+    .filter((x): x is number => x != null)
+  res.json({ threadIds })
 })
 
 // GET /api/chat/mcp-probe — one-shot diagnostic for the QuickBase MCP wiring.

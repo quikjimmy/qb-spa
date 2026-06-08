@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import ProjectStatusBadge from '@/components/project-detail/ProjectStatusBadge.vue'
 import ModelPicker from '@/components/chat/ModelPicker.vue'
+import { playChime, unlockChime, chimeEnabled, setChimeEnabled } from '@/lib/chime'
 
 interface Thread {
   id: number
@@ -30,6 +31,7 @@ interface Message {
   cost_cents: number
   used_own_key: boolean
   error: string | null
+  status?: 'pending' | 'completed' | 'failed'
   created_at: string
 }
 
@@ -55,6 +57,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'thread-created', thread: Thread): void
   (e: 'thread-updated', thread: Thread): void
+  (e: 'thread-read', threadId: number): void
 }>()
 
 const auth = useAuthStore()
@@ -67,6 +70,83 @@ const sending = ref(false)
 const sendError = ref('')
 const messagesScroll = ref<HTMLElement | null>(null)
 
+// "Notify me when done" — opt-in per send, remembered as a default.
+const notifyWhenDone = ref<boolean>((() => { try { return localStorage.getItem('chat.notifyWhenDone') === 'on' } catch { return false } })())
+watch(notifyWhenDone, v => { try { localStorage.setItem('chat.notifyWhenDone', v ? 'on' : 'off') } catch { /* ignore */ } })
+
+// Completion-sound toggle (mirrors the chime util's persisted preference).
+const soundOn = ref(chimeEnabled())
+function toggleSound() { soundOn.value = !soundOn.value; setChimeEnabled(soundOn.value) }
+
+// Async chat: assistant replies come back 'pending' and are filled in by a
+// background runner. We track pending message ids and poll until they resolve.
+const pending = ref<Map<number, { notify: boolean; startedAt: number }>>(new Map())
+const nowTick = ref(Date.now())   // bumped every 1s so the elapsed timer re-renders
+let pollTimer: number | null = null
+let tickTimer: number | null = null
+
+function startPolling() {
+  if (pollTimer == null) pollTimer = window.setInterval(pollPending, 3000)
+  if (tickTimer == null) tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
+}
+function stopPolling() {
+  if (pollTimer != null) { clearInterval(pollTimer); pollTimer = null }
+  if (tickTimer != null) { clearInterval(tickTimer); tickTimer = null }
+}
+onUnmounted(stopPolling)
+
+async function pollPending() {
+  const thread = activeThread.value
+  if (!thread || pending.value.size === 0) { stopPolling(); return }
+  try {
+    const res = await fetch(`/api/chat/threads/${thread.id}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    const fresh: Message[] = data.messages || []
+    const byId = new Map(fresh.map((m: Message) => [m.id, m]))
+    for (const [pid, meta] of [...pending.value.entries()]) {
+      const updated = byId.get(pid)
+      if (!updated) continue
+      const local = messages.value.find(x => x.id === pid)
+      if (local) Object.assign(local, updated)
+      if (updated.status && updated.status !== 'pending') {
+        pending.value.delete(pid)
+        onPendingResolved(thread.id, meta.notify)
+      }
+    }
+    if (pending.value.size === 0) stopPolling()
+  } catch { /* transient — keep polling */ }
+}
+
+function onPendingResolved(threadId: number, notify: boolean) {
+  // User asked to be pinged — chime even though they're watching.
+  if (notify) playChime()
+  // They watched the answer land, so it isn't "unread": clear the server-side
+  // chat_complete (bell) and tell the sidebar to drop this thread's red dot.
+  fetch(`/api/chat/threads/${threadId}/ack`, { method: 'POST', headers: hdrs() }).catch(() => {})
+  emit('thread-read', threadId)
+  nextTick().then(scrollToBottom)
+}
+
+// Working-state copy escalates with elapsed time so a long wait feels handled.
+function elapsedSecs(id: number): number {
+  const meta = pending.value.get(id)
+  if (!meta) return 0
+  return Math.max(0, Math.floor((nowTick.value - meta.startedAt) / 1000))
+}
+function workingLabel(id: number): string {
+  const s = elapsedSecs(id)
+  if (s < 8) return 'Ari is thinking…'
+  if (s < 25) return 'Ari is pulling the data together…'
+  if (s < 60) return 'Still working — detailed questions can take a minute or two.'
+  return 'Hang tight — this is a big one.'
+}
+function fmtElapsed(id: number): string {
+  const s = elapsedSecs(id)
+  const m = Math.floor(s / 60)
+  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`
+}
+
 // Project picker state
 const projectPickerOpen = ref(false)
 const projectQuery = ref('')
@@ -77,12 +157,23 @@ const projectQueryEl = ref<HTMLInputElement | null>(null)
 let projectSearchTimer: number | null = null
 
 async function loadThread(id: number) {
+  stopPolling()
+  pending.value.clear()
   try {
     const res = await fetch(`/api/chat/threads/${id}`, { headers: hdrs() })
     if (res.ok) {
       const data = await res.json()
       activeThread.value = data.thread
       messages.value = data.messages || []
+      // Resume the working state if we land on a thread still generating a
+      // reply (e.g. opened from the bell before it finished). notify=false here
+      // so completion just updates inline + acks the bell.
+      for (const m of messages.value) {
+        if (m.role === 'assistant' && m.status === 'pending') {
+          pending.value.set(m.id, { notify: false, startedAt: Date.now() })
+        }
+      }
+      if (pending.value.size > 0) startPolling()
       await nextTick()
       scrollToBottom()
     }
@@ -122,12 +213,16 @@ async function sendMessage() {
   const thread = await ensureThreadExists()
   if (!thread) return
 
+  unlockChime()  // user gesture — lets the completion sound play later
+
   const text = composerText.value.trim()
+  const wantNotify = notifyWhenDone.value
   const optimisticUser: Message = {
     id: -Date.now(),
     role: 'user',
     content: text,
     provider: null, model: null, tokens_in: 0, tokens_out: 0, cost_cents: 0, used_own_key: false, error: null,
+    status: 'completed',
     created_at: new Date().toISOString(),
   }
   messages.value.push(optimisticUser)
@@ -137,34 +232,39 @@ async function sendMessage() {
   await nextTick()
   scrollToBottom()
 
-  // Hard ceiling so the typing dots can never spin forever. Sits just above
-  // the server's 320s Ari-shim abort, so the server's own graceful "Ari
-  // unavailable" notice wins whenever it can respond; this only fires if the
-  // request truly hangs (server crash, dropped connection, proxy black-hole).
-  const REQUEST_TIMEOUT_MS = 330_000
+  // The POST now returns immediately with a PENDING assistant message; the
+  // real answer is filled in by the background runner and we poll for it. So
+  // the request itself is quick — a short timeout is all we need here.
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), 30_000)
   try {
     const res = await fetch(`/api/chat/threads/${thread.id}/messages`, {
       method: 'POST', headers: hdrs(),
-      body: JSON.stringify({ content: text }),
+      body: JSON.stringify({ content: text, notify: wantNotify }),
       signal: ctrl.signal,
     })
     const data = await res.json()
     messages.value = messages.value.filter(m => m.id !== optimisticUser.id)
     if (data.user_message) messages.value.push(data.user_message)
-    if (data.assistant_message) messages.value.push(data.assistant_message)
+    if (data.assistant_message) {
+      messages.value.push(data.assistant_message)
+      const am = data.assistant_message as Message
+      if (am.status === 'pending') {
+        pending.value.set(am.id, { notify: wantNotify, startedAt: Date.now() })
+        startPolling()
+      }
+    }
     if (data.thread) {
       activeThread.value = data.thread
       emit('thread-updated', data.thread)
     }
-    if (!data.ok) sendError.value = data.error || 'Send failed'
+    if (!data.ok && data.assistant_message?.status !== 'pending') sendError.value = data.error || 'Send failed'
     await nextTick()
     scrollToBottom()
   } catch (e) {
     const aborted = e instanceof DOMException && e.name === 'AbortError'
     sendError.value = aborted
-      ? 'That took too long to respond. Ari may be busy — please try again.'
+      ? 'Couldn’t reach the server — please try again.'
       : (e instanceof Error ? e.message : 'Send failed')
     messages.value = messages.value.filter(m => m.id !== optimisticUser.id)
   } finally {
@@ -385,7 +485,26 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
             :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
           >
             <div class="max-w-[85%] sm:max-w-[80%]">
-              <div
+              <!-- Working state: assistant reply still being generated -->
+              <div v-if="m.role === 'assistant' && m.status === 'pending'"
+                class="px-4 py-3 rounded-2xl rounded-bl-md bg-gradient-to-br from-card to-muted/40"
+              >
+                <div class="flex items-center gap-2">
+                  <div class="flex gap-1.5 shrink-0">
+                    <span class="size-1.5 rounded-full bg-muted-foreground/60 animate-bounce" style="animation-delay: 0ms"></span>
+                    <span class="size-1.5 rounded-full bg-muted-foreground/60 animate-bounce" style="animation-delay: 150ms"></span>
+                    <span class="size-1.5 rounded-full bg-muted-foreground/60 animate-bounce" style="animation-delay: 300ms"></span>
+                  </div>
+                  <span class="text-xs text-muted-foreground">{{ workingLabel(m.id) }}</span>
+                  <span class="text-[10px] text-muted-foreground/50 tabular-nums ml-auto pl-2 shrink-0">{{ fmtElapsed(m.id) }}</span>
+                </div>
+                <p v-if="pending.get(m.id)?.notify" class="mt-1.5 text-[11px] text-muted-foreground/70 flex items-center gap-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+                  We’ll ping you when it’s ready — you can keep working.
+                </p>
+              </div>
+              <!-- Final (or error) content -->
+              <div v-else
                 class="px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words"
                 :class="m.role === 'user'
                   ? 'bg-foreground text-background rounded-br-md'
@@ -393,7 +512,7 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
                     ? 'bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-200 rounded-bl-md'
                     : 'bg-gradient-to-br from-card to-muted/40 rounded-bl-md'"
               >{{ m.content }}</div>
-              <div v-if="m.role === 'assistant' && (m.provider || m.cost_cents > 0)"
+              <div v-if="m.role === 'assistant' && m.status !== 'pending' && (m.provider || m.cost_cents > 0)"
                 class="mt-1 px-1 text-[10px] text-muted-foreground/70 tabular-nums flex items-center gap-1.5"
               >
                 <span v-if="m.provider">{{ m.provider }}{{ m.model ? ` · ${m.model.replace(/^claude-/, '')}` : '' }}</span>
@@ -403,8 +522,8 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
             </div>
           </div>
 
-          <!-- Typing indicator -->
-          <div v-if="sending" class="flex justify-start">
+          <!-- Brief typing indicator covering the gap before the pending bubble lands -->
+          <div v-if="sending && pending.size === 0" class="flex justify-start">
             <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-gradient-to-br from-card to-muted/40">
               <div class="flex gap-1.5">
                 <span class="size-1.5 rounded-full bg-muted-foreground/60 animate-bounce" style="animation-delay: 0ms"></span>
@@ -450,6 +569,21 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
           <span class="font-mono">/model</span>
           <span>— pick which AI model handles this thread</span>
           <span class="ml-auto"><kbd class="px-1.5 py-0.5 rounded bg-foreground/10 font-mono text-[10px]">↵</kbd> to run</span>
+        </div>
+
+        <!-- Notify-when-done + sound toggles -->
+        <div class="flex items-center gap-3 mb-1.5 px-1">
+          <label class="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer select-none">
+            <input type="checkbox" v-model="notifyWhenDone" class="size-3.5 rounded accent-foreground cursor-pointer" />
+            Notify me when done
+          </label>
+          <button type="button" @click="toggleSound"
+            class="ml-auto inline-flex items-center justify-center size-6 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-foreground/[0.05] transition-colors"
+            :title="soundOn ? 'Completion sound on' : 'Completion sound off'"
+          >
+            <svg v-if="soundOn" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.384 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.384 3.384A.705.705 0 0 0 11 19.298z"/><path d="m23 9-6 6"/><path d="m17 9 6 6"/></svg>
+          </button>
         </div>
 
         <!-- Composer textarea -->
