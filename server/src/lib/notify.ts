@@ -30,6 +30,28 @@ export function insertIfNew(a: NotifyArgs): number | null {
   return Number(res.lastInsertRowid) || null
 }
 
+/** Notify a user that their async chat answer is ready. Unlike insertIfNew,
+ *  this re-notifies across turns — but collapses onto an existing UNREAD
+ *  chat_complete row for the same thread, so the bell shows one entry per
+ *  thread refreshed to the latest answer (rather than stacking). Once the
+ *  user reads/acks it, the next completion creates a fresh row. */
+export function notifyChatComplete(a: { userId: number; threadId: number; title: string; body?: string | null }): number {
+  const link = `/chat?thread=${a.threadId}`
+  const existing = db.prepare(
+    `SELECT id FROM notifications WHERE user_id = ? AND type = 'chat_complete' AND link = ? AND is_read = 0 ORDER BY id DESC LIMIT 1`
+  ).get(a.userId, link) as { id: number } | undefined
+  if (existing) {
+    db.prepare(
+      'UPDATE notifications SET title = ?, body = ?, created_at = datetime("now") WHERE id = ?'
+    ).run(a.title, a.body ?? null, existing.id)
+    return existing.id
+  }
+  const res = db.prepare(
+    'INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, "chat_complete", ?, ?, ?, 0, datetime("now"))'
+  ).run(a.userId, a.title, a.body ?? null, link)
+  return Number(res.lastInsertRowid)
+}
+
 /** Resolve the project coordinator for a given QB project record id by
  *  cross-referencing project_cache.coordinator (a name string) against
  *  users.name. (Schema column is `name`, not `full_name` — earlier
