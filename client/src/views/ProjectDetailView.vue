@@ -126,6 +126,8 @@ interface Project extends Record<string, unknown> {
   google_drive_link?: string | null
   project_number?: number | null
   max_arrivy_task_id?: number | null
+  // Admin flags
+  is_test_project?: number | null
 }
 
 interface CommItem {
@@ -167,6 +169,29 @@ const comms = ref<CommItem[]>([])
 const tickets = ref<Ticket[]>([])
 const rawFeed = ref<FeedRow[]>([])
 const starred = ref(false)
+
+const testProjectSaving = ref(false)
+
+async function toggleTestProject() {
+  if (!project.value || testProjectSaving.value) return
+  const newVal = project.value.is_test_project ? false : true
+  testProjectSaving.value = true
+  try {
+    const res = await fetch('/api/qb/upsert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: 'br9kwm8na',
+        data: [{ '3': { value: project.value.record_id }, '622': { value: newVal } }],
+      }),
+    })
+    if (res.ok) {
+      project.value = { ...project.value, is_test_project: newVal ? 1 : 0 }
+    }
+  } finally {
+    testProjectSaving.value = false
+  }
+}
 
 const isDesktop = ref(false)
 const selectedStepId = ref<string | null>(null)
@@ -547,6 +572,21 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
           >Refresh</button>
         </div>
       </div>
+
+      <!-- Admin: Test Project toggle -->
+      <section v-if="auth.isAdmin" class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-2">
+        <label class="inline-flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            :checked="!!project.is_test_project"
+            :disabled="testProjectSaving"
+            class="accent-amber-500 size-3.5"
+            @change="toggleTestProject"
+          />
+          <span>Test Project</span>
+          <span v-if="testProjectSaving" class="text-[10px] text-slate-400">Saving…</span>
+        </label>
+      </section>
 
       <!-- Banners — Urgent (free-text) sits above Cancel/Pending Cancel.
            Both auto-hide when their source data is empty. -->

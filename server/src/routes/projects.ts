@@ -117,7 +117,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'project_number', 'max_arrivy_task_id',
   ]
   for (const c of FUNDING_REAL) addIfMissing(c, 'REAL')
-  const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready']
+  const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready', 'is_test_project']
   for (const c of FUNDING_BOOL) addIfMissing(c, 'INTEGER')
 }
 
@@ -273,6 +273,9 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2777, col: 'dca_expected_deposit' },
   { fid: 2773, col: 'dca_actual_deposit' },
   { fid: 2772, col: 'dca_total_received' },
+
+  // ─── Admin flags
+  { fid: 622,  col: 'is_test_project' },      // Test Project (checkbox)
 ]
 
 const selectFids = fieldMap.map(f => f.fid)
@@ -304,6 +307,7 @@ const BOOLEAN_COLS = new Set([
   'inspx_first_time_pass',
   'is_funded',
   'm1_ready', 'm2_ready', 'm3_ready',
+  'is_test_project',
 ])
 
 function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
@@ -470,7 +474,7 @@ export async function fetchOneLive(recordId: number): Promise<Record<string, unk
     body: JSON.stringify({
       from: 'br9kwm8na',
       select: selectFids,
-      where: `{3.EX.${recordId}}AND{622.EX.'false'}`,
+      where: `{3.EX.${recordId}}`,
       options: { top: 1 },
     }),
   })
