@@ -573,21 +573,6 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
         </div>
       </div>
 
-      <!-- Admin: Test Project toggle -->
-      <section v-if="auth.isAdmin" class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-2">
-        <label class="inline-flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            :checked="!!project.is_test_project"
-            :disabled="testProjectSaving"
-            class="accent-amber-500 size-3.5"
-            @change="toggleTestProject"
-          />
-          <span>Test Project</span>
-          <span v-if="testProjectSaving" class="text-[10px] text-slate-400">Saving…</span>
-        </label>
-      </section>
-
       <!-- Banners — Urgent (free-text) sits above Cancel/Pending Cancel.
            Both auto-hide when their source data is empty. -->
       <section class="max-w-[1240px] mx-auto px-4 sm:px-6 pb-3 flex flex-col gap-2">
@@ -628,7 +613,11 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :feed="feedItems"
             :coordinator="project.coordinator"
             :reference-date="project.sales_date"
+            :is-admin="auth.isAdmin"
+            :is-test-project="!!project.is_test_project"
+            :test-project-saving="testProjectSaving"
             @close="closeDetail"
+            @toggle-test-project="toggleTestProject"
           />
         </div>
       </section>

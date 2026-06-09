@@ -16,11 +16,13 @@ const props = defineProps<{
   step: StripStep | null
   feed: FeedRow[]
   coordinator?: string | null
-  // referenceDate (sales_date or last activity) used as fallback when step has no date
   referenceDate?: string | null
+  isTestProject?: boolean
+  isAdmin?: boolean
+  testProjectSaving?: boolean
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; toggleTestProject: [] }>()
 
 const stateLabel: Record<string, string> = {
   done: 'Done',
@@ -104,6 +106,20 @@ function fmtTime(s: string): string {
         <div v-if="coordinator" class="mt-3 text-[11px] text-slate-500">
           Coordinator: <span class="text-slate-700">{{ coordinator }}</span>
         </div>
+        <label
+          v-if="isAdmin && step?.id === 'intake'"
+          class="inline-flex items-center gap-2 mt-3 text-[11px] text-slate-500 cursor-pointer select-none"
+        >
+          <input
+            type="checkbox"
+            :checked="isTestProject"
+            :disabled="testProjectSaving"
+            class="accent-amber-500 size-3.5"
+            @change="emit('toggleTestProject')"
+          />
+          <span>Test Project</span>
+          <span v-if="testProjectSaving" class="text-[10px] text-slate-400">Saving…</span>
+        </label>
       </div>
 
       <!-- Related events -->
