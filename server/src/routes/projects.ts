@@ -146,6 +146,13 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   addIfMissing('status_exclusion', 'INTEGER')
   addIfMissing('general_archive', 'INTEGER')
 
+  // QB built-in [Last Modified By] (FID 5) — who actually touched the
+  // record. Captured so the webhook→feed mint path can credit the doer
+  // (a webhook-triggered fetchOneLive runs ~1-2s after the change, so
+  // this is almost always the person who made it).
+  addIfMissing('last_modified_by', 'TEXT')
+  addIfMissing('last_modified_by_email', 'TEXT')
+
   // Test-project marker (QB fid 622). Stored as 0/1; existing rows
   // default to 0 (treated as "not a test"). Once the QB pull starts
   // filtering at ingest, real test projects already in cache get
@@ -196,6 +203,10 @@ try {
 const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 3, col: 'record_id' },
   { fid: 2, col: 'qb_modified_at' },          // QB built-in [Date Modified]
+  // QB built-in [Last Modified By] — user object; same fid feeds two
+  // columns (name + email), mapRecordToValues splits it per col.
+  { fid: 5, col: 'last_modified_by' },
+  { fid: 5, col: 'last_modified_by_email' },
   { fid: 145, col: 'customer_name' },
   { fid: 146, col: 'customer_address' },
   { fid: 149, col: 'email' },
@@ -353,7 +364,9 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 2569, col: 'general_archive' },    // General Archive Logic
 ]
 
-const selectFids = fieldMap.map(f => f.fid)
+// De-dupe: fid 5 appears twice in fieldMap (name + email columns) and
+// QB rejects duplicate select fids.
+const selectFids = [...new Set(fieldMap.map(f => f.fid))]
 
 function val(record: Record<string, { value: unknown }>, fid: number): string {
   const v = record[String(fid)]?.value
@@ -419,6 +432,15 @@ function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[
     if (f.col === 'nem_user') {
       const raw = record[String(f.fid)]?.value
       if (raw && typeof raw === 'object' && 'name' in (raw as Record<string, unknown>)) return (raw as { name: string }).name
+    }
+    if (f.col === 'last_modified_by' || f.col === 'last_modified_by_email') {
+      const raw = record[String(f.fid)]?.value
+      if (raw && typeof raw === 'object') {
+        const user = raw as { name?: unknown; email?: unknown }
+        const v = f.col === 'last_modified_by' ? user.name : user.email
+        return v == null ? '' : String(v)
+      }
+      return f.col === 'last_modified_by' ? val(record, f.fid) : ''
     }
     return val(record, f.fid)
   })

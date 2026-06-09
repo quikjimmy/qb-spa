@@ -129,6 +129,70 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_feed_project ON feed_items(project_id)
 `)
 
+// dedup_key: stable identity for QB-derived feed posts so the webhook
+// mint path (occurred_at = arrival datetime) and the batch backfill
+// (occurred_at = QB date value) collide instead of double-posting.
+// Format: 'projects:{rid}:milestone:{col}:{dateValue}' or
+// 'projects:{rid}:status:{newStatus}:{YYYY-MM-DD}'. User posts and
+// other sources keep NULL (exempt via the partial unique index).
+try {
+  const cols = db.prepare(`PRAGMA table_info(feed_items)`).all() as Array<{ name: string }>
+  const names = new Set(cols.map(c => c.name))
+  if (!names.has('dedup_key')) db.exec(`ALTER TABLE feed_items ADD COLUMN dedup_key TEXT`)
+
+  // Backfill keys on batch-ingested milestone rows so old posts dedup
+  // against incoming webhook mints. fieldId lives in the metadata JSON.
+  const FID_TO_COL: Record<string, string> = {
+    '166': 'survey_scheduled', '164': 'survey_submitted', '165': 'survey_approved',
+    '699': 'cad_submitted', '1774': 'design_completed',
+    '207': 'permit_submitted', '208': 'permit_approved', '706': 'permit_rejected',
+    '326': 'nem_submitted', '327': 'nem_approved', '1878': 'nem_rejected',
+    '178': 'install_scheduled', '534': 'install_completed',
+    '226': 'inspection_scheduled', '491': 'inspection_passed',
+    '537': 'pto_submitted', '538': 'pto_approved',
+  }
+  const unkeyed = db.prepare(`
+    SELECT id, project_id, metadata, occurred_at FROM feed_items
+    WHERE qb_source = 'projects' AND event_type = 'milestone' AND dedup_key IS NULL
+  `).all() as Array<{ id: number; project_id: number | null; metadata: string | null; occurred_at: string }>
+  const setKey = db.prepare(`UPDATE feed_items SET dedup_key = ? WHERE id = ?`)
+  for (const row of unkeyed) {
+    if (!row.project_id || !row.metadata) continue
+    try {
+      const meta = JSON.parse(row.metadata) as { fieldId?: number | string }
+      const col = meta.fieldId != null ? FID_TO_COL[String(meta.fieldId)] : undefined
+      if (col) setKey.run(`projects:${row.project_id}:milestone:${col}:${row.occurred_at}`, row.id)
+    } catch { /* unparseable metadata — leave NULL */ }
+  }
+
+  // Partial unique index creation fails if duplicates already exist.
+  db.exec(`
+    DELETE FROM feed_items
+    WHERE dedup_key IS NOT NULL
+      AND id NOT IN (SELECT MIN(id) FROM feed_items WHERE dedup_key IS NOT NULL GROUP BY dedup_key)
+  `)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_dedup ON feed_items(dedup_key) WHERE dedup_key IS NOT NULL`)
+
+  // Attribution honesty (2026-06-09): feed posts credit a person ONLY when
+  // the webhook payload named them (actor_source 'webhook' in metadata).
+  // Legacy batch-ingested rows stamped the coordinator/'System' as actor —
+  // an assignment, not a doer — so strip those claims. Idempotent: the
+  // metadata guard protects genuinely attributed webhook posts.
+  db.exec(`
+    UPDATE feed_items
+    SET actor_name = NULL, actor_email = NULL
+    WHERE qb_source = 'projects'
+      AND event_type IN ('milestone', 'status_change')
+      AND actor_name IS NOT NULL
+      AND (metadata IS NULL OR metadata NOT LIKE '%"actor_source":"webhook"%')
+  `)
+  // 'System' was a placeholder actor on notes/tickets/task ingests —
+  // not a person, so render those unattributed too.
+  db.exec(`UPDATE feed_items SET actor_name = NULL WHERE actor_name = 'System'`)
+} catch (e) {
+  console.error('[feed] dedup_key migration failed:', e instanceof Error ? e.message : e)
+}
+
 // --- Media Attachments ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS media_attachments (

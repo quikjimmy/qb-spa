@@ -2,9 +2,21 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { upload } from '../lib/upload'
 import { generateThumbnail } from '../lib/media'
+import { attachFeedSseStream } from '../lib/feedEvents'
 import fs from 'fs'
 
 const router = Router()
+
+// Live feed stream (SSE). Auth via ?token= (EventSource can't set
+// headers — authenticate middleware falls back to the query param).
+// Referral Agent exclusion comes free and is LOAD-BEARING: the router
+// mount's referralAgentScope 403s any param-less call from that role,
+// and this stream is global/unfiltered — do NOT add a project_id
+// passthrough here or Referral Agents could subscribe scoped but
+// receive everything.
+router.get('/stream', (_req: Request, res: Response): void => {
+  attachFeedSseStream(res)
+})
 
 // Get feed items with pagination, optional filters
 router.get('/', (req: Request, res: Response): void => {

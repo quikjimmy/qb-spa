@@ -43,28 +43,34 @@ function val(record: Record<string, { value: unknown }>, fieldId: number): strin
   return String(record[String(fieldId)]?.value ?? '')
 }
 
+// NOTE: this batch ingester is BACKFILL-ONLY. Live feed posts are minted
+// in real time by the webhook path (lib/feedMint.ts via qb-webhooks).
+// The shared dedup_key (same format both sides) makes re-running this
+// safe: rows the webhooks already minted are ignored.
 const upsertFeedItem = db.prepare(`
   INSERT OR IGNORE INTO feed_items
-    (qb_source, qb_record_id, event_type, title, body, actor_name, actor_email, project_id, project_name, metadata, occurred_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (qb_source, qb_record_id, event_type, title, body, actor_name, actor_email, project_id, project_name, metadata, occurred_at, dedup_key)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 
 // ─── Ingest: Project milestones ──────────────────────────
 
 async function ingestMilestones(realm: string, token: string): Promise<number> {
-  // Query projects with milestone dates, modified recently
+  // Query projects with milestone dates, modified recently.
+  // `col` must match the project_cache column names used by feedMint's
+  // MILESTONE_DEFS — it's the dedup_key contract between both paths.
   const milestoneFields = [
-    { fid: 166, label: 'Survey Scheduled' },
-    { fid: 164, label: 'Survey Submitted' },
-    { fid: 165, label: 'Survey Approved' },
-    { fid: 207, label: 'Permit Submitted' },
-    { fid: 208, label: 'Permit Approved' },
-    { fid: 178, label: 'Install Scheduled' },
-    { fid: 534, label: 'Install Completed' },
-    { fid: 226, label: 'Inspection Scheduled' },
-    { fid: 491, label: 'Inspection Passed' },
-    { fid: 537, label: 'PTO Submitted' },
-    { fid: 538, label: 'PTO Approved' },
+    { fid: 166, col: 'survey_scheduled', label: 'Survey Scheduled' },
+    { fid: 164, col: 'survey_submitted', label: 'Survey Submitted' },
+    { fid: 165, col: 'survey_approved', label: 'Survey Approved' },
+    { fid: 207, col: 'permit_submitted', label: 'Permit Submitted' },
+    { fid: 208, col: 'permit_approved', label: 'Permit Approved' },
+    { fid: 178, col: 'install_scheduled', label: 'Install Scheduled' },
+    { fid: 534, col: 'install_completed', label: 'Install Completed' },
+    { fid: 226, col: 'inspection_scheduled', label: 'Inspection Scheduled' },
+    { fid: 491, col: 'inspection_passed', label: 'Inspection Passed' },
+    { fid: 537, col: 'pto_submitted', label: 'PTO Submitted' },
+    { fid: 538, col: 'pto_approved', label: 'PTO Approved' },
   ]
 
   const selectIds = [3, 145, 255, 820, 2, ...milestoneFields.map(m => m.fid)]
@@ -89,11 +95,18 @@ async function ingestMilestones(realm: string, token: string): Promise<number> {
             'projects', projectId, 'milestone',
             `${ms.label}`,
             `${projectName} — ${ms.label}`,
-            coordinator || 'System',
+            // No actor: a batch pull can't know who set the date, and the
+            // feed only names people when attribution is certain (the
+            // webhook payload). Coordinator lives in metadata for context.
+            null,
             null,
             projectId, projectName,
-            JSON.stringify({ milestone: ms.label, fieldId: ms.fid, status: val(record, 255) }),
-            dateVal
+            JSON.stringify({
+              milestone: ms.label, fieldId: ms.fid, milestone_col: ms.col, status: val(record, 255),
+              mentions: coordinator ? [{ name: coordinator, email: null, role: 'coordinator', user_id: null }] : [],
+            }),
+            dateVal,
+            `projects:${projectId}:milestone:${ms.col}:${dateVal}`
           )
           count++
         } catch { /* duplicate, skip */ }
@@ -126,11 +139,17 @@ async function ingestStatusChanges(realm: string, token: string): Promise<number
           'projects', projectId, 'status_change',
           `Status: ${status}`,
           `${projectName} is now ${status}`,
-          coordinator || 'System',
+          null,  // no doer claim — see milestone ingest note
           null,
           projectId, projectName,
-          JSON.stringify({ status }),
-          modified
+          JSON.stringify({
+            status,
+            mentions: coordinator ? [{ name: coordinator, email: null, role: 'coordinator', user_id: null }] : [],
+          }),
+          modified,
+          // Imperfect (modified date ≠ status-change date) but backfill-grade;
+          // matches feedMint's status key shape so webhook mints dedup.
+          `projects:${projectId}:status:${status}:${modified.slice(0, 10)}`
         )
         count++
       } catch { /* duplicate */ }
@@ -174,7 +193,8 @@ async function ingestNotes(realm: string, token: string): Promise<number> {
           null,
           null, null,
           null,
-          created
+          created,
+          null
         )
         count++
       } catch { /* duplicate */ }
@@ -216,7 +236,8 @@ async function ingestTickets(realm: string, token: string): Promise<number> {
           null,
           null, null,
           null,
-          created
+          created,
+          null
         )
         count++
       } catch { /* duplicate */ }
@@ -258,7 +279,8 @@ async function ingestTaskEvents(realm: string, token: string): Promise<number> {
           null,
           null, null,
           null,
-          created
+          created,
+          null
         )
         count++
       } catch { /* duplicate */ }

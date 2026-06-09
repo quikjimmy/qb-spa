@@ -7,6 +7,7 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { invalidateIntakeCaches } from './intake'
 import { fetchOneLive } from './projects'
+import { snapshotProject, mintFromProjectDiff, type PayloadActor } from '../lib/feedMint'
 
 const router = Router()
 
@@ -27,6 +28,12 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_qb_wh_project ON qb_webhook_events(project_record_id, received_at DESC)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_qb_wh_status ON qb_webhook_events(status, received_at DESC)`)
+// Actor passed by the QB pipeline (who made the change) — kept for audit
+// alongside the feed posts it produces.
+{
+  const cols = db.prepare(`PRAGMA table_info(qb_webhook_events)`).all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'actor_json')) db.exec(`ALTER TABLE qb_webhook_events ADD COLUMN actor_json TEXT`)
+}
 
 function verifySecret(req: Request): boolean | null {
   const expected = process.env['QB_WEBHOOK_SECRET']
@@ -99,10 +106,77 @@ function pickChangedFieldIds(body: unknown): string | null {
   return v == null ? null : String(v)
 }
 
-const queuedProjectRefreshes = new Set<number>()
+// Who made the change. Preferred pipeline shape:
+//   "actor": {"name": "<last modified by name>", "email": "<last modified by email>"}
+// but we also accept a bare string, QB user objects ({name, email, userName}),
+// flat actor_name/actor_email pairs, and the usual nested record/data slots.
+// Payload actor beats the fetched record's [Last Modified By] (FID 5),
+// which can be raced by a second edit between webhook and fetch.
+function pickActor(body: unknown): PayloadActor | null {
+  if (!body || typeof body !== 'object') return null
+  const b = body as Record<string, unknown>
 
-function enqueueProjectRefresh(projectRecordId: number, eventId: number): 'queued' | 'coalesced' {
-  if (queuedProjectRefreshes.has(projectRecordId)) {
+  const coerce = (v: unknown): PayloadActor | null => {
+    if (v == null) return null
+    if (typeof v === 'string') {
+      const s = v.trim()
+      if (!s) return null
+      return s.includes('@') ? { name: s.split('@')[0] ?? s, email: s } : { name: s, email: null }
+    }
+    if (typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      const name = o['name'] ?? o['userName'] ?? o['user_name']
+      const email = o['email']
+      if (name == null && email == null) return null
+      return {
+        name: name != null ? String(name).trim() : null,
+        email: email != null ? String(email).trim() : null,
+      }
+    }
+    return null
+  }
+
+  const slots = [
+    b['actor'], b['modified_by'], b['modifiedBy'], b['last_modified_by'], b['lastModifiedBy'],
+    b['user'], b['triggered_by'], b['triggeredBy'],
+    (b['record'] as Record<string, unknown> | undefined)?.['actor'],
+    (b['record'] as Record<string, unknown> | undefined)?.['modified_by'],
+    (b['data'] as Record<string, unknown> | undefined)?.['actor'],
+    (b['data'] as Record<string, unknown> | undefined)?.['modified_by'],
+  ]
+  for (const v of slots) {
+    const actor = coerce(v)
+    if (actor?.name || actor?.email) return actor
+  }
+
+  // Flat name/email pairs.
+  const flatName = b['actor_name'] ?? b['actorName'] ?? b['user_name'] ?? b['userName']
+  const flatEmail = b['actor_email'] ?? b['actorEmail'] ?? b['user_email'] ?? b['userEmail']
+  if (flatName != null || flatEmail != null) {
+    return {
+      name: flatName != null ? String(flatName).trim() : null,
+      email: flatEmail != null ? String(flatEmail).trim() : null,
+    }
+  }
+  return null
+}
+
+// In-flight refresh tracker with a rerun flag. A webhook arriving while
+// a fetch for the same project is in flight used to be coalesced and
+// silently dropped — but the in-flight fetch may have read QB *before*
+// that second change landed. Now the arrival sets `rerun`, and the
+// worker loops one more pass (snapshot → fetch → mint) so the change is
+// captured. Each pass consumes one rerun flag, so the loop is naturally
+// bounded by arrivals. The latest arrival's actor wins for the rerun
+// pass; if two doers coalesce into one pass, FID 5 at least reflects
+// the most recent QB modifier.
+const inFlightRefreshes = new Map<number, { rerun: boolean; actor: PayloadActor | null }>()
+
+function enqueueProjectRefresh(projectRecordId: number, eventId: number, actor: PayloadActor | null): 'queued' | 'coalesced' {
+  const inFlight = inFlightRefreshes.get(projectRecordId)
+  if (inFlight) {
+    inFlight.rerun = true
+    inFlight.actor = actor ?? inFlight.actor
     db.prepare(`
       UPDATE qb_webhook_events
       SET status = 'coalesced', processed_at = datetime('now')
@@ -110,9 +184,22 @@ function enqueueProjectRefresh(projectRecordId: number, eventId: number): 'queue
     `).run(eventId)
     return 'coalesced'
   }
-  queuedProjectRefreshes.add(projectRecordId)
-  setImmediate(async () => {
-    try {
+  inFlightRefreshes.set(projectRecordId, { rerun: false, actor })
+  setImmediate(() => { void runProjectRefresh(projectRecordId, eventId) })
+  return 'queued'
+}
+
+async function runProjectRefresh(projectRecordId: number, eventId: number): Promise<void> {
+  try {
+    // Bounded loop: re-runs only while another webhook arrived mid-pass.
+    for (;;) {
+      const state = inFlightRefreshes.get(projectRecordId)
+      if (state) state.rerun = false
+      const passActor = state?.actor ?? null
+
+      // Snapshot BEFORE fetchOneLive — its INSERT OR REPLACE destroys the
+      // old row, and the feed mint diffs old vs fresh.
+      const oldRow = snapshotProject(projectRecordId)
       const fresh = await fetchOneLive(projectRecordId)
       if (!fresh) {
         db.prepare(`
@@ -122,25 +209,36 @@ function enqueueProjectRefresh(projectRecordId: number, eventId: number): 'queue
         `).run(eventId)
         return
       }
+
+      // Best-effort: a mint failure must never mark the cache refresh
+      // (the primary job) as failed.
+      try {
+        const { minted } = mintFromProjectDiff(oldRow, fresh, passActor, { eventId })
+        if (minted > 0) console.log(`[qb-webhook] minted ${minted} feed post(s) for project ${projectRecordId}`)
+      } catch (e) {
+        console.error(`[qb-webhook] feed mint failed for project ${projectRecordId}:`, e instanceof Error ? e.message : e)
+      }
+
       db.prepare(`
         UPDATE qb_webhook_events
         SET status = 'processed', error = NULL, processed_at = datetime('now')
         WHERE id = ?
       `).run(eventId)
       console.log(`[qb-webhook] refreshed project ${projectRecordId} from event ${eventId}`)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      db.prepare(`
-        UPDATE qb_webhook_events
-        SET status = 'failed', error = ?, processed_at = datetime('now')
-        WHERE id = ?
-      `).run(msg, eventId)
-      console.error(`[qb-webhook] refresh project ${projectRecordId} failed:`, msg)
-    } finally {
-      queuedProjectRefreshes.delete(projectRecordId)
+
+      if (!inFlightRefreshes.get(projectRecordId)?.rerun) return
     }
-  })
-  return 'queued'
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    db.prepare(`
+      UPDATE qb_webhook_events
+      SET status = 'failed', error = ?, processed_at = datetime('now')
+      WHERE id = ?
+    `).run(msg, eventId)
+    console.error(`[qb-webhook] refresh project ${projectRecordId} failed:`, msg)
+  } finally {
+    inFlightRefreshes.delete(projectRecordId)
+  }
 }
 
 function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
@@ -158,13 +256,14 @@ function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
   const sourceRecordId = pickRecordId(req.body)
   const sourceTable = pickSourceTable(req.body)
   const changedFieldIds = pickChangedFieldIds(req.body)
+  const actor = pickActor(req.body)
   const payloadJson = JSON.stringify(req.body ?? {})
 
   const result = db.prepare(`
     INSERT INTO qb_webhook_events
-      (kind, source_table, source_record_id, project_record_id, changed_field_ids, payload_json, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(kind, sourceTable, sourceRecordId, projectRecordId, changedFieldIds, payloadJson, projectRecordId ? 'queued' : 'ignored')
+      (kind, source_table, source_record_id, project_record_id, changed_field_ids, actor_json, payload_json, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(kind, sourceTable, sourceRecordId, projectRecordId, changedFieldIds, actor ? JSON.stringify(actor) : null, payloadJson, projectRecordId ? 'queued' : 'ignored')
   const eventId = Number(result.lastInsertRowid)
 
   if (!projectRecordId) {
@@ -172,7 +271,7 @@ function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
     return
   }
 
-  const queueStatus = enqueueProjectRefresh(projectRecordId, eventId)
+  const queueStatus = enqueueProjectRefresh(projectRecordId, eventId, actor)
   res.json({ ok: true, eventId, projectRecordId, sourceRecordId, queued: queueStatus === 'queued', status: queueStatus })
 }
 

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, inject, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useFeedLive, type LiveFeedItem } from '@/lib/feedLive'
+import { buildHero, type FeedMeta, type Mention } from '@/lib/feedHero'
+import FeedHero from '@/components/feed/FeedHero.vue'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
@@ -10,8 +13,9 @@ interface MediaAttachment { id: number; url: string; thumbUrl: string; mediaType
 interface Reaction { emoji: string; count: number; reacted: boolean }
 interface FeedItem {
   id: number; qb_source: string; event_type: string; title: string; body: string
-  actor_name: string; actor_email: string | null; project_id: number | null
-  project_name: string | null; occurred_at: string; comment_count: number; reactions: Reaction[]
+  actor_name: string | null; actor_email: string | null; project_id: number | null
+  project_name: string | null; metadata?: string | null; occurred_at: string
+  comment_count: number; reactions: Reaction[]
   media: MediaAttachment[]
 }
 interface Comment { id: number; user_name: string; body: string; created_at: string }
@@ -152,33 +156,67 @@ async function submitPost() {
 
 onUnmounted(() => composePreviews.value.forEach(url => URL.revokeObjectURL(url)))
 
-const typeHero: Record<string, { gradient: string; icon: string }> = {
-  milestone: { gradient: 'from-emerald-600 to-teal-500', icon: 'flag' },
-  status_change: { gradient: 'from-blue-600 to-indigo-500', icon: 'sync' },
-  note_added: { gradient: 'from-amber-500 to-orange-400', icon: 'note' },
-  ticket_created: { gradient: 'from-rose-600 to-pink-500', icon: 'ticket' },
-  task_event: { gradient: 'from-violet-600 to-purple-500', icon: 'task' },
-  user_post: { gradient: 'from-slate-700 to-slate-600', icon: 'post' },
-  agent_run: { gradient: 'from-cyan-600 to-blue-500', icon: 'agent' },
+// ── Metadata, hero scenes, mentions ──────────────────────
+
+const metaCache = new Map<number, FeedMeta>()
+function parsedMeta(item: FeedItem): FeedMeta {
+  const hit = metaCache.get(item.id)
+  if (hit) return hit
+  let meta: FeedMeta = {}
+  if (item.metadata) { try { meta = JSON.parse(item.metadata) as FeedMeta } catch { /* legacy/unparseable */ } }
+  metaCache.set(item.id, meta)
+  return meta
 }
-function getHero(t: string) { return typeHero[t] || { gradient: 'from-zinc-700 to-zinc-600', icon: '?' } }
+
+function mentionsFor(item: FeedItem): Mention[] {
+  const mentions = parsedMeta(item).mentions || []
+  // The actor already headlines the post — a chip would be redundant.
+  return mentions.filter(m => m.name && m.name !== item.actor_name)
+}
+
+function getHero(item: FeedItem) { return buildHero(item.event_type, parsedMeta(item)) }
+
 function getInitials(name: string) { return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) }
+
+// SQLite datetime('now') is UTC without a zone marker; QB milestone values
+// are date-only. Parse each shape so "ago" math doesn't drift by the TZ offset.
+function parseDbDate(d: string): Date {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(d)) return new Date(d.replace(' ', 'T') + 'Z')
+  if (d.length === 10) return new Date(d + 'T12:00:00')
+  return new Date(d)
+}
 function timeAgo(d: string) {
   if (!d) return ''
-  const diff = Date.now() - new Date(d).getTime(); const m = Math.floor(diff / 60000)
+  const diff = Date.now() - parseDbDate(d).getTime(); const m = Math.floor(diff / 60000)
   if (m < 1) return 'JUST NOW'; if (m < 60) return `${m}M AGO`
   const h = Math.floor(m / 60); if (h < 24) return `${h}H AGO`
   const days = Math.floor(h / 24); if (days < 7) return `${days}D AGO`
-  // For date-only strings, parse as local to avoid UTC day shift
-  const parsed = d.length === 10 ? new Date(d + 'T12:00:00') : new Date(d)
-  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()
+  return parseDbDate(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()
 }
 
 const ingesting = ref(false)
 async function runIngest() { ingesting.value = true; try { await fetch('/api/admin/feed/ingest', { method: 'POST', headers: hdrs() }); await loadFeed(false) } finally { ingesting.value = false } }
 
+// ── Live stream ──────────────────────────────────────────
+const { connected: liveConnected, onFeedItem } = useFeedLive()
+
+function handleLiveItem(item: LiveFeedItem) {
+  if (items.value.some(i => i.id === item.id)) return
+  // Respect an active actor filter — count it, but don't show it.
+  if (selectedActor.value && item.actor_name !== selectedActor.value) { total.value++; return }
+  items.value.unshift(item as unknown as FeedItem)
+  total.value++
+}
+
+let unsubLive: (() => void) | null = null
+
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
-onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
+onMounted(() => {
+  loadFeed()
+  registerRefresh?.(() => loadFeed(false))
+  unsubLive = onFeedItem(handleLiveItem)
+})
+onUnmounted(() => { unsubLive?.() })
 </script>
 
 <template>
@@ -188,7 +226,16 @@ onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
       <!-- Header -->
       <header class="flex items-end justify-between mb-8 sm:mb-12">
         <div>
-          <h1 class="text-[2.75rem] font-black tracking-tight leading-none">Feed</h1>
+          <div class="flex items-center gap-3">
+            <h1 class="text-[2.75rem] font-black tracking-tight leading-none">Feed</h1>
+            <span v-if="liveConnected" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 mt-1" title="Receiving live updates">
+              <span class="relative flex size-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60"></span>
+                <span class="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
+              </span>
+              <span class="text-[10px] font-bold uppercase tracking-widest text-emerald-700">Live</span>
+            </span>
+          </div>
           <p class="text-feed-secondary text-sm mt-1">Curating the latest milestones and updates.</p>
         </div>
         <button v-if="auth.isAdmin" class="text-xs font-semibold text-feed-secondary hover:text-feed-text" :disabled="ingesting" @click="runIngest">
@@ -354,29 +401,36 @@ onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
       </div>
 
       <!-- Feed -->
-      <div v-else class="space-y-12">
+      <TransitionGroup v-else name="feed-live" tag="div" class="space-y-12">
         <article v-for="item in items" :key="item.id" class="bg-white sm:rounded-3xl overflow-hidden feed-soft-shadow group -mx-4 sm:mx-0">
 
-          <!-- Profile header -->
+          <!-- Profile header: a person ONLY when attribution is certain
+               (webhook payload named them) — otherwise the project headlines
+               with a brand-mark avatar and no doer claim. -->
           <div class="p-4 flex items-center justify-between">
-            <div class="flex items-center gap-3">
-              <button @click="selectActor(item.actor_name || 'System')" class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative" :class="item.event_type === 'agent_run' ? 'bg-cyan-100' : 'bg-[#e7e8e8]'">
-                <span class="text-xs font-bold" :class="item.event_type === 'agent_run' ? 'text-cyan-700' : 'text-[#2d2f2f]'">{{ item.event_type === 'agent_run' ? 'AI' : getInitials(item.actor_name || 'SY') }}</span>
+            <div v-if="item.actor_name" class="flex items-center gap-3">
+              <button @click="selectActor(item.actor_name)" class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative" :class="item.event_type === 'agent_run' ? 'bg-cyan-100' : 'bg-[#e7e8e8]'">
+                <span class="text-xs font-bold" :class="item.event_type === 'agent_run' ? 'text-cyan-700' : 'text-[#2d2f2f]'">{{ item.event_type === 'agent_run' ? 'AI' : getInitials(item.actor_name) }}</span>
               </button>
               <div>
-                <button class="text-sm font-bold text-[#2d2f2f] hover:opacity-70" @click="selectActor(item.actor_name || 'System')">{{ item.actor_name || 'System' }}</button>
+                <button class="text-sm font-bold text-[#2d2f2f] hover:opacity-70" @click="selectActor(item.actor_name)">{{ item.actor_name }}</button>
                 <p class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ item.project_name || item.qb_source }}</p>
+              </div>
+            </div>
+            <div v-else class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-full feed-sig-gradient flex items-center justify-center shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="getHero(item).icon" /></svg>
+              </div>
+              <div>
+                <p class="text-sm font-bold text-[#2d2f2f]">{{ item.project_name || 'Kin Home' }}</p>
+                <p class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ getHero(item).kicker }}</p>
               </div>
             </div>
           </div>
 
           <!-- Hero content area (not for user posts) -->
           <div v-if="item.event_type !== 'user_post'" class="sm:px-4">
-            <div class="sm:rounded-3xl overflow-hidden bg-gradient-to-br p-8 flex flex-col justify-center items-center text-center min-h-[180px] relative" :class="getHero(item.event_type).gradient">
-              <p class="text-white/50 text-[10px] font-bold uppercase tracking-widest mb-3">{{ item.event_type.replace('_', ' ') }}</p>
-              <h3 class="text-xl sm:text-2xl font-black text-white tracking-tight leading-tight">{{ item.title }}</h3>
-              <p v-if="item.project_name" class="text-white/60 text-sm font-medium mt-2">#{{ item.project_id }} {{ item.project_name }}</p>
-            </div>
+            <FeedHero :hero="getHero(item)" :title="item.title" :project-id="item.project_id" :project-name="item.project_name" />
           </div>
 
           <!-- Media gallery -->
@@ -441,9 +495,23 @@ onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
             <!-- Caption (Instagram style) -->
             <div class="space-y-2">
               <p class="text-sm leading-relaxed text-[#2d2f2f]">
-                <span class="font-bold">{{ item.actor_name || 'System' }}</span>
+                <span v-if="item.actor_name" class="font-bold">{{ item.actor_name }}</span>
                 {{ item.body && item.body !== item.title ? ' ' + item.body : '' }}
               </p>
+
+              <!-- Tagged people -->
+              <div v-if="mentionsFor(item).length" class="flex flex-wrap gap-1.5 pt-1">
+                <button
+                  v-for="m in mentionsFor(item)" :key="m.name"
+                  class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#f0f1f1] hover:bg-[#e7e8e8] transition-colors cursor-pointer"
+                  :title="`See ${m.name}'s activity`"
+                  @click="selectActor(m.name)"
+                >
+                  <span class="w-5 h-5 rounded-full bg-white flex items-center justify-center text-[8px] font-bold text-[#2d2f2f]">{{ getInitials(m.name) }}</span>
+                  <span class="text-[11px] font-semibold text-[#2d2f2f]">{{ m.name }}</span>
+                  <span class="text-[9px] uppercase tracking-wider text-[#757777] font-bold">{{ m.role }}</span>
+                </button>
+              </div>
 
               <!-- Comment preview -->
               <button v-if="item.comment_count > 0 && !expandedComments.has(item.id)" class="text-xs text-[#5a5c5c] italic" @click="toggleComments(item.id)">
@@ -477,7 +545,7 @@ onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
             </div>
           </div>
         </article>
-      </div>
+      </TransitionGroup>
 
       <!-- Load more -->
       <div v-if="hasMore && !loading && items.length > 0" class="flex justify-center py-10">
@@ -502,4 +570,14 @@ onMounted(() => { loadFeed(); registerRefresh?.(() => loadFeed(false)) })
 .feed-muted { color: #757777; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ── Live entrance ──────────────────────────────────────── */
+.feed-live-enter-active { transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+.feed-live-enter-from { opacity: 0; transform: translateY(-18px) scale(0.985); }
+.feed-live-move { transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .feed-live-enter-active, .feed-live-move { transition: none; }
+}
+
+/* Hero scene styles live in components/feed/FeedHero.vue */
 </style>
