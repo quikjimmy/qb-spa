@@ -2,7 +2,7 @@
 import { ref, inject, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFeedLive, type LiveFeedItem } from '@/lib/feedLive'
-import { buildHero, type FeedMeta, type Mention } from '@/lib/feedHero'
+import { buildHero, milestoneFamily, FAMILY_GRADIENTS, FAMILY_LABELS, GHOST_ICONS, type FeedMeta, type Mention, type HeroFamily } from '@/lib/feedHero'
 import FeedHero from '@/components/feed/FeedHero.vue'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -19,15 +19,18 @@ interface FeedItem {
   media: MediaAttachment[]
 }
 interface Comment { id: number; user_name: string; body: string; created_at: string }
-interface ActorBubble { actor_name: string; actor_email: string | null; activity_count: number; latest_activity: string }
+interface PersonBubble { name: string; activity_count: number; latest_activity: string }
+interface FamilyBubble { family: string; count: number; latest_activity: string }
 
 const items = ref<FeedItem[]>([])
 const loading = ref(true)
 const loadingMore = ref(false)
 const hasMore = ref(true)
 const total = ref(0)
-const actors = ref<ActorBubble[]>([])
-const selectedActor = ref<string | null>(null)
+const people = ref<PersonBubble[]>([])
+const families = ref<FamilyBubble[]>([])
+const selectedPerson = ref<string | null>(null)
+const selectedFamily = ref<string | null>(null)
 
 const expandedComments = ref<Set<number>>(new Set())
 const commentsByItem = ref<Map<number, Comment[]>>(new Map())
@@ -40,18 +43,29 @@ async function loadFeed(append = false) {
   if (!append) loading.value = true; else loadingMore.value = true
   const offset = append ? items.value.length : 0
   const params = new URLSearchParams({ limit: '20', offset: String(offset) })
-  if (selectedActor.value) params.set('actor_name', selectedActor.value)
+  if (selectedPerson.value) params.set('person', selectedPerson.value)
+  if (selectedFamily.value) params.set('family', selectedFamily.value)
   try {
     const res = await fetch(`/api/feed?${params}`, { headers: hdrs() })
     const data = await res.json()
     if (append) items.value.push(...data.items)
-    else { items.value = data.items; actors.value = data.actors }
+    else { items.value = data.items; people.value = data.people || []; families.value = data.families || [] }
     total.value = data.total; hasMore.value = items.value.length < data.total
   } finally { loading.value = false; loadingMore.value = false }
 }
 
-function selectActor(name: string) { selectedActor.value = selectedActor.value === name ? null : name; loadFeed(false) }
-function clearActor() { selectedActor.value = null; loadFeed(false) }
+const hasFilter = () => selectedPerson.value !== null || selectedFamily.value !== null
+function selectPerson(name: string) {
+  selectedFamily.value = null
+  selectedPerson.value = selectedPerson.value === name ? null : name
+  loadFeed(false)
+}
+function selectFamily(family: string) {
+  selectedPerson.value = null
+  selectedFamily.value = selectedFamily.value === family ? null : family
+  loadFeed(false)
+}
+function clearFilters() { selectedPerson.value = null; selectedFamily.value = null; loadFeed(false) }
 
 async function toggleReaction(itemId: number, emoji: string) {
   const res = await fetch(`/api/feed/${itemId}/reactions`, { method: 'POST', headers: hdrs(), body: JSON.stringify({ emoji }) })
@@ -174,6 +188,18 @@ function mentionsFor(item: FeedItem): Mention[] {
   return mentions.filter(m => m.name && m.name !== item.actor_name)
 }
 
+// FID 5 grabbed live at mint time. Only a *probable* doer (a second QB
+// edit could land between webhook and fetch), so it renders as an
+// explicit "likely" chip — never the headline actor.
+function likelyDoer(item: FeedItem): string | null {
+  if (item.actor_name) return null
+  const meta = parsedMeta(item)
+  const name = meta.qb_last_modified_by?.trim()
+  if (!name) return null
+  if (meta.mentions?.some(m => m.name === name)) return null  // already chip-tagged
+  return name
+}
+
 function getHero(item: FeedItem) { return buildHero(item.event_type, parsedMeta(item)) }
 
 function getInitials(name: string) { return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) }
@@ -200,10 +226,30 @@ async function runIngest() { ingesting.value = true; try { await fetch('/api/adm
 // ── Live stream ──────────────────────────────────────────
 const { connected: liveConnected, onFeedItem } = useFeedLive()
 
+function liveItemFamily(item: LiveFeedItem): HeroFamily | 'status' | null {
+  if (item.event_type === 'status_change') return 'status'
+  if (item.event_type !== 'milestone' || !item.metadata) return null
+  try {
+    const meta = JSON.parse(item.metadata) as FeedMeta
+    return meta.milestone_col ? milestoneFamily(meta.milestone_col) : null
+  } catch { return null }
+}
+
 function handleLiveItem(item: LiveFeedItem) {
   if (items.value.some(i => i.id === item.id)) return
-  // Respect an active actor filter — count it, but don't show it.
-  if (selectedActor.value && item.actor_name !== selectedActor.value) { total.value++; return }
+  // Respect active filters — count mismatches, but don't show them.
+  if (selectedPerson.value) {
+    let matched = item.actor_name === selectedPerson.value
+    if (!matched) {
+      try {
+        const meta = JSON.parse(item.metadata || '{}') as FeedMeta
+        matched = (meta.mentions?.some(m => m.name === selectedPerson.value) ?? false)
+          || meta.qb_last_modified_by === selectedPerson.value
+      } catch { /* ignore */ }
+    }
+    if (!matched) { total.value++; return }
+  }
+  if (selectedFamily.value && liveItemFamily(item) !== selectedFamily.value) { total.value++; return }
   items.value.unshift(item as unknown as FeedItem)
   total.value++
 }
@@ -243,27 +289,40 @@ onUnmounted(() => { unsubLive?.() })
         </button>
       </header>
 
-      <!-- Story Circles -->
+      <!-- Story Circles: All · milestone families · people -->
       <div class="flex gap-4 overflow-x-auto pb-8 no-scrollbar scroll-smooth">
         <!-- All -->
-        <button class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectedActor ? clearActor() : null">
-          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="!selectedActor ? 'feed-sig-gradient' : 'bg-[#dbdddd]'">
+        <button class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="hasFilter() ? clearFilters() : null">
+          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="!hasFilter() ? 'feed-sig-gradient' : 'bg-[#dbdddd]'">
             <div class="w-full h-full rounded-full bg-white flex items-center justify-center">
-              <span class="text-sm font-bold" :class="!selectedActor ? 'feed-sig-text' : 'text-[#5a5c5c]'">All</span>
+              <span class="text-sm font-bold" :class="!hasFilter() ? 'feed-sig-text' : 'text-[#5a5c5c]'">All</span>
             </div>
           </div>
-          <span class="text-[10px] font-semibold uppercase tracking-wider" :class="!selectedActor ? 'text-feed-text' : 'text-feed-secondary'">Everyone</span>
+          <span class="text-[10px] font-semibold uppercase tracking-wider" :class="!hasFilter() ? 'text-feed-text' : 'text-feed-secondary'">Everything</span>
         </button>
 
-        <button v-for="actor in actors" :key="actor.actor_name" class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectActor(actor.actor_name)">
-          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="selectedActor === actor.actor_name ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : 'feed-sig-gradient'">
+        <!-- Milestone families -->
+        <button v-for="f in families" :key="f.family" class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectFamily(f.family)">
+          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="selectedFamily === f.family ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : 'bg-[#dbdddd]'">
             <div class="w-full h-full rounded-full bg-white p-0.5">
-              <div class="w-full h-full rounded-full bg-[#e7e8e8] flex items-center justify-center">
-                <span class="text-sm font-bold text-[#2d2f2f]">{{ getInitials(actor.actor_name) }}</span>
+              <div class="w-full h-full rounded-full flex items-center justify-center" :style="{ background: FAMILY_GRADIENTS[f.family as HeroFamily] || FAMILY_GRADIENTS.status }">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path :d="GHOST_ICONS[f.family as HeroFamily] || GHOST_ICONS.status" /></svg>
               </div>
             </div>
           </div>
-          <span class="text-[10px] font-semibold uppercase tracking-wider w-16 text-center truncate" :class="selectedActor === actor.actor_name ? 'text-feed-text' : 'text-feed-secondary'">{{ actor.actor_name.split(' ')[0] }}</span>
+          <span class="text-[10px] font-semibold uppercase tracking-wider w-16 text-center truncate" :class="selectedFamily === f.family ? 'text-feed-text' : 'text-feed-secondary'">{{ FAMILY_LABELS[f.family] || f.family }}</span>
+        </button>
+
+        <!-- People (credited actors + tagged coordinators) -->
+        <button v-for="p in people" :key="p.name" class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectPerson(p.name)">
+          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="selectedPerson === p.name ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : 'feed-sig-gradient'">
+            <div class="w-full h-full rounded-full bg-white p-0.5">
+              <div class="w-full h-full rounded-full bg-[#e7e8e8] flex items-center justify-center">
+                <span class="text-sm font-bold text-[#2d2f2f]">{{ getInitials(p.name) }}</span>
+              </div>
+            </div>
+          </div>
+          <span class="text-[10px] font-semibold uppercase tracking-wider w-16 text-center truncate" :class="selectedPerson === p.name ? 'text-feed-text' : 'text-feed-secondary'">{{ p.name.split(' ')[0] }}</span>
         </button>
       </div>
 
@@ -377,10 +436,10 @@ onUnmounted(() => { unsubLive?.() })
       </div>
 
       <!-- Filter bar -->
-      <div v-if="selectedActor" class="flex items-center gap-2 mb-6">
+      <div v-if="hasFilter()" class="flex items-center gap-2 mb-6">
         <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#ff7196]/10 text-[#4d001d] text-xs font-semibold">
-          {{ selectedActor }}
-          <button @click="clearActor" class="hover:opacity-60"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+          {{ selectedPerson || FAMILY_LABELS[selectedFamily!] || selectedFamily }}
+          <button @click="clearFilters" class="hover:opacity-60"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </span>
         <span class="text-xs text-feed-muted">{{ total }} items</span>
       </div>
@@ -409,11 +468,11 @@ onUnmounted(() => { unsubLive?.() })
                with a brand-mark avatar and no doer claim. -->
           <div class="p-4 flex items-center justify-between">
             <div v-if="item.actor_name" class="flex items-center gap-3">
-              <button @click="selectActor(item.actor_name)" class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative" :class="item.event_type === 'agent_run' ? 'bg-cyan-100' : 'bg-[#e7e8e8]'">
+              <button @click="selectPerson(item.actor_name)" class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative" :class="item.event_type === 'agent_run' ? 'bg-cyan-100' : 'bg-[#e7e8e8]'">
                 <span class="text-xs font-bold" :class="item.event_type === 'agent_run' ? 'text-cyan-700' : 'text-[#2d2f2f]'">{{ item.event_type === 'agent_run' ? 'AI' : getInitials(item.actor_name) }}</span>
               </button>
               <div>
-                <button class="text-sm font-bold text-[#2d2f2f] hover:opacity-70" @click="selectActor(item.actor_name)">{{ item.actor_name }}</button>
+                <button class="text-sm font-bold text-[#2d2f2f] hover:opacity-70" @click="selectPerson(item.actor_name)">{{ item.actor_name }}</button>
                 <p class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ item.project_name || item.qb_source }}</p>
               </div>
             </div>
@@ -499,13 +558,23 @@ onUnmounted(() => { unsubLive?.() })
                 {{ item.body && item.body !== item.title ? ' ' + item.body : '' }}
               </p>
 
-              <!-- Tagged people -->
-              <div v-if="mentionsFor(item).length" class="flex flex-wrap gap-1.5 pt-1">
+              <!-- Tagged people + likely doer -->
+              <div v-if="mentionsFor(item).length || likelyDoer(item)" class="flex flex-wrap gap-1.5 pt-1">
+                <button
+                  v-if="likelyDoer(item)"
+                  class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#f0f1f1] hover:bg-[#e7e8e8] transition-colors cursor-pointer border border-dashed border-[#c9cbcb]"
+                  :title="`Probably ${likelyDoer(item)} — based on QB last-modified at the moment this happened`"
+                  @click="selectPerson(likelyDoer(item)!)"
+                >
+                  <span class="w-5 h-5 rounded-full bg-white flex items-center justify-center text-[8px] font-bold text-[#2d2f2f]">{{ getInitials(likelyDoer(item)!) }}</span>
+                  <span class="text-[11px] font-semibold text-[#2d2f2f]">{{ likelyDoer(item) }}</span>
+                  <span class="text-[9px] uppercase tracking-wider text-[#757777] font-bold">likely</span>
+                </button>
                 <button
                   v-for="m in mentionsFor(item)" :key="m.name"
                   class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#f0f1f1] hover:bg-[#e7e8e8] transition-colors cursor-pointer"
                   :title="`See ${m.name}'s activity`"
-                  @click="selectActor(m.name)"
+                  @click="selectPerson(m.name)"
                 >
                   <span class="w-5 h-5 rounded-full bg-white flex items-center justify-center text-[8px] font-bold text-[#2d2f2f]">{{ getInitials(m.name) }}</span>
                   <span class="text-[11px] font-semibold text-[#2d2f2f]">{{ m.name }}</span>

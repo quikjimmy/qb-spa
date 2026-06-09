@@ -11,6 +11,9 @@ export interface FeedMeta {
   milestone_date?: string
   previous_date?: string
   mentions?: Mention[]
+  // FID 5 grabbed live at mint time — a *probable* doer, shown as an
+  // explicit "likely" credit when no certain actor exists.
+  qb_last_modified_by?: string | null
 }
 
 export type HeroFamily =
@@ -39,6 +42,34 @@ export const GHOST_ICONS: Record<HeroFamily, string> = {
   ticket: 'M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z M13 5v2 m0 4v2 m0 4v2',
   task: 'M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z m5.15 3.38 2 2 4-4',
   agent: 'M12 8V4H8 M4 8h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z M2 14h2 m16 0h2 m-7-1v2 m-6-2v2',
+}
+
+// Base gradients per family — used by the story circles (FeedView) and
+// kept in sync with the FeedHero scene backgrounds.
+export const FAMILY_GRADIENTS: Record<HeroFamily, string> = {
+  survey: 'linear-gradient(135deg, #0ea5e9, #4f46e5)',
+  design: 'linear-gradient(135deg, #7c3aed, #312e81)',
+  permit: 'linear-gradient(135deg, #f59e0b, #b45309)',
+  nem: 'linear-gradient(135deg, #0d9488, #155e75)',
+  install: 'linear-gradient(135deg, #f97316, #be123c)',
+  inspection: 'linear-gradient(135deg, #4338ca, #1e1b4b)',
+  pto: 'linear-gradient(135deg, #059669, #0f766e)',
+  status: 'linear-gradient(135deg, #475569, #1e293b)',
+  note: 'linear-gradient(135deg, #f59e0b, #ea580c)',
+  ticket: 'linear-gradient(135deg, #9f1239, #831843)',
+  task: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+  agent: 'linear-gradient(135deg, #0891b2, #1d4ed8)',
+}
+
+export const FAMILY_LABELS: Record<string, string> = {
+  survey: 'Survey',
+  design: 'Design',
+  permit: 'Permit',
+  nem: 'NEM',
+  install: 'Install',
+  inspection: 'Inspect',
+  pto: 'PTO',
+  status: 'Status',
 }
 
 export function milestoneFamily(col: string): HeroFamily {

@@ -18,6 +18,28 @@ router.get('/stream', (_req: Request, res: Response): void => {
   attachFeedSseStream(res)
 })
 
+// Milestone families for the story-circle filters. Matches both the
+// webhook-mint metadata (milestone_col) and legacy batch metadata
+// (numeric fieldId) so pre-attribution rows still bucket correctly.
+const FAMILY_DEF: Record<string, { cols: string[]; fids: number[] }> = {
+  survey: { cols: ['survey_scheduled', 'survey_submitted', 'survey_approved'], fids: [166, 164, 165] },
+  design: { cols: ['cad_submitted', 'design_completed'], fids: [699, 1774] },
+  permit: { cols: ['permit_submitted', 'permit_approved', 'permit_rejected'], fids: [207, 208, 706] },
+  nem: { cols: ['nem_submitted', 'nem_approved', 'nem_rejected'], fids: [326, 327, 1878] },
+  install: { cols: ['install_scheduled', 'install_completed'], fids: [178, 534] },
+  inspection: { cols: ['inspection_scheduled', 'inspection_passed'], fids: [226, 491] },
+  pto: { cols: ['pto_submitted', 'pto_approved'], fids: [537, 538] },
+}
+const FAMILY_ORDER = ['survey', 'design', 'permit', 'nem', 'install', 'inspection', 'pto', 'status']
+
+function familyForMeta(col: string | null, fid: number | null): string | null {
+  for (const [family, def] of Object.entries(FAMILY_DEF)) {
+    if (col && def.cols.includes(col)) return family
+    if (fid != null && def.fids.includes(fid)) return family
+  }
+  return null
+}
+
 // Get feed items with pagination, optional filters
 router.get('/', (req: Request, res: Response): void => {
   const userId = req.user!.userId
@@ -27,6 +49,8 @@ router.get('/', (req: Request, res: Response): void => {
   const actorName = req.query['actor_name'] as string | undefined
   const projectId = req.query['project_id'] as string | undefined
   const eventType = req.query['event_type'] as string | undefined
+  const family = req.query['family'] as string | undefined
+  const person = req.query['person'] as string | undefined
 
   let where = 'WHERE 1=1'
   const params: unknown[] = []
@@ -46,6 +70,29 @@ router.get('/', (req: Request, res: Response): void => {
   if (eventType) {
     where += ' AND f.event_type = ?'
     params.push(eventType)
+  }
+  // Story-circle filters: a milestone family, or a person who is either
+  // the credited actor OR tagged in metadata.mentions (coordinators are
+  // mentions, never actors — see lib/feedMint.ts attribution rules).
+  if (family === 'status') {
+    where += " AND f.event_type = 'status_change'"
+  } else if (family && FAMILY_DEF[family]) {
+    const def = FAMILY_DEF[family]!
+    where += ` AND f.event_type = 'milestone' AND json_valid(f.metadata) AND (
+      json_extract(f.metadata, '$.milestone_col') IN (${def.cols.map(() => '?').join(',')})
+      OR CAST(json_extract(f.metadata, '$.fieldId') AS INTEGER) IN (${def.fids.map(() => '?').join(',')})
+    )`
+    params.push(...def.cols, ...def.fids)
+  }
+  if (person) {
+    where += ` AND (f.actor_name = ? OR (json_valid(f.metadata) AND (
+      json_extract(f.metadata, '$.qb_last_modified_by') = ?
+      OR EXISTS (
+        SELECT 1 FROM json_each(json_extract(f.metadata, '$.mentions')) je
+        WHERE json_extract(je.value, '$.name') = ?
+      )
+    )))`
+    params.push(person, person, person)
   }
 
   const items = db.prepare(`
@@ -116,16 +163,67 @@ router.get('/', (req: Request, res: Response): void => {
     media: mediaMap[(item as { id: number }).id] || [],
   }))
 
-  // Get distinct actors with activity counts for the story bubbles
-  const actors = db.prepare(`
-    SELECT actor_name, actor_email, COUNT(*) as activity_count,
-      MAX(occurred_at) as latest_activity
-    FROM feed_items
-    WHERE actor_name IS NOT NULL AND actor_name != 'System'
-    GROUP BY actor_name
-    ORDER BY latest_activity DESC
-    LIMIT 30
-  `).all()
+  // Story bubbles: people = credited actors ∪ mention-tagged names
+  // (coordinators etc.). Attribution rules mean most QB posts have no
+  // actor, so mentions carry the people row.
+  let people: unknown[] = []
+  try {
+    people = db.prepare(`
+      SELECT name, SUM(c) as activity_count, MAX(latest) as latest_activity FROM (
+        SELECT actor_name as name, COUNT(*) as c, MAX(occurred_at) as latest
+        FROM feed_items
+        WHERE actor_name IS NOT NULL AND actor_name != 'System'
+        GROUP BY actor_name
+        UNION ALL
+        SELECT json_extract(je.value, '$.name') as name, COUNT(*) as c, MAX(f.occurred_at) as latest
+        FROM feed_items f, json_each(json_extract(f.metadata, '$.mentions')) je
+        WHERE f.metadata IS NOT NULL AND json_valid(f.metadata)
+        GROUP BY json_extract(je.value, '$.name')
+        UNION ALL
+        SELECT json_extract(metadata, '$.qb_last_modified_by') as name, COUNT(*) as c, MAX(occurred_at) as latest
+        FROM feed_items
+        WHERE actor_name IS NULL AND metadata IS NOT NULL AND json_valid(metadata)
+        GROUP BY json_extract(metadata, '$.qb_last_modified_by')
+      )
+      WHERE name IS NOT NULL AND name != ''
+      GROUP BY name
+      ORDER BY latest_activity DESC
+      LIMIT 30
+    `).all()
+  } catch (e) {
+    console.error('[feed] people aggregation failed:', e instanceof Error ? e.message : e)
+  }
+
+  // Story bubbles: milestone families (+ status), bucketed from metadata.
+  const families: Array<{ family: string; count: number; latest_activity: string }> = []
+  try {
+    const famRaw = db.prepare(`
+      SELECT json_extract(metadata, '$.milestone_col') as col,
+             CAST(json_extract(metadata, '$.fieldId') AS INTEGER) as fid,
+             COUNT(*) as c, MAX(occurred_at) as latest
+      FROM feed_items
+      WHERE event_type = 'milestone' AND metadata IS NOT NULL AND json_valid(metadata)
+      GROUP BY 1, 2
+    `).all() as Array<{ col: string | null; fid: number | null; c: number; latest: string }>
+    const agg = new Map<string, { count: number; latest_activity: string }>()
+    for (const row of famRaw) {
+      const fam = familyForMeta(row.col, row.fid)
+      if (!fam) continue
+      const cur = agg.get(fam)
+      if (cur) { cur.count += row.c; if (row.latest > cur.latest_activity) cur.latest_activity = row.latest }
+      else agg.set(fam, { count: row.c, latest_activity: row.latest })
+    }
+    const statusAgg = db.prepare(`
+      SELECT COUNT(*) as c, MAX(occurred_at) as latest FROM feed_items WHERE event_type = 'status_change'
+    `).get() as { c: number; latest: string | null }
+    if (statusAgg.c > 0 && statusAgg.latest) agg.set('status', { count: statusAgg.c, latest_activity: statusAgg.latest })
+    for (const fam of FAMILY_ORDER) {
+      const entry = agg.get(fam)
+      if (entry) families.push({ family: fam, ...entry })
+    }
+  } catch (e) {
+    console.error('[feed] family aggregation failed:', e instanceof Error ? e.message : e)
+  }
 
   // Get distinct event types for filter
   const eventTypes = db.prepare(`
@@ -137,7 +235,8 @@ router.get('/', (req: Request, res: Response): void => {
     total: total.count,
     limit,
     offset,
-    actors,
+    people,
+    families,
     eventTypes,
   })
 })

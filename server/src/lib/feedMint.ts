@@ -222,8 +222,11 @@ function insertAndPublish(
   eventId: number | undefined,
 ): number {
   const projectName = str(fresh, 'customer_name') || null
-  // Audit hint only — never rendered as the doer (see resolveActor).
+  // "Likely doer" hint from the live fetch (FID 5) — rendered as an
+  // explicitly-uncertain "likely" credit, never the headline actor
+  // (see resolveActor for why it can't be trusted as fact).
   const lmbHint = str(fresh, 'last_modified_by').trim() || null
+  const lmbEmailHint = str(fresh, 'last_modified_by_email').trim() || null
   const batchStart = Date.now()
   let minted = 0
   for (const [i, p] of posts.entries()) {
@@ -231,6 +234,7 @@ function insertAndPublish(
       source: 'webhook',
       actor_source: actor ? 'webhook' : 'none',
       qb_last_modified_by: lmbHint,
+      qb_last_modified_by_email: lmbEmailHint,
       webhook_event_id: eventId ?? null,
       mentions,
       ...p.meta,
