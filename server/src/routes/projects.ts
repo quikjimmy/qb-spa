@@ -610,7 +610,12 @@ export async function fetchOneLive(recordId: number): Promise<Record<string, unk
     body: JSON.stringify({
       from: 'br9kwm8na',
       select: selectFids,
-      where: `{3.EX.${recordId}}AND{622.EX.'false'}`,
+      // No test-project (FID 622) exclusion here: this single-record fetch
+      // backs the detail view, so an admin who flags a project as a test
+      // must still be able to open it (and un-flag it). List, tier and
+      // full-refresh queries keep the {622.EX.'false'} filter so test
+      // projects stay out of every pipeline/list.
+      where: `{3.EX.${recordId}}`,
       options: { top: 1 },
     }),
   })
@@ -954,7 +959,10 @@ router.get('/', (req: Request, res: Response): void => {
   ).all(userId) as Array<{ project_id: number }>
   const favSet = new Set(favRows.map(f => f.project_id))
 
-  let where = 'WHERE 1=1'
+  // Test projects (FID 622) never appear in list/pipeline views. They can
+  // only be reached by direct record link — the single-record fetch above
+  // intentionally skips this filter so admins can view and un-flag them.
+  let where = 'WHERE 1=1 AND (test_project IS NULL OR test_project = 0)'
   const params: unknown[] = []
 
   if (favoritesOnly) {
