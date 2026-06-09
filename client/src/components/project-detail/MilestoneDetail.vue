@@ -5,6 +5,7 @@ import { fmtFull } from '@/lib/milestoneStrip'
 import { STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
 import IntakeChecklist from './IntakeChecklist.vue'
 import RetentionCard from './RetentionCard.vue'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -40,9 +41,15 @@ const props = defineProps<{
   /** Project-level intake decision (Approved / Rejected / Pending) —
    *  forwarded to IntakeChecklist for its header pill. */
   intakeStatus?: string | null
+  /** Admin-only "Test Project" flag (QB FID 622), shown on the Intake step.
+   *  The value is owned by the parent; toggling emits `toggleTestProject`
+   *  which writes back to QuickBase. `testProjectSaving` disables the input
+   *  while the write is in flight. */
+  isTestProject?: boolean
+  testProjectSaving?: boolean
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; toggleTestProject: [value: boolean] }>()
 
 const arrivyInfo = computed(() => props.arrivyStatus ? STATUS_INFO[props.arrivyStatus] : null)
 
@@ -202,6 +209,21 @@ function fmtTime(s: string): string {
          decision pill comes from the project (intake_status, fid 347). -->
     <div v-if="step.id === 'intake' && projectRid" class="px-4 pb-4">
       <IntakeChecklist :project-rid="projectRid" :status="intakeStatus" />
+      <!-- Admin-only QB "Test Project" (FID 622) toggle. Flagging removes the
+           project from every list/pipeline view; it stays reachable by direct
+           link. Writes back to QuickBase via the parent. -->
+      <label
+        v-if="auth.isAdmin"
+        class="mt-3 inline-flex items-center gap-2.5 cursor-pointer select-none text-[12.5px] text-slate-600"
+      >
+        <Checkbox
+          :model-value="isTestProject"
+          :disabled="testProjectSaving"
+          @update:model-value="(v) => emit('toggleTestProject', v === true)"
+        />
+        <span>Mark as Test Project</span>
+        <span v-if="testProjectSaving" class="text-[11px] text-slate-400">saving…</span>
+      </label>
     </div>
 
     <!-- Retention sub-view — replaces the standard sub-step grid for the

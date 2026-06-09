@@ -352,6 +352,34 @@ async function loadProject() {
   }
 }
 
+const testProjectSaving = ref(false)
+const isTestProject = computed(() => Boolean(Number(project.value?.test_project ?? 0)))
+
+// Admin-only: flip the QB "Test Project" flag (FID 622) and write it straight
+// back to QuickBase via the upsert proxy. Optimistic — revert on failure.
+// Flagging a project hides it from every list; it stays viewable here because
+// the single-record fetch deliberately skips the test-project exclusion.
+async function toggleTestProject(value: boolean) {
+  if (!project.value || testProjectSaving.value) return
+  const rid = project.value.record_id
+  const prev = project.value.test_project
+  testProjectSaving.value = true
+  project.value = { ...project.value, test_project: value ? 1 : 0 }
+  try {
+    const res = await fetch('/api/qb/upsert', {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({ to: 'br9kwm8na', data: [{ '3': { value: rid }, '622': { value } }] }),
+    })
+    if (!res.ok) throw new Error(`Failed to update Test Project flag (${res.status})`)
+  } catch (e) {
+    project.value = { ...project.value, test_project: prev }
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    testProjectSaving.value = false
+  }
+}
+
 async function loadComms() {
   try {
     const res = await fetch(`/api/pc-dashboard/comms?project_id=${recordId.value}&limit=200`, { headers: hdrs() })
@@ -813,6 +841,9 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             :cancelled-by="selectedStepArrivy?.cancelledBy ?? null"
             :project-rid="project.record_id"
             :intake-status="project.intake_status ?? null"
+            :is-test-project="isTestProject"
+            :test-project-saving="testProjectSaving"
+            @toggle-test-project="toggleTestProject"
             @close="closeDetail"
           />
         </div>
