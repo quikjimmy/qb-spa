@@ -95,12 +95,18 @@ router.get('/', (req: Request, res: Response): void => {
     params.push(person, person, person)
   }
 
+  // Sort by "when the feed learned it", not raw occurred_at: batch
+  // backfill stamps scheduled milestones with the milestone date itself,
+  // and a future-dated "Install Scheduled (Jun 22)" would otherwise pin
+  // the top of the feed forever, burying live webhook posts beneath it.
+  // MIN(occurred_at, ingested_at) keeps past events on their real date
+  // and future-dated announcements on the day we learned about them.
   const items = db.prepare(`
     SELECT f.*,
       (SELECT COUNT(*) FROM comments c WHERE c.feed_item_id = f.id) as comment_count
     FROM feed_items f
     ${where}
-    ORDER BY f.occurred_at DESC
+    ORDER BY MIN(f.occurred_at, f.ingested_at) DESC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset)
 

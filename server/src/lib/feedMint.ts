@@ -220,6 +220,7 @@ function insertAndPublish(
   actor: { name: string; email: string | null } | null,
   mentions: Mention[],
   eventId: number | undefined,
+  source: 'webhook' | 'scheduler',
 ): number {
   const projectName = str(fresh, 'customer_name') || null
   // "Likely doer" hint from the live fetch (FID 5) — rendered as an
@@ -231,7 +232,7 @@ function insertAndPublish(
   let minted = 0
   for (const [i, p] of posts.entries()) {
     const metadata = JSON.stringify({
-      source: 'webhook',
+      source,
       actor_source: actor ? 'webhook' : 'none',
       qb_last_modified_by: lmbHint,
       qb_last_modified_by_email: lmbEmailHint,
@@ -272,7 +273,7 @@ export function mintFromProjectDiff(
   oldRow: CacheRow | undefined,
   fresh: CacheRow,
   payloadActor: PayloadActor | null,
-  opts: { eventId?: number } = {},
+  opts: { eventId?: number; source?: 'webhook' | 'scheduler' } = {},
 ): { minted: number } {
   // First-ever cache of this project: no baseline — minting would post
   // the project's entire milestone history at once.
@@ -345,8 +346,8 @@ export function mintFromProjectDiff(
       dedupKey: `projects:${rid}:bulk:${cols.join('+')}`,
       meta: { tone: 'scheduled', updates: posts.map(p => p.title) },
     }
-    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId) }
+    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook') }
   }
 
-  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId) }
+  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook') }
 }

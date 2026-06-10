@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { isReferralAgent, activationWhere, canViewerSeeProject } from '../lib/referralAgent'
+import { mintFromProjectDiff } from '../lib/feedMint'
 
 const router = Router()
 
@@ -785,9 +786,18 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
       VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
     `)
 
+    // Snapshot pre-refresh rows so the feed can mint posts for milestone
+    // transitions the scheduler absorbs (fields without their own QB
+    // webhook). Watermark filtering keeps allRecords small, so the extra
+    // SELECT per row is cheap.
+    const snapshotStmt = db.prepare(`SELECT * FROM project_cache WHERE record_id = ?`)
+    const oldRows = new Map<number, Record<string, unknown> | undefined>()
+
     let changed = 0
     db.transaction(() => {
       for (const rec of allRecords) {
+        const rid = parseInt(val(rec, 3))
+        if (rid) oldRows.set(rid, snapshotStmt.get(rid) as Record<string, unknown> | undefined)
         const computedTier = classifyTier({
           status: val(rec, 255) || null,
           install_scheduled: val(rec, 178) || null,
@@ -802,6 +812,20 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
         changed++
       }
     })()
+
+    // Mint AFTER commit — best-effort, never fails the refresh. Posts are
+    // unattributed (a scheduler pull has no doer); dedup_key ensures any
+    // webhook that already minted the same transition wins.
+    let minted = 0
+    for (const [rid, oldRow] of oldRows) {
+      try {
+        const fresh = snapshotStmt.get(rid) as Record<string, unknown> | undefined
+        if (fresh) minted += mintFromProjectDiff(oldRow, fresh, null, { source: 'scheduler' }).minted
+      } catch (e) {
+        console.error(`[feed-mint] scheduler mint failed for project ${rid}:`, e instanceof Error ? e.message : e)
+      }
+    }
+    if (minted > 0) console.log(`[feed-mint] tier=${tier} minted ${minted} feed post(s)`)
 
     const nextWatermark = maxQbModified(watermark, allRecords)
     if (!watermark && nextWatermark) seedMissingTierWatermarks(nextWatermark)

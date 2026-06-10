@@ -236,6 +236,9 @@ function parseDbDate(d: string): Date {
 function timeAgo(d: string) {
   if (!d) return ''
   const diff = Date.now() - parseDbDate(d).getTime(); const m = Math.floor(diff / 60000)
+  // Future-dated (scheduled milestones from backfill): show the date,
+  // not a bogus "JUST NOW".
+  if (m < -60) return parseDbDate(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()
   if (m < 1) return 'JUST NOW'; if (m < 60) return `${m}M AGO`
   const h = Math.floor(m / 60); if (h < 24) return `${h}H AGO`
   const days = Math.floor(h / 24); if (days < 7) return `${days}D AGO`
