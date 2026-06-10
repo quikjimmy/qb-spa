@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, onMounted, onUnmounted } from 'vue'
+import { ref, watch, inject, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFeedLive, type LiveFeedItem } from '@/lib/feedLive'
 import { buildHero, milestoneFamily, FAMILY_GRADIENTS, FAMILY_LABELS, GHOST_ICONS, type FeedMeta, type Mention, type HeroFamily } from '@/lib/feedHero'
@@ -247,6 +247,30 @@ async function runIngest() { ingesting.value = true; try { await fetch('/api/adm
 
 // ── Live stream ──────────────────────────────────────────
 const { connected: liveConnected, onFeedItem } = useFeedLive()
+
+// Posts minted while the stream was down (deploys sever SSE with an
+// HTTP2 protocol error; the singleton reconnects with backoff) would
+// otherwise be missed until a manual refresh. On every reconnect,
+// fetch page 1 and prepend anything we haven't seen.
+async function syncAfterReconnect() {
+  try {
+    const params = new URLSearchParams({ limit: '20', offset: '0' })
+    if (selectedPerson.value) params.set('person', selectedPerson.value)
+    if (selectedFamily.value) params.set('family', selectedFamily.value)
+    const res = await fetch(`/api/feed?${params}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    const known = new Set(items.value.map(i => i.id))
+    const fresh = (data.items as FeedItem[]).filter(i => !known.has(i.id))
+    if (fresh.length) {
+      items.value.unshift(...fresh)
+      total.value = data.total
+      people.value = data.people || people.value
+      families.value = data.families || families.value
+    }
+  } catch { /* next reconnect retries */ }
+}
+watch(liveConnected, (now, prev) => { if (now && !prev) syncAfterReconnect() })
 
 function liveItemFamily(item: LiveFeedItem): HeroFamily | 'status' | null {
   if (item.event_type === 'status_change') return 'status'
