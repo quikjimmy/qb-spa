@@ -9,8 +9,16 @@ const props = defineProps<{
   projectName: string | null
 }>()
 
+const emit = defineEmits<{ 'open-project': [projectId: number] }>()
+
 const toneClass = computed(() =>
   props.hero.tone === 'scheduled' ? 'hero--airy' : props.hero.tone === 'attention' ? 'hero--attn' : '',
+)
+
+// Sparks celebrate the two biggest moments: PTO (system live) and a
+// completed install.
+const showSparks = computed(() =>
+  props.hero.family === 'pto' || (props.hero.family === 'install' && props.hero.tone === 'celebration'),
 )
 </script>
 
@@ -28,7 +36,7 @@ const toneClass = computed(() =>
     <svg v-if="hero.family === 'nem'" class="pulse" viewBox="0 0 400 60" preserveAspectRatio="none" aria-hidden="true">
       <path d="M0 30 L120 30 L140 12 L165 48 L185 30 L400 30" fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="1.5" />
     </svg>
-    <template v-if="hero.family === 'pto'">
+    <template v-if="showSparks">
       <span class="spark s1" aria-hidden="true" /><span class="spark s2" aria-hidden="true" />
       <span class="spark s3" aria-hidden="true" /><span class="spark s4" aria-hidden="true" />
     </template>
@@ -39,7 +47,16 @@ const toneClass = computed(() =>
     <!-- Content -->
     <span class="hero-chip relative z-10 inline-flex items-center px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-white/90 mb-4">{{ hero.kicker }}</span>
     <h3 class="relative z-10 text-2xl sm:text-3xl font-black text-white tracking-tight leading-tight">{{ title }}</h3>
-    <p v-if="projectName" class="relative z-10 text-white/70 text-sm font-medium mt-2">#{{ projectId }} {{ projectName }}</p>
+    <button
+      v-if="projectName && projectId"
+      class="relative z-10 inline-flex items-center gap-1 text-white/80 text-sm font-semibold mt-2 underline decoration-white/40 underline-offset-4 hover:text-white hover:decoration-white transition-colors cursor-pointer"
+      :title="`Quick view: ${projectName}`"
+      @click="emit('open-project', projectId)"
+    >
+      {{ projectName }}
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10" /><path d="M7 17 17 7" /></svg>
+    </button>
+    <p v-else-if="projectName" class="relative z-10 text-white/70 text-sm font-medium mt-2">{{ projectName }}</p>
     <p v-if="hero.dateLine" class="hero-chip relative z-10 text-white text-xs font-bold mt-4 px-3.5 py-1.5 rounded-full">{{ hero.dateLine }}</p>
   </div>
 </template>

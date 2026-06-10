@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useFeedLive, type LiveFeedItem } from '@/lib/feedLive'
 import { buildHero, milestoneFamily, FAMILY_GRADIENTS, FAMILY_LABELS, GHOST_ICONS, type FeedMeta, type Mention, type HeroFamily } from '@/lib/feedHero'
 import FeedHero from '@/components/feed/FeedHero.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
@@ -169,6 +170,27 @@ async function submitPost() {
 }
 
 onUnmounted(() => composePreviews.value.forEach(url => URL.revokeObjectURL(url)))
+
+// ── Project quick peek ───────────────────────────────────
+// Clicking a customer name opens the lite right-drawer project view
+// (ProjectDetailDialog) without leaving the feed. The dialog renders
+// from a project_cache row, so one cached fetch is all it needs.
+interface PeekProject { record_id: number; customer_name: string; [k: string]: unknown }
+const peekProject = ref<PeekProject | null>(null)
+const peekLoadingId = ref<number | null>(null)
+
+async function openProjectPeek(projectId: number | null | undefined) {
+  if (!projectId || peekLoadingId.value === projectId) return
+  peekLoadingId.value = projectId
+  try {
+    const res = await fetch(`/api/projects/${projectId}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    if (data.project?.record_id) peekProject.value = data.project as PeekProject
+  } catch { /* peek is best-effort */ } finally {
+    peekLoadingId.value = null
+  }
+}
 
 // ── Metadata, hero scenes, mentions ──────────────────────
 
@@ -473,7 +495,13 @@ onUnmounted(() => { unsubLive?.() })
               </button>
               <div>
                 <button class="text-sm font-bold text-[#2d2f2f] hover:opacity-70" @click="selectPerson(item.actor_name)">{{ item.actor_name }}</button>
-                <p class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ item.project_name || item.qb_source }}</p>
+                <button
+                  v-if="item.project_id"
+                  class="block text-[10px] font-semibold tracking-wide uppercase text-[#b6004f] underline decoration-[#b6004f]/30 underline-offset-2 hover:decoration-[#b6004f] transition-colors cursor-pointer"
+                  :title="`Quick view: ${item.project_name}`"
+                  @click="openProjectPeek(item.project_id)"
+                >{{ item.project_name }}</button>
+                <p v-else class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ item.project_name || item.qb_source }}</p>
               </div>
             </div>
             <div v-else class="flex items-center gap-3">
@@ -481,7 +509,13 @@ onUnmounted(() => { unsubLive?.() })
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="getHero(item).icon" /></svg>
               </div>
               <div>
-                <p class="text-sm font-bold text-[#2d2f2f]">{{ item.project_name || 'Kin Home' }}</p>
+                <button
+                  v-if="item.project_id"
+                  class="text-sm font-bold text-[#2d2f2f] underline decoration-[#b6004f]/30 underline-offset-2 hover:text-[#b6004f] hover:decoration-[#b6004f] transition-colors cursor-pointer"
+                  :title="`Quick view: ${item.project_name}`"
+                  @click="openProjectPeek(item.project_id)"
+                >{{ item.project_name || 'Kin Home' }}</button>
+                <p v-else class="text-sm font-bold text-[#2d2f2f]">{{ item.project_name || 'Kin Home' }}</p>
                 <p class="text-[10px] text-[#5a5c5c] font-medium tracking-wide uppercase">{{ getHero(item).kicker }}</p>
               </div>
             </div>
@@ -489,7 +523,7 @@ onUnmounted(() => { unsubLive?.() })
 
           <!-- Hero content area (not for user posts) -->
           <div v-if="item.event_type !== 'user_post'" class="sm:px-4">
-            <FeedHero :hero="getHero(item)" :title="item.title" :project-id="item.project_id" :project-name="item.project_name" />
+            <FeedHero :hero="getHero(item)" :title="item.title" :project-id="item.project_id" :project-name="item.project_name" @open-project="openProjectPeek" />
           </div>
 
           <!-- Media gallery -->
@@ -623,6 +657,9 @@ onUnmounted(() => { unsubLive?.() })
         </button>
       </div>
     </div>
+
+    <!-- Project quick peek (right-side drawer) -->
+    <ProjectDetailDialog :project="peekProject" @update:open="(v: boolean) => { if (!v) peekProject = null }" />
   </div>
 </template>
 
