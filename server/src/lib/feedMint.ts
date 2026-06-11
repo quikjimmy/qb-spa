@@ -89,6 +89,26 @@ const STORM_CAP = 5
 
 const NOTIFY_MENTIONS = true
 
+// QB pipelines/automations run AS their owning user, so [Last Modified
+// By] — and even the payload's merge-field actor — names the pipeline
+// OWNER for changes the automation made, not whoever did the real work.
+// Identities listed here (comma-separated names/emails in
+// FEED_AUTOMATION_ACTORS, case-insensitive) are never credited or
+// "likely"-chipped; their posts get an honest "Automated" marker
+// instead. Note the tradeoff: a listed account's GENUINE manual edits
+// also demote — use a dedicated service account for pipelines to keep
+// personal attribution clean.
+const AUTOMATION_ACTORS = new Set(
+  (process.env['FEED_AUTOMATION_ACTORS'] || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+)
+
+function isAutomationActor(name: string | null | undefined, email: string | null | undefined): boolean {
+  if (AUTOMATION_ACTORS.size === 0) return false
+  return (!!name && AUTOMATION_ACTORS.has(name.trim().toLowerCase()))
+    || (!!email && AUTOMATION_ACTORS.has(email.trim().toLowerCase()))
+}
+
 function isSet(v: unknown): boolean {
   if (v == null) return false
   const s = String(v).trim()
@@ -221,19 +241,24 @@ function insertAndPublish(
   mentions: Mention[],
   eventId: number | undefined,
   source: 'webhook' | 'scheduler',
+  actorWasAutomation: boolean,
 ): number {
   const projectName = str(fresh, 'customer_name') || null
   // "Likely doer" hint from the live fetch (FID 5) — rendered as an
   // explicitly-uncertain "likely" credit, never the headline actor
-  // (see resolveActor for why it can't be trusted as fact).
-  const lmbHint = str(fresh, 'last_modified_by').trim() || null
-  const lmbEmailHint = str(fresh, 'last_modified_by_email').trim() || null
+  // (see resolveActor for why it can't be trusted as fact). Suppressed
+  // entirely when it names an automation identity.
+  let lmbHint = str(fresh, 'last_modified_by').trim() || null
+  let lmbEmailHint = str(fresh, 'last_modified_by_email').trim() || null
+  const lmbIsAutomation = isAutomationActor(lmbHint, lmbEmailHint)
+  if (lmbIsAutomation) { lmbHint = null; lmbEmailHint = null }
   const batchStart = Date.now()
   let minted = 0
   for (const [i, p] of posts.entries()) {
     const metadata = JSON.stringify({
       source,
       actor_source: actor ? 'webhook' : 'none',
+      automated: (lmbIsAutomation || actorWasAutomation) || undefined,
       qb_last_modified_by: lmbHint,
       qb_last_modified_by_email: lmbEmailHint,
       webhook_event_id: eventId ?? null,
@@ -283,7 +308,10 @@ export function mintFromProjectDiff(
   if (!Number.isFinite(rid) || rid <= 0) return { minted: 0 }
 
   const customer = str(fresh, 'customer_name') || 'this project'
-  const actor = resolveActor(payloadActor)
+  // A payload actor that names an automation identity demotes to
+  // unattributed — the pipeline owner didn't do the work.
+  const payloadIsAutomation = isAutomationActor(payloadActor?.name ?? null, payloadActor?.email ?? null)
+  const actor = payloadIsAutomation ? null : resolveActor(payloadActor)
   const mentions = resolveMentions(fresh)
 
   const posts: PendingPost[] = []
@@ -346,8 +374,8 @@ export function mintFromProjectDiff(
       dedupKey: `projects:${rid}:bulk:${cols.join('+')}`,
       meta: { tone: 'scheduled', updates: posts.map(p => p.title) },
     }
-    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook') }
+    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation) }
   }
 
-  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook') }
+  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation) }
 }

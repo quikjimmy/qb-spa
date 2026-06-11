@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, inject, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFeedLive, type LiveFeedItem } from '@/lib/feedLive'
 import { buildHero, milestoneFamily, FAMILY_GRADIENTS, FAMILY_LABELS, GHOST_ICONS, type FeedMeta, type Mention, type HeroFamily } from '@/lib/feedHero'
@@ -92,10 +92,12 @@ async function postComment(itemId: number) {
   if (!body) return
   postingComment.value.add(itemId)
   try {
-    const res = await fetch(`/api/feed/${itemId}/comments`, { method: 'POST', headers: hdrs(), body: JSON.stringify({ body }) })
+    const mentions = activeMentions(commentMentions.value.get(itemId) || [], body)
+    const res = await fetch(`/api/feed/${itemId}/comments`, { method: 'POST', headers: hdrs(), body: JSON.stringify({ body, mentions }) })
     const data = await res.json()
     commentsByItem.value.set(itemId, [...(commentsByItem.value.get(itemId) || []), data.comment])
     commentInput.value.set(itemId, '')
+    commentMentions.value.delete(itemId)
     const item = items.value.find(i => i.id === itemId); if (item) item.comment_count++
   } finally { postingComment.value.delete(itemId) }
 }
@@ -150,6 +152,7 @@ function removeFile(idx: number) {
 function cancelCompose() {
   composePreviews.value.forEach(url => URL.revokeObjectURL(url))
   composeBody.value = ''; composeFiles.value = []; composePreviews.value = []; showCompose.value = false
+  composeMentions.value = []; if (mentionCtx.value === 'compose') mentionCtx.value = null
 }
 
 async function submitPost() {
@@ -158,6 +161,7 @@ async function submitPost() {
   try {
     const fd = new FormData()
     fd.append('body', composeBody.value.trim())
+    fd.append('mentions', JSON.stringify(activeMentions(composeMentions.value, composeBody.value)))
     for (const file of composeFiles.value) fd.append('media', file)
     await fetch('/api/feed', {
       method: 'POST',
@@ -170,6 +174,74 @@ async function submitPost() {
 }
 
 onUnmounted(() => composePreviews.value.forEach(url => URL.revokeObjectURL(url)))
+
+// ── @Mentions ────────────────────────────────────────────
+// Typing "@" in the compose box or a comment input opens a picker over
+// portal users + departments. Selections are tracked as structured
+// {type, id} pairs and validated server-side; department mentions fan
+// out notifications to every member.
+interface MentionTarget { type: 'user' | 'department'; id: number; name: string; member_count?: number }
+
+const mentionTargets = ref<MentionTarget[]>([])
+let mentionTargetsLoaded = false
+async function ensureMentionTargets() {
+  if (mentionTargetsLoaded) return
+  mentionTargetsLoaded = true
+  try {
+    const res = await fetch('/api/feed/mention-targets', { headers: hdrs() })
+    if (!res.ok) { mentionTargetsLoaded = false; return }
+    const data = await res.json()
+    mentionTargets.value = [
+      ...(data.departments || []).map((d: { id: number; name: string; member_count: number }) =>
+        ({ type: 'department' as const, id: d.id, name: d.name, member_count: d.member_count })),
+      ...(data.users || []).map((u: { id: number; name: string }) =>
+        ({ type: 'user' as const, id: u.id, name: u.name })),
+    ]
+  } catch { mentionTargetsLoaded = false }
+}
+
+const MENTION_TAIL = /@([\w][\w .'-]{0,30})?$/
+
+const mentionCtx = ref<'compose' | number | null>(null)
+const mentionQuery = ref('')
+const composeMentions = ref<MentionTarget[]>([])
+const commentMentions = ref<Map<number, MentionTarget[]>>(new Map())
+
+const mentionMatches = computed(() => {
+  if (mentionCtx.value === null) return []
+  const q = mentionQuery.value.toLowerCase()
+  return mentionTargets.value.filter(t => t.name.toLowerCase().includes(q)).slice(0, 6)
+})
+
+function detectMention(text: string, ctx: 'compose' | number) {
+  const m = MENTION_TAIL.exec(text)
+  if (m && (m.index === 0 || /\s/.test(text[m.index - 1] ?? ' '))) {
+    mentionCtx.value = ctx
+    mentionQuery.value = (m[1] || '').trim()
+    ensureMentionTargets()
+  } else if (mentionCtx.value === ctx) {
+    mentionCtx.value = null
+  }
+}
+
+function applyMention(t: MentionTarget) {
+  const ctx = mentionCtx.value
+  if (ctx === 'compose') {
+    composeBody.value = composeBody.value.replace(MENTION_TAIL, `@${t.name} `)
+    if (!composeMentions.value.some(x => x.type === t.type && x.id === t.id)) composeMentions.value.push(t)
+  } else if (typeof ctx === 'number') {
+    const cur = commentInput.value.get(ctx) || ''
+    commentInput.value.set(ctx, cur.replace(MENTION_TAIL, `@${t.name} `))
+    const list = commentMentions.value.get(ctx) || []
+    if (!list.some(x => x.type === t.type && x.id === t.id)) { list.push(t); commentMentions.value.set(ctx, list) }
+  }
+  mentionCtx.value = null
+}
+
+// Only send mentions whose @Name survived edits to the final text.
+function activeMentions(list: MentionTarget[], text: string): Array<{ type: string; id: number }> {
+  return list.filter(t => text.includes(`@${t.name}`)).map(t => ({ type: t.type, id: t.id }))
+}
 
 // ── Project quick peek ───────────────────────────────────
 // Clicking a customer name opens the lite right-drawer project view
@@ -208,6 +280,25 @@ function mentionsFor(item: FeedItem): Mention[] {
   const mentions = parsedMeta(item).mentions || []
   // The actor already headlines the post — a chip would be redundant.
   return mentions.filter(m => m.name && m.name !== item.actor_name)
+}
+
+// Post body split on stored mention names so @Name renders highlighted
+// and tappable. Names come from validated metadata, not free text.
+function captionSegments(item: FeedItem): Array<{ text: string; mention: boolean }> {
+  const body = item.body && item.body !== item.title ? item.body : ''
+  if (!body) return []
+  const names = (parsedMeta(item).mentions || []).map(m => m.name).filter(Boolean)
+  if (!names.length) return [{ text: body, mention: false }]
+  const pattern = new RegExp('@(' + names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'g')
+  const segs: Array<{ text: string; mention: boolean }> = []
+  let last = 0
+  for (let m = pattern.exec(body); m; m = pattern.exec(body)) {
+    if (m.index > last) segs.push({ text: body.slice(last, m.index), mention: false })
+    segs.push({ text: m[0], mention: true })
+    last = m.index + m[0].length
+  }
+  if (last < body.length) segs.push({ text: body.slice(last), mention: false })
+  return segs
 }
 
 // FID 5 grabbed live at mint time. Only a *probable* doer (a second QB
@@ -417,15 +508,30 @@ onUnmounted(() => { unsubLive?.() })
             <div class="w-10 h-10 rounded-full bg-[#e7e8e8] flex items-center justify-center shrink-0">
               <span class="text-xs font-bold text-[#2d2f2f]">{{ getInitials(auth.user?.name || '?') }}</span>
             </div>
-            <div class="flex-1 min-w-0 pt-1">
+            <div class="flex-1 min-w-0 pt-1 relative">
               <p class="text-sm font-bold text-[#2d2f2f]">{{ auth.user?.name }}</p>
               <textarea
                 v-model="composeBody"
-                placeholder="Share an update, milestone, or thought..."
+                placeholder="Share an update, milestone, or thought... Use @ to tag people or teams"
                 rows="4"
                 class="w-full mt-2 text-[15px] leading-relaxed text-[#2d2f2f] bg-transparent border-0 outline-none resize-none placeholder:text-[#acadad]"
                 autofocus
+                @input="detectMention(composeBody, 'compose')"
               />
+              <!-- Mention picker -->
+              <div v-if="mentionCtx === 'compose' && mentionMatches.length" class="absolute left-0 right-0 top-full z-20 bg-white rounded-2xl feed-soft-shadow border border-[#f0f1f1] overflow-hidden">
+                <button
+                  v-for="t in mentionMatches" :key="t.type + t.id"
+                  class="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-[#f6f6f6] transition-colors cursor-pointer text-left"
+                  @click="applyMention(t)"
+                >
+                  <span class="w-7 h-7 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" :class="t.type === 'department' ? 'feed-sig-gradient text-white' : 'bg-[#e7e8e8] text-[#2d2f2f]'">
+                    {{ t.type === 'department' ? 'T' : getInitials(t.name) }}
+                  </span>
+                  <span class="text-sm font-semibold text-[#2d2f2f]">{{ t.name }}</span>
+                  <span v-if="t.type === 'department'" class="text-[10px] uppercase tracking-wider text-[#757777] font-bold ml-auto">Team · {{ t.member_count }}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -615,12 +721,19 @@ onUnmounted(() => { unsubLive?.() })
             <!-- Caption (Instagram style) -->
             <div class="space-y-2">
               <p class="text-sm leading-relaxed text-[#2d2f2f]">
-                <span v-if="item.actor_name" class="font-bold">{{ item.actor_name }}</span>
-                {{ item.body && item.body !== item.title ? ' ' + item.body : '' }}
+                <span v-if="item.actor_name" class="font-bold">{{ item.actor_name }}</span><template v-if="captionSegments(item).length">{{ ' ' }}</template><template v-for="(s, si) in captionSegments(item)" :key="si"><button v-if="s.mention" class="text-[#b6004f] font-semibold hover:underline cursor-pointer" @click="selectPerson(s.text.slice(1))">{{ s.text }}</button><template v-else>{{ s.text }}</template></template>
               </p>
 
               <!-- Tagged people + likely doer -->
-              <div v-if="mentionsFor(item).length || likelyDoer(item)" class="flex flex-wrap gap-1.5 pt-1">
+              <div v-if="mentionsFor(item).length || likelyDoer(item) || parsedMeta(item).automated" class="flex flex-wrap gap-1.5 pt-1">
+                <span
+                  v-if="parsedMeta(item).automated && !item.actor_name && !likelyDoer(item)"
+                  class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#f0f1f1] text-[10px] uppercase tracking-wider text-[#757777] font-bold"
+                  title="This change was made by a QB pipeline/automation"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" /></svg>
+                  Automated
+                </span>
                 <button
                   v-if="likelyDoer(item)"
                   class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#f0f1f1] hover:bg-[#e7e8e8] transition-colors cursor-pointer border border-dashed border-[#c9cbcb]"
@@ -659,12 +772,26 @@ onUnmounted(() => { unsubLive?.() })
               <p class="text-xs text-[#5a5c5c]"><span class="font-bold text-[#2d2f2f]">{{ c.user_name }}</span> {{ c.body }}</p>
               <p class="text-[10px] text-[#acadad] mt-0.5">{{ timeAgo(c.created_at) }}</p>
             </div>
-            <div class="flex gap-2 pt-2 pb-1">
+            <div class="flex gap-2 pt-2 pb-1 relative">
+              <!-- Mention picker (comments) -->
+              <div v-if="mentionCtx === item.id && mentionMatches.length" class="absolute left-0 right-12 bottom-full mb-1 z-20 bg-white rounded-2xl feed-soft-shadow border border-[#f0f1f1] overflow-hidden">
+                <button
+                  v-for="t in mentionMatches" :key="t.type + t.id"
+                  class="w-full flex items-center gap-2.5 px-3 py-2.5 hover:bg-[#f6f6f6] transition-colors cursor-pointer text-left"
+                  @click="applyMention(t)"
+                >
+                  <span class="w-7 h-7 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0" :class="t.type === 'department' ? 'feed-sig-gradient text-white' : 'bg-[#e7e8e8] text-[#2d2f2f]'">
+                    {{ t.type === 'department' ? 'T' : getInitials(t.name) }}
+                  </span>
+                  <span class="text-sm font-semibold text-[#2d2f2f]">{{ t.name }}</span>
+                  <span v-if="t.type === 'department'" class="text-[10px] uppercase tracking-wider text-[#757777] font-bold ml-auto">Team · {{ t.member_count }}</span>
+                </button>
+              </div>
               <Input
                 :model-value="commentInput.get(item.id) || ''"
-                @update:model-value="(v: string | number) => commentInput.set(item.id, String(v))"
+                @update:model-value="(v: string | number) => { commentInput.set(item.id, String(v)); detectMention(String(v), item.id) }"
                 @keydown.enter="postComment(item.id)"
-                placeholder="Add a comment..."
+                placeholder="Add a comment... @ to tag"
                 class="text-sm h-9 bg-white border-0 rounded-xl focus-visible:ring-1 focus-visible:ring-[#acadad]/30"
               />
               <button

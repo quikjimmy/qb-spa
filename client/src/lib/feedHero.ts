@@ -14,6 +14,9 @@ export interface FeedMeta {
   // FID 5 grabbed live at mint time — a *probable* doer, shown as an
   // explicit "likely" credit when no certain actor exists.
   qb_last_modified_by?: string | null
+  // True when the change traced back to a known automation identity
+  // (pipeline owner account) — shown as an "Automated" marker.
+  automated?: boolean
 }
 
 export type HeroFamily =

@@ -18,6 +18,67 @@ router.get('/stream', (_req: Request, res: Response): void => {
   attachFeedSseStream(res)
 })
 
+// ─── @Mentions ────────────────────────────────────────────
+// Directory for the mention autocomplete: active portal users +
+// departments. Small lists — the client filters as the user types.
+router.get('/mention-targets', (_req: Request, res: Response): void => {
+  const users = db.prepare(`
+    SELECT id, name FROM users WHERE is_active = 1 AND name IS NOT NULL AND name != '' ORDER BY name
+  `).all()
+  const departments = db.prepare(`
+    SELECT d.id, d.name, COUNT(ud.user_id) as member_count
+    FROM departments d LEFT JOIN user_departments ud ON ud.department_id = d.id
+    GROUP BY d.id ORDER BY d.name
+  `).all()
+  res.json({ users, departments })
+})
+
+interface MentionInput { type: 'user' | 'department'; id: number }
+interface ResolvedMention { name: string; role: 'mention' | 'department'; user_id: number | null; department_id?: number }
+
+// Validate client-sent mentions against the DB (never trust names from
+// the wire) and expand them to the concrete users to notify.
+function resolveMentionInputs(raw: unknown): { mentions: ResolvedMention[]; notifyUserIds: Set<number> } {
+  const mentions: ResolvedMention[] = []
+  const notifyUserIds = new Set<number>()
+  let inputs: MentionInput[] = []
+  if (typeof raw === 'string' && raw.trim()) { try { inputs = JSON.parse(raw) } catch { /* malformed — ignore */ } }
+  else if (Array.isArray(raw)) inputs = raw as MentionInput[]
+  if (!Array.isArray(inputs)) return { mentions, notifyUserIds }
+
+  for (const m of inputs.slice(0, 20)) {
+    const id = Number(m?.id)
+    if (!Number.isFinite(id)) continue
+    if (m.type === 'user') {
+      const u = db.prepare(`SELECT id, name FROM users WHERE id = ? AND is_active = 1`).get(id) as { id: number; name: string } | undefined
+      if (!u || mentions.some(x => x.user_id === u.id)) continue
+      mentions.push({ name: u.name, role: 'mention', user_id: u.id })
+      notifyUserIds.add(u.id)
+    } else if (m.type === 'department') {
+      const d = db.prepare(`SELECT id, name FROM departments WHERE id = ?`).get(id) as { id: number; name: string } | undefined
+      if (!d || mentions.some(x => x.department_id === d.id)) continue
+      mentions.push({ name: d.name, role: 'department', user_id: null, department_id: d.id })
+      const members = db.prepare(`
+        SELECT ud.user_id FROM user_departments ud JOIN users u ON u.id = ud.user_id
+        WHERE ud.department_id = ? AND u.is_active = 1
+      `).all(d.id) as Array<{ user_id: number }>
+      for (const row of members) notifyUserIds.add(row.user_id)
+    }
+  }
+  return { mentions, notifyUserIds }
+}
+
+function notifyMentionedUsers(notifyUserIds: Set<number>, actorUserId: number, actorName: string, context: string, body: string): void {
+  const insert = db.prepare(`
+    INSERT INTO notifications (user_id, type, title, body, link) VALUES (?, 'feed_mention', ?, ?, '/feed')
+  `)
+  for (const uid of notifyUserIds) {
+    if (uid === actorUserId) continue  // don't ping yourself
+    try { insert.run(uid, `${actorName} mentioned you ${context}`, body) }
+    catch (e) { console.error('[feed] mention notification failed:', e instanceof Error ? e.message : e) }
+  }
+}
+
 // Milestone families for the story-circle filters. Matches both the
 // webhook-mint metadata (milestone_col) and legacy batch metadata
 // (numeric fieldId) so pre-attribution rows still bucket correctly.
@@ -263,14 +324,14 @@ router.get('/:id/comments', (req: Request, res: Response): void => {
 // Add a comment
 router.post('/:id/comments', (req: Request, res: Response): void => {
   const feedItemId = parseInt(String(req.params['id'] || ''), 10)
-  const { body } = req.body
+  const { body, mentions: rawMentions } = req.body
 
   if (!body?.trim()) {
     res.status(400).json({ error: 'Comment body is required' })
     return
   }
 
-  const feedItem = db.prepare('SELECT id FROM feed_items WHERE id = ?').get(feedItemId)
+  const feedItem = db.prepare('SELECT id, title FROM feed_items WHERE id = ?').get(feedItemId) as { id: number; title: string } | undefined
   if (!feedItem) {
     res.status(404).json({ error: 'Feed item not found' })
     return
@@ -285,7 +346,12 @@ router.post('/:id/comments', (req: Request, res: Response): void => {
     FROM comments c
     JOIN users u ON u.id = c.user_id
     WHERE c.id = ?
-  `).get(result.lastInsertRowid)
+  `).get(result.lastInsertRowid) as { user_name: string }
+
+  const { notifyUserIds } = resolveMentionInputs(rawMentions)
+  if (notifyUserIds.size) {
+    notifyMentionedUsers(notifyUserIds, req.user!.userId, comment.user_name, 'in a comment', `On "${feedItem.title}": ${body.trim().slice(0, 120)}`)
+  }
 
   res.status(201).json({ comment })
 })
@@ -331,6 +397,8 @@ router.post('/', upload.array('media', 10), async (req: Request, res: Response):
   const user = db.prepare('SELECT name, email FROM users WHERE id = ?').get(userId) as { name: string; email: string } | undefined
   if (!user) { res.status(404).json({ error: 'User not found' }); return }
 
+  const { mentions, notifyUserIds } = resolveMentionInputs(req.body.mentions)
+
   const result = db.prepare(`
     INSERT INTO feed_items
       (qb_source, qb_record_id, event_type, title, body, actor_name, actor_email,
@@ -344,8 +412,12 @@ router.post('/', upload.array('media', 10), async (req: Request, res: Response):
     user.email,
     project_id || null,
     project_name || null,
-    JSON.stringify({ source: 'user', userId, hasMedia: files.length > 0 }),
+    JSON.stringify({ source: 'user', userId, hasMedia: files.length > 0, mentions }),
   )
+
+  if (notifyUserIds.size) {
+    notifyMentionedUsers(notifyUserIds, userId, user.name, 'in a post', (body?.trim() || title?.trim() || '').slice(0, 140))
+  }
 
   const feedItemId = result.lastInsertRowid as number
 
