@@ -136,6 +136,7 @@ const showSparks = computed(() =>
   background: radial-gradient(circle at center, rgba(253, 186, 116, 0.85) 0%, rgba(253, 186, 116, 0.25) 45%, transparent 70%);
   filter: blur(10px);
   animation: sunrise 16s ease-in-out infinite alternate;
+  will-change: transform;
   pointer-events: none;
 }
 @keyframes sunrise {

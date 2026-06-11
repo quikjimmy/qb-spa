@@ -284,7 +284,16 @@ function mentionsFor(item: FeedItem): Mention[] {
 
 // Post body split on stored mention names so @Name renders highlighted
 // and tappable. Names come from validated metadata, not free text.
+// Cached per item — this runs for every card on every render pass.
+const segsCache = new Map<number, Array<{ text: string; mention: boolean }>>()
 function captionSegments(item: FeedItem): Array<{ text: string; mention: boolean }> {
+  const hit = segsCache.get(item.id)
+  if (hit) return hit
+  const segs = computeCaptionSegments(item)
+  segsCache.set(item.id, segs)
+  return segs
+}
+function computeCaptionSegments(item: FeedItem): Array<{ text: string; mention: boolean }> {
   const body = item.body && item.body !== item.title ? item.body : ''
   if (!body) return []
   const names = (parsedMeta(item).mentions || []).map(m => m.name).filter(Boolean)
@@ -616,7 +625,7 @@ onUnmounted(() => { unsubLive?.() })
 
       <!-- Feed -->
       <TransitionGroup v-else name="feed-live" tag="div" class="space-y-12">
-        <article v-for="item in items" :key="item.id" class="bg-white sm:rounded-3xl overflow-hidden feed-soft-shadow group -mx-4 sm:mx-0">
+        <article v-for="item in items" :key="item.id" class="feed-card bg-white sm:rounded-3xl overflow-hidden feed-soft-shadow group -mx-4 sm:mx-0">
 
           <!-- Profile header: a person ONLY when attribution is certain
                (webhook payload named them) — otherwise the project headlines
@@ -840,4 +849,14 @@ onUnmounted(() => { unsubLive?.() })
 }
 
 /* Hero scene styles live in components/feed/FeedHero.vue */
+
+/* Off-screen cards skip rendering entirely — critical with animated
+   hero scenes (blurred orbs, rotating rays are GPU-heavy); without
+   this a long feed composites every card's animation layers at once
+   and can freeze/crash the tab. `auto 560px` keeps scrollbar/anchor
+   math sane before first render. */
+.feed-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 560px;
+}
 </style>
