@@ -294,7 +294,18 @@ function captionSegments(item: FeedItem): Array<{ text: string; mention: boolean
   return segs
 }
 function computeCaptionSegments(item: FeedItem): Array<{ text: string; mention: boolean }> {
-  const body = item.body && item.body !== item.title ? item.body : ''
+  let body = item.body && item.body !== item.title ? item.body : ''
+  // Unattributed posts already headline the customer in the header AND
+  // hero — don't echo the name a third time in the caption.
+  if (body && !item.actor_name && item.project_name) {
+    const pn = item.project_name
+    if (body.toLowerCase().startsWith(pn.toLowerCase())) {
+      const rest = body.slice(pn.length).replace(/^[\s,—–-]+|^'s\s+/, '').trim()
+      body = !rest || rest.toLowerCase() === item.title.toLowerCase()
+        ? ''
+        : rest.charAt(0).toUpperCase() + rest.slice(1)
+    }
+  }
   if (!body) return []
   const names = (parsedMeta(item).mentions || []).map(m => m.name).filter(Boolean)
   if (!names.length) return [{ text: body, mention: false }]

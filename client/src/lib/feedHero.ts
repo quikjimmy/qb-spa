@@ -10,6 +10,8 @@ export interface FeedMeta {
   milestone_col?: string
   milestone_date?: string
   previous_date?: string
+  old_status?: string | null
+  new_status?: string
   mentions?: Mention[]
   // FID 5 grabbed live at mint time — a *probable* doer, shown as an
   // explicit "likely" credit when no certain actor exists.
@@ -28,6 +30,9 @@ export interface Hero {
   tone: 'celebration' | 'scheduled' | 'attention' | 'neutral'
   kicker: string
   dateLine: string | null
+  // Small line under the title — e.g. the status transition
+  // "Pending KCA → Active".
+  subtitle: string | null
   icon: string
 }
 
@@ -111,11 +116,16 @@ export function buildHero(eventType: string, meta: FeedMeta): Hero {
       : tone === 'attention' ? 'Heads up'
       : 'Milestone'
     const dateLine = tone === 'scheduled' && meta.milestone_date ? fmtHeroDate(meta.milestone_date) : null
-    return { family, tone, kicker, dateLine, icon: GHOST_ICONS[family] }
+    return { family, tone, kicker, dateLine, subtitle: null, icon: GHOST_ICONS[family] }
+  }
+  if (eventType === 'status_change' && meta.new_status) {
+    // The transition IS the story — lift it into the hero.
+    const subtitle = meta.old_status ? `${meta.old_status} → ${meta.new_status}` : null
+    return { family: 'status', tone: 'neutral', kicker: 'Status', dateLine: null, subtitle, icon: GHOST_ICONS.status }
   }
   const legacy = LEGACY[eventType]
   if (legacy) {
-    return { family: legacy.family, tone: 'neutral', kicker: legacy.kicker, dateLine: null, icon: GHOST_ICONS[legacy.family] }
+    return { family: legacy.family, tone: 'neutral', kicker: legacy.kicker, dateLine: null, subtitle: null, icon: GHOST_ICONS[legacy.family] }
   }
-  return { family: 'status', tone: 'neutral', kicker: eventType.replace(/_/g, ' '), dateLine: null, icon: GHOST_ICONS.status }
+  return { family: 'status', tone: 'neutral', kicker: eventType.replace(/_/g, ' '), dateLine: null, subtitle: null, icon: GHOST_ICONS.status }
 }

@@ -47,6 +47,7 @@ const showSparks = computed(() =>
     <!-- Content -->
     <span class="hero-chip relative z-10 inline-flex items-center px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-white/90 mb-4">{{ hero.kicker }}</span>
     <h3 class="relative z-10 text-2xl sm:text-3xl font-black text-white tracking-tight leading-tight">{{ title }}</h3>
+    <p v-if="hero.subtitle" class="relative z-10 text-white/60 text-[11px] font-bold uppercase tracking-widest mt-2">{{ hero.subtitle }}</p>
     <button
       v-if="projectName && projectId"
       class="relative z-10 inline-flex items-center gap-1 text-white/80 text-sm font-semibold mt-2 underline decoration-white/40 underline-offset-4 hover:text-white hover:decoration-white transition-colors cursor-pointer"
