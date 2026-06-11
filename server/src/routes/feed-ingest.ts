@@ -59,17 +59,21 @@ async function ingestMilestones(realm: string, token: string): Promise<number> {
   // Query projects with milestone dates, modified recently.
   // `col` must match the project_cache column names used by feedMint's
   // MILESTONE_DEFS — it's the dedup_key contract between both paths.
+  // Curated to the SAME "major + scheduled" set the live mint path uses
+  // (lib/feedMint.ts MILESTONE_DEFS) — no "submitted" churn. Keep the two
+  // lists in lockstep or backfill and live posts will diverge.
   const milestoneFields = [
     { fid: 166, col: 'survey_scheduled', label: 'Survey Scheduled' },
-    { fid: 164, col: 'survey_submitted', label: 'Survey Submitted' },
     { fid: 165, col: 'survey_approved', label: 'Survey Approved' },
-    { fid: 207, col: 'permit_submitted', label: 'Permit Submitted' },
+    { fid: 1774, col: 'design_completed', label: 'Design Completed' },
     { fid: 208, col: 'permit_approved', label: 'Permit Approved' },
+    { fid: 706, col: 'permit_rejected', label: 'Permit Needs Another Pass' },
+    { fid: 327, col: 'nem_approved', label: 'NEM Approved' },
+    { fid: 1878, col: 'nem_rejected', label: 'NEM Needs Another Pass' },
     { fid: 178, col: 'install_scheduled', label: 'Install Scheduled' },
     { fid: 534, col: 'install_completed', label: 'Install Completed' },
     { fid: 226, col: 'inspection_scheduled', label: 'Inspection Scheduled' },
     { fid: 491, col: 'inspection_passed', label: 'Inspection Passed' },
-    { fid: 537, col: 'pto_submitted', label: 'PTO Submitted' },
     { fid: 538, col: 'pto_approved', label: 'PTO Approved' },
   ]
 
@@ -159,50 +163,9 @@ async function ingestStatusChanges(realm: string, token: string): Promise<number
   return count
 }
 
-// ─── Ingest: Notes ───────────────────────────────────────
-
-async function ingestNotes(realm: string, token: string): Promise<number> {
-  // Notes table: bsb6bqt3b
-  // Need to discover field IDs — use common ones
-  // 3 = Record ID, 6 = note body (text), 1 = date created, 2 = date modified
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-
-  let data: { data: Array<Record<string, { value: unknown }>> }
-  try {
-    data = await qbQuery(realm, token, 'bsb6bqt3b', [3, 6, 7, 8, 1, 2], `{'1'.AF.'${sevenDaysAgo}'}`, 200)
-  } catch {
-    // Field IDs might be wrong — skip gracefully
-    return 0
-  }
-
-  let count = 0
-  const ingestTx = db.transaction(() => {
-    for (const record of data.data || []) {
-      const recordId = parseInt(val(record, 3))
-      const noteBody = val(record, 6) || val(record, 7) || val(record, 8)
-      const created = val(record, 1)
-
-      if (!noteBody || !created) continue
-
-      try {
-        upsertFeedItem.run(
-          'notes', recordId, 'note_added',
-          'Note added',
-          noteBody.length > 200 ? noteBody.substring(0, 200) + '...' : noteBody,
-          'System',
-          null,
-          null, null,
-          null,
-          created,
-          null
-        )
-        count++
-      } catch { /* duplicate */ }
-    }
-  })
-  ingestTx()
-  return count
-}
+// (Notes deliberately NOT ingested — the feed is for significant account
+// events only; day-to-day notes live in the project's Notes tab. Removed
+// 2026-06-11 per James.)
 
 // ─── Ingest: Tickets ─────────────────────────────────────
 
@@ -340,10 +303,6 @@ router.post('/ingest', async (_req: Request, res: Response): Promise<void> => {
   try {
     results.statusChanges = await ingestStatusChanges(realm, token)
   } catch (e) { results.statusChanges = `error: ${e}` }
-
-  try {
-    results.notes = await ingestNotes(realm, token)
-  } catch (e) { results.notes = `error: ${e}` }
 
   try {
     results.tickets = await ingestTickets(realm, token)

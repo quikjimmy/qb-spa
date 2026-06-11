@@ -195,6 +195,26 @@ try {
   // ingester stamps metadata, so metadata IS NULL precisely identifies
   // the junk. Idempotent.
   db.exec(`DELETE FROM feed_items WHERE qb_source = 'task_log' AND event_type = 'task_event' AND metadata IS NULL`)
+
+  // The feed is for SIGNIFICANT account events (2026-06-11, James):
+  // notes are out entirely, and "submitted" milestone churn (survey/
+  // permit/PTO submitted — fids 164/207/537) is out to match the live
+  // mint path's "major + scheduled" curation. Idempotent.
+  db.exec(`DELETE FROM feed_items WHERE event_type = 'note_added'`)
+  db.exec(`
+    DELETE FROM feed_items
+    WHERE event_type = 'milestone' AND (
+      (dedup_key IS NOT NULL AND (
+        dedup_key LIKE '%:milestone:survey_submitted:%'
+        OR dedup_key LIKE '%:milestone:permit_submitted:%'
+        OR dedup_key LIKE '%:milestone:pto_submitted:%'
+      ))
+      OR (metadata IS NOT NULL AND json_valid(metadata)
+          AND CAST(json_extract(metadata, '$.fieldId') AS INTEGER) IN (164, 207, 537))
+      OR (metadata IS NOT NULL AND json_valid(metadata)
+          AND json_extract(metadata, '$.milestone_col') IN ('survey_submitted', 'permit_submitted', 'pto_submitted'))
+    )
+  `)
 } catch (e) {
   console.error('[feed] dedup_key migration failed:', e instanceof Error ? e.message : e)
 }
