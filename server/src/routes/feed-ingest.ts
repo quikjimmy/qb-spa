@@ -249,37 +249,69 @@ async function ingestTickets(realm: string, token: string): Promise<number> {
 
 // ─── Ingest: Arrivy task events ──────────────────────────
 
+// Field IDs mirror routes/field.ts LOG_F (the canonical map for
+// bvbbznmdb): 76=event type, 77=TASK_STATUS sub-type, 73/74=title/
+// description, 79=timestamp, 14=reporter name, 193=related project.
+const TASK_EVENT_TITLES: Record<string, string> = {
+  STARTED: 'Crew on site',
+  COMPLETE: 'Field task completed',
+  CANCELLED: 'Field task cancelled',
+  EXCEPTION: 'Field task exception',
+  LATE: 'Crew running late',
+  NOSHOW: 'Missed appointment',
+}
+// ENROUTE pings and PREDICTED_LATE forecasts are dispatch noise, not feed news.
+const TASK_EVENT_SKIP = new Set(['ENROUTE', 'PREDICTED_LATE'])
+
 async function ingestTaskEvents(realm: string, token: string): Promise<number> {
-  // Arrivy Task Log: bvbbznmdb
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
 
   let data: { data: Array<Record<string, { value: unknown }>> }
   try {
-    // 3=ID, 6-8=various text fields, 1=date created, 2=date modified
-    data = await qbQuery(realm, token, 'bvbbznmdb', [3, 6, 7, 8, 9, 1, 2], `{'1'.AF.'${sevenDaysAgo}'}`, 200)
+    data = await qbQuery(realm, token, 'bvbbznmdb', [3, 76, 77, 73, 74, 79, 14, 193], `{'1'.AF.'${sevenDaysAgo}'}`, 500)
   } catch {
     return 0
   }
+
+  const projectName = db.prepare(`SELECT customer_name FROM project_cache WHERE record_id = ?`)
 
   let count = 0
   const ingestTx = db.transaction(() => {
     for (const record of data.data || []) {
       const recordId = parseInt(val(record, 3))
-      const desc = val(record, 6) || val(record, 7) || val(record, 8) || val(record, 9)
-      const created = val(record, 1)
+      const eventType = val(record, 76).toUpperCase()
+      const subType = val(record, 77).toUpperCase()
+      const kind = eventType === 'TASK_STATUS' ? subType : eventType
+      if (!kind || TASK_EVENT_SKIP.has(kind)) continue
+      const title = TASK_EVENT_TITLES[kind]
+      if (!title) continue  // unmapped event kinds stay out until named
 
-      if (!created) continue
+      const when = val(record, 79)
+      if (!when) continue
+      const logTitle = val(record, 73)
+      const logDesc = val(record, 74)
+      const reporter = val(record, 14)
+      const projectId = parseInt(val(record, 193)) || null
+      const customer = projectId
+        ? (projectName.get(projectId) as { customer_name: string } | undefined)?.customer_name ?? null
+        : null
+
+      const body = (logDesc || logTitle || (customer ? `${title} — ${customer}` : title)).slice(0, 200)
 
       try {
         upsertFeedItem.run(
           'task_log', recordId, 'task_event',
-          'Field task event',
-          desc.length > 200 ? desc.substring(0, 200) + '...' : desc,
-          'System',
+          title,
+          body,
+          null,  // no doer claim — reporter is chip-tagged in metadata instead
           null,
-          null, null,
-          null,
-          created,
+          projectId, customer,
+          JSON.stringify({
+            source: 'backfill',
+            task_event: kind,
+            mentions: reporter ? [{ name: reporter, email: null, role: 'crew', user_id: null }] : [],
+          }),
+          when,
           null
         )
         count++

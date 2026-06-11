@@ -189,6 +189,12 @@ try {
   // 'System' was a placeholder actor on notes/tickets/task ingests —
   // not a person, so render those unattributed too.
   db.exec(`UPDATE feed_items SET actor_name = NULL WHERE actor_name = 'System'`)
+
+  // Purge task_event rows from the old blind-field-guess ingest (bodies
+  // were raw Arrivy task IDs, no project link, no metadata). The rebuilt
+  // ingester stamps metadata, so metadata IS NULL precisely identifies
+  // the junk. Idempotent.
+  db.exec(`DELETE FROM feed_items WHERE qb_source = 'task_log' AND event_type = 'task_event' AND metadata IS NULL`)
 } catch (e) {
   console.error('[feed] dedup_key migration failed:', e instanceof Error ? e.message : e)
 }
