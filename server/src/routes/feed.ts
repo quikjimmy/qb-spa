@@ -33,6 +33,22 @@ router.get('/mention-targets', (_req: Request, res: Response): void => {
   res.json({ users, departments })
 })
 
+// Mark a story circle as seen — greys its gradient ring until new
+// activity lands. circle_key: 'family:<fam>' or 'person:<name>'.
+router.post('/circles/seen', (req: Request, res: Response): void => {
+  const key = String(req.body?.circle_key || '')
+  if (!/^(family|person):.{1,80}$/.test(key)) {
+    res.status(400).json({ error: 'invalid circle_key' })
+    return
+  }
+  db.prepare(`
+    INSERT INTO feed_circle_seen (user_id, circle_key, last_seen_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(user_id, circle_key) DO UPDATE SET last_seen_at = datetime('now')
+  `).run(req.user!.userId, key)
+  res.json({ ok: true })
+})
+
 interface MentionInput { type: 'user' | 'department'; id: number }
 interface ResolvedMention { name: string; role: 'mention' | 'department'; user_id: number | null; department_id?: number }
 
@@ -233,21 +249,24 @@ router.get('/', (req: Request, res: Response): void => {
   // Story bubbles: people = credited actors ∪ mention-tagged names
   // (coordinators etc.). Attribution rules mean most QB posts have no
   // actor, so mentions carry the people row.
-  let people: unknown[] = []
+  // Timestamps use the same "when the feed learned it" semantics as the
+  // feed sort (MIN of occurred/ingested) — otherwise future-dated
+  // scheduled posts would keep circles permanently "unseen".
+  let people: Array<{ name: string; activity_count: number; latest_activity: string; unseen?: boolean }> = []
   try {
     people = db.prepare(`
       SELECT name, SUM(c) as activity_count, MAX(latest) as latest_activity FROM (
-        SELECT actor_name as name, COUNT(*) as c, MAX(occurred_at) as latest
+        SELECT actor_name as name, COUNT(*) as c, MAX(MIN(occurred_at, ingested_at)) as latest
         FROM feed_items
         WHERE actor_name IS NOT NULL AND actor_name != 'System'
         GROUP BY actor_name
         UNION ALL
-        SELECT json_extract(je.value, '$.name') as name, COUNT(*) as c, MAX(f.occurred_at) as latest
+        SELECT json_extract(je.value, '$.name') as name, COUNT(*) as c, MAX(MIN(f.occurred_at, f.ingested_at)) as latest
         FROM feed_items f, json_each(json_extract(f.metadata, '$.mentions')) je
         WHERE f.metadata IS NOT NULL AND json_valid(f.metadata)
         GROUP BY json_extract(je.value, '$.name')
         UNION ALL
-        SELECT json_extract(metadata, '$.qb_last_modified_by') as name, COUNT(*) as c, MAX(occurred_at) as latest
+        SELECT json_extract(metadata, '$.qb_last_modified_by') as name, COUNT(*) as c, MAX(MIN(occurred_at, ingested_at)) as latest
         FROM feed_items
         WHERE actor_name IS NULL AND metadata IS NOT NULL AND json_valid(metadata)
         GROUP BY json_extract(metadata, '$.qb_last_modified_by')
@@ -256,18 +275,18 @@ router.get('/', (req: Request, res: Response): void => {
       GROUP BY name
       ORDER BY latest_activity DESC
       LIMIT 30
-    `).all()
+    `).all() as typeof people
   } catch (e) {
     console.error('[feed] people aggregation failed:', e instanceof Error ? e.message : e)
   }
 
   // Story bubbles: milestone families (+ status), bucketed from metadata.
-  const families: Array<{ family: string; count: number; latest_activity: string }> = []
+  const families: Array<{ family: string; count: number; latest_activity: string; unseen?: boolean }> = []
   try {
     const famRaw = db.prepare(`
       SELECT json_extract(metadata, '$.milestone_col') as col,
              CAST(json_extract(metadata, '$.fieldId') AS INTEGER) as fid,
-             COUNT(*) as c, MAX(occurred_at) as latest
+             COUNT(*) as c, MAX(MIN(occurred_at, ingested_at)) as latest
       FROM feed_items
       WHERE event_type = 'milestone' AND metadata IS NOT NULL AND json_valid(metadata)
       GROUP BY 1, 2
@@ -281,7 +300,7 @@ router.get('/', (req: Request, res: Response): void => {
       else agg.set(fam, { count: row.c, latest_activity: row.latest })
     }
     const statusAgg = db.prepare(`
-      SELECT COUNT(*) as c, MAX(occurred_at) as latest FROM feed_items WHERE event_type = 'status_change'
+      SELECT COUNT(*) as c, MAX(MIN(occurred_at, ingested_at)) as latest FROM feed_items WHERE event_type = 'status_change'
     `).get() as { c: number; latest: string | null }
     if (statusAgg.c > 0 && statusAgg.latest) agg.set('status', { count: statusAgg.c, latest_activity: statusAgg.latest })
     for (const fam of FAMILY_ORDER) {
@@ -290,6 +309,18 @@ router.get('/', (req: Request, res: Response): void => {
     }
   } catch (e) {
     console.error('[feed] family aggregation failed:', e instanceof Error ? e.message : e)
+  }
+
+  // Instagram-style ring state: a circle is "unseen" while its latest
+  // activity is newer than this user's last view of it (feed_circle_seen).
+  try {
+    const seenRows = db.prepare(`SELECT circle_key, last_seen_at FROM feed_circle_seen WHERE user_id = ?`)
+      .all(userId) as Array<{ circle_key: string; last_seen_at: string }>
+    const seen = new Map(seenRows.map(r => [r.circle_key, r.last_seen_at]))
+    for (const f of families) f.unseen = f.latest_activity > (seen.get(`family:${f.family}`) ?? '')
+    for (const p of people) p.unseen = p.latest_activity > (seen.get(`person:${p.name}`) ?? '')
+  } catch (e) {
+    console.error('[feed] circle seen state failed:', e instanceof Error ? e.message : e)
   }
 
   // Get distinct event types for filter

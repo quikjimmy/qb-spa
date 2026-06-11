@@ -193,6 +193,20 @@ try {
   console.error('[feed] dedup_key migration failed:', e instanceof Error ? e.message : e)
 }
 
+// --- Story-circle seen state ---
+// Instagram-style rings on the feed's story circles: a circle shows the
+// gradient ring while it has activity newer than the user's last view
+// of it. Tapping a circle upserts last_seen_at here and the ring greys.
+// circle_key: 'family:permit' | 'person:Emma Martin'.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS feed_circle_seen (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    circle_key TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, circle_key)
+  )
+`)
+
 // --- Media Attachments ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS media_attachments (

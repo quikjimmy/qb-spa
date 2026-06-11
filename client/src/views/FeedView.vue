@@ -20,8 +20,8 @@ interface FeedItem {
   media: MediaAttachment[]
 }
 interface Comment { id: number; user_name: string; body: string; created_at: string }
-interface PersonBubble { name: string; activity_count: number; latest_activity: string }
-interface FamilyBubble { family: string; count: number; latest_activity: string }
+interface PersonBubble { name: string; activity_count: number; latest_activity: string; unseen?: boolean }
+interface FamilyBubble { family: string; count: number; latest_activity: string; unseen?: boolean }
 
 const items = ref<FeedItem[]>([])
 const loading = ref(true)
@@ -56,14 +56,34 @@ async function loadFeed(append = false) {
 }
 
 const hasFilter = () => selectedPerson.value !== null || selectedFamily.value !== null
+
+// Viewing a circle greys its ring (Instagram semantics) — locally at
+// once, persisted server-side so it stays grey across devices/sessions
+// until new activity lands.
+async function markCircleSeen(key: string) {
+  try {
+    await fetch('/api/feed/circles/seen', { method: 'POST', headers: hdrs(), body: JSON.stringify({ circle_key: key }) })
+  } catch { /* ring re-syncs on next load */ }
+}
+
 function selectPerson(name: string) {
   selectedFamily.value = null
   selectedPerson.value = selectedPerson.value === name ? null : name
+  if (selectedPerson.value) {
+    const b = people.value.find(p => p.name === name)
+    if (b) b.unseen = false
+    markCircleSeen(`person:${name}`)
+  }
   loadFeed(false)
 }
 function selectFamily(family: string) {
   selectedPerson.value = null
   selectedFamily.value = selectedFamily.value === family ? null : family
+  if (selectedFamily.value) {
+    const b = families.value.find(f => f.family === family)
+    if (b) b.unseen = false
+    markCircleSeen(`family:${family}`)
+  }
   loadFeed(false)
 }
 function clearFilters() { selectedPerson.value = null; selectedFamily.value = null; loadFeed(false) }
@@ -412,6 +432,27 @@ function handleLiveItem(item: LiveFeedItem) {
   if (selectedFamily.value && liveItemFamily(item) !== selectedFamily.value) { total.value++; return }
   items.value.unshift(item as unknown as FeedItem)
   total.value++
+  relightCircles(item)
+}
+
+// New activity re-lights the matching circles' gradient rings in real
+// time — except the one currently being viewed.
+function relightCircles(item: LiveFeedItem) {
+  const fam = liveItemFamily(item)
+  if (fam && fam !== selectedFamily.value) {
+    const b = families.value.find(f => f.family === fam)
+    if (b) b.unseen = true
+  }
+  const names = new Set<string>()
+  if (item.actor_name) names.add(item.actor_name)
+  try {
+    const meta = JSON.parse(item.metadata || '{}') as FeedMeta
+    for (const m of meta.mentions || []) if (m.name) names.add(m.name)
+    if (meta.qb_last_modified_by) names.add(meta.qb_last_modified_by)
+  } catch { /* ignore */ }
+  for (const p of people.value) {
+    if (names.has(p.name) && p.name !== selectedPerson.value) p.unseen = true
+  }
 }
 
 let unsubLive: (() => void) | null = null
@@ -461,9 +502,9 @@ onUnmounted(() => { unsubLive?.() })
           <span class="text-[10px] font-semibold uppercase tracking-wider" :class="!hasFilter() ? 'text-feed-text' : 'text-feed-secondary'">Everything</span>
         </button>
 
-        <!-- Milestone families -->
+        <!-- Milestone families: gradient ring = unseen activity, grey = caught up -->
         <button v-for="f in families" :key="f.family" class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectFamily(f.family)">
-          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="selectedFamily === f.family ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : 'bg-[#dbdddd]'">
+          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-all group-hover:scale-105" :class="selectedFamily === f.family ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : f.unseen ? 'feed-sig-gradient' : 'bg-[#dbdddd]'">
             <div class="w-full h-full rounded-full bg-white p-0.5">
               <div class="w-full h-full rounded-full flex items-center justify-center" :style="{ background: FAMILY_GRADIENTS[f.family as HeroFamily] || FAMILY_GRADIENTS.status }">
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path :d="GHOST_ICONS[f.family as HeroFamily] || GHOST_ICONS.status" /></svg>
@@ -473,9 +514,9 @@ onUnmounted(() => { unsubLive?.() })
           <span class="text-[10px] font-semibold uppercase tracking-wider w-16 text-center truncate" :class="selectedFamily === f.family ? 'text-feed-text' : 'text-feed-secondary'">{{ FAMILY_LABELS[f.family] || f.family }}</span>
         </button>
 
-        <!-- People (credited actors + tagged coordinators) -->
+        <!-- People (credited actors + tagged coordinators): same ring semantics -->
         <button v-for="p in people" :key="p.name" class="flex-none flex flex-col items-center gap-1.5 group cursor-pointer" @click="selectPerson(p.name)">
-          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-transform group-hover:scale-105" :class="selectedPerson === p.name ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : 'feed-sig-gradient'">
+          <div class="w-[72px] h-[72px] rounded-full p-[3px] transition-all group-hover:scale-105" :class="selectedPerson === p.name ? 'feed-sig-gradient ring-2 ring-offset-2 ring-[#b6004f]' : p.unseen ? 'feed-sig-gradient' : 'bg-[#dbdddd]'">
             <div class="w-full h-full rounded-full bg-white p-0.5">
               <div class="w-full h-full rounded-full bg-[#e7e8e8] flex items-center justify-center">
                 <span class="text-sm font-bold text-[#2d2f2f]">{{ getInitials(p.name) }}</span>

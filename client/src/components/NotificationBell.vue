@@ -145,6 +145,7 @@ const typeIcon: Record<string, string> = {
   error: 'text-red-500',
   agent: 'text-purple-500',
   chat_complete: 'text-indigo-500',
+  feed_mention: 'text-[#b6004f]',
 }
 
 onMounted(() => {
