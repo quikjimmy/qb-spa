@@ -1,0 +1,200 @@
+CORE OPS ORGANIZATIONAL STRUCTURE & PROJECT RELATIONSHIPS
+═══════════════════════════════════════════════════════════════════
+
+                         ORGANIZATION
+                              │
+                              │ (1:Many)
+                              ▼
+                          REGION
+                      ┌─────────────┐
+                      │ Region Name │
+                      │ Reg Manager │
+                      └─────────────┘
+                              │
+                              │ (1:Many)
+                              ▼
+                          OFFICE
+                      ┌──────────────────┐
+                      │ Office Name      │
+                      │ Office Manager   │
+                      │ Area Directors   │
+                      │ Dist Managers    │
+                      └──────────────────┘
+                              │
+                              │ (1:Many)
+                              ▼
+                          TEAM
+                      ┌──────────────────┐
+                      │ Team Name        │
+                      │ Area Director    │
+                      │ Type (Sales/Ops) │
+                      │ # of Members     │
+                      └──────────────────┘
+                         │           │
+              ┌──────────┴─┬─────────┘
+              │            │
+              ▼            ▼
+          CONTACTS     PROJECTS
+      ┌──────────────┐ ┌─────────────┐
+      │ Full Name    │ │ Customer    │
+      │ Email/Phone  │ │ Sales Date  │
+      │ Role:        │ │ Status      │
+      │ - Sales Rep  │ │ System kW   │
+      │ - Setter     │ │ Commission  │
+      │ - Inspector  │ │             │
+      │ - Qualifier  │ └─────────────┘
+      │ - PC         │        ▲
+      └──────────────┘        │
+              │               │ (Many:1)
+              │               │
+              └───────────────┘
+                (Closer lookup)
+
+
+DETAILED FIELD MAPPINGS
+═══════════════════════════════════════════════════════════════════
+
+REGION (bsbxxaq9y)
+├─ Record ID#                    [PK]
+├─ Region Name                   (text)
+├─ Related Organization          (fk → Organization)
+├─ Region Manager               (user/contact ref)
+├─ Region Manager - Full Name   (lookup)
+├─ Region Manager - Email       (lookup)
+├─ Region Manager - Phone       (lookup)
+├─ Offices                       (dblink to Office table)
+└─ # of Offices                 (count summary)
+
+OFFICE (bsbxxdacr)
+├─ Record ID#                    [PK]
+├─ Office Name                   (text)
+├─ Related Region               (fk → Region)
+├─ Region Name                  (lookup)
+├─ Organization                 (lookup)
+├─ Office Manager               (user/contact ref)
+├─ Office Manager - Full Name   (lookup)
+├─ Office Manager - Email       (lookup)
+├─ Area Director(s)             (multiuser field)
+├─ District Manager(s)          (multiuser field)
+├─ Teams                        (dblink to Team table)
+├─ Project - Companies          (dblink)
+└─ # of Teams                   (count summary)
+
+TEAM (br9kwm8iq)
+├─ Record ID#                    [PK]
+├─ Team Name                     (text)
+├─ Related Office               (fk → Office)
+├─ Office Name                  (lookup)
+├─ Office - Region Name         (lookup)
+├─ Area Director                (contact ref)
+├─ Area Director Name/Email     (lookup)
+├─ Team Status                  (text)
+├─ Type                         (Sales/Operations)
+├─ Team Members                 (dblink)
+├─ Contacts                     (dblink)
+├─ Adder records                (dblink)
+├─ Projects4                    (dblink to Projects)
+└─ # of Active Projects         (count summary)
+
+CONTACT (br9kwm8td)
+├─ Record ID#                    [PK]
+├─ Full Name                     (text)
+├─ Email / Mobile Phone          (email/phone)
+├─ Organization Name             (text)
+├─ Roles (checkboxes):
+│  ├─ Sales Rep                 (checkbox)
+│  ├─ Setter                    (checkbox)
+│  ├─ Inspector                 (checkbox)
+│  ├─ Qualifier                 (checkbox)
+│  └─ Project Coordinator       (checkbox)
+├─ # of Projects (Closer)       (count summary)
+├─ # of Projects (Setter)       (count summary)
+├─ # of Projects (PC)           (count summary)
+└─ [Multiple add/link fields to projects]
+
+PROJECT (br9kwm8na)
+├─ Record ID#                    [PK]
+├─ Customer Name                 (text)
+├─ Sales Date                    (timestamp)
+├─ Status                        (multi-choice)
+├─ System Size (kW)              (numeric)
+│
+├─ SALES REP LINK:
+│  ├─ Closer                    (text field)
+│  ├─ Related Closer            (fk → Contact Record ID#)
+│  ├─ Closer Name               (lookup)
+│  ├─ Closer - Email            (lookup)
+│  ├─ Closer - Team Name        (lookup)
+│  ├─ Closer - Team - Area Dir  (lookup)
+│  └─ Closer - Team - Office    (lookup)
+│
+├─ OFFICE LINK:
+│  ├─ Office - Name             (field 391)
+│  ├─ xx.Office Record ID       (field 810)
+│  └─ xx.office_name            (lookup)
+│
+├─ REGION LINK:
+│  └─ xx.Region Record ID       (field 809)
+│
+├─ TEAM LINKS (by phase):
+│  ├─ Survey Team Name          (lookup)
+│  ├─ Design Team Name          (lookup)
+│  ├─ Install Team Name         (lookup)
+│  ├─ Permit Team Name          (lookup)
+│  ├─ Interconnection Team      (lookup)
+│  └─ Closer - Team Name        (lookup)
+│
+└─ FINANCIAL:
+   ├─ Commission Rate           (lookup from Closer)
+   ├─ Net PPW / Commissionable  (numeric)
+   └─ Adders                    (dblink to Adders table)
+
+
+POTENTIAL ISSUES FOR REDESIGN
+═══════════════════════════════════════════════════════════════════
+
+1. REDUNDANT LOOKUP PATHS
+   └─ Projects reach Region via multiple paths:
+      • Via Closer → Team → Office → Region
+      • Via xx.Region Record ID (direct field)
+      • Via Office Record ID
+   
+2. MIXED FIELD TYPES
+   └─ "Closer" exists as BOTH:
+      • text field (355)
+      • numeric reference (354 - Related Closer)
+   
+3. MULTIPLE TEAM REFERENCES
+   └─ Projects track teams by phase (Survey, Design, Install...)
+      └─ But also have a primary "Closer - Team"
+      └─ Unclear which team owns the project overall
+   
+4. CONTACT ROLE ISOLATION
+   └─ Contacts have role checkboxes but:
+      • Not clearly linked to Teams
+      • Multiple projects fields for different roles
+      • No clear hierarchy/ownership
+   
+5. OFFICE/REGION LOOKUP DUPLICATION
+   └─ Some fields use Record IDs (809, 810)
+   └─ Others use lookups (Office - Name, Region Name)
+   └─ Inconsistent reference approach
+
+
+SUGGESTED QUESTIONS FOR REDESIGN
+═══════════════════════════════════════════════════════════════════
+
+1. Primary Project Ownership
+   └─ Is a project owned by ONE team/closer, or MULTIPLE teams?
+
+2. Contact-Team Mapping
+   └─ Should contacts be linked directly to their team?
+
+3. Project Phase Teams
+   └─ Why are teams tracked separately by phase instead of assigned dynamically?
+
+4. Record ID vs Text Fields
+   └─ Consolidate to one reference approach?
+
+5. Multi-User Scenarios
+   └─ Can an Area Director/District Manager span multiple offices/regions?

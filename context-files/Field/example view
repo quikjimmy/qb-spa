@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Field">
+<title>Field &mdash; Core Ops</title>
+<style>
+  :root {
+    --bg: #f7f3f0;
+    --card: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e0d8d1;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #3b82f6;
+    --purple: #8b5cf6;
+    --teal: #14b8a6;
+    --warm: #cec4bc;
+    --warm-light: #e8e2dc;
+    --header-bg: #1e293b;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { height: 100%; width: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: contain;
+    min-height: 100%; min-height: 100vh; min-height: 100dvh;
+    position: relative; overflow: hidden;
+  }
+
+  /* ===== HEADER ===== */
+  .header {
+    background: var(--header-bg); color: white;
+    padding: 14px 16px 12px;
+    padding-top: max(14px, env(safe-area-inset-top));
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    transform: translateZ(0); -webkit-transform: translateZ(0);
+  }
+  .header-top { display: flex; align-items: center; justify-content: space-between; }
+  .header-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+  .header h1 { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-sub { font-size: 11px; color: rgba(255,255,255,0.6); font-weight: 500; margin-top: 1px; }
+  .back-btn {
+    display: none; width: 38px; height: 38px; border-radius: 10px; border: none;
+    background: rgba(255,255,255,0.10); color: white; cursor: pointer;
+    align-items: center; justify-content: center; flex-shrink: 0;
+    -webkit-appearance: none; transition: background 0.15s;
+  }
+  .back-btn:active { background: rgba(255,255,255,0.22); }
+  .back-btn svg { width: 18px; height: 18px; }
+  .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .header-actions button {
+    background: rgba(255,255,255,0.10); border: none; color: white;
+    width: 38px; height: 38px; border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-appearance: none; transition: background 0.15s;
+  }
+  .header-actions button:active { background: rgba(255,255,255,0.22); }
+  .header-actions button svg { width: 18px; height: 18px; }
+  .header-spacer { height: calc(60px + env(safe-area-inset-top, 0px)); }
+
+  /* ===== SEARCH BAR ===== */
+  .search-bar {
+    display: none; padding: 0 16px 12px;
+    background: var(--header-bg);
+    position: fixed; top: calc(62px + env(safe-area-inset-top, 0px)); left: 0; right: 0;
+    z-index: 99; transform: translateZ(0);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .search-bar.open { display: flex; align-items: center; gap: 8px; }
+  .search-bar input {
+    flex: 1; min-width: 0; padding: 10px 14px; border-radius: 10px;
+    border: none; background: rgba(255,255,255,0.12); color: white;
+    font-size: 15px; outline: none;
+  }
+  .search-bar input::placeholder { color: rgba(255,255,255,0.5); }
+  .search-bar .search-close {
+    background: none; border: none; color: rgba(255,255,255,0.6);
+    font-size: 20px; cursor: pointer; padding: 8px;
+  }
+
+  /* ===== KPI CHIPS ===== */
+  .kpi-strip-wrap { padding: 0 16px; }
+  .kpi-strip {
+    display: flex; gap: 8px; padding: 14px 0; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .kpi-strip::-webkit-scrollbar { display: none; }
+  .kpi-chip {
+    flex: 0 0 auto; scroll-snap-align: start; background: white; border-radius: 14px;
+    padding: 12px 16px; min-width: 110px; border: 1.5px solid var(--border);
+    position: relative; overflow: hidden; transition: border-color 0.2s, transform 0.1s;
+  }
+  .kpi-chip::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+  .kpi-chip.accent-info::before { background: var(--info); }
+  .kpi-chip.accent-teal::before { background: var(--teal); }
+  .kpi-chip.accent-success::before { background: var(--success); }
+  .kpi-chip.accent-purple::before { background: var(--purple); }
+  .kpi-chip.accent-danger::before { background: var(--danger); }
+  .kpi-chip.accent-warning::before { background: var(--warning); }
+  .kpi-chip.accent-warning .kpi-value { color: var(--warning); }
+  .kpi-chip .kpi-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px; }
+  .kpi-chip .kpi-value { font-size: 28px; font-weight: 800; margin: 2px 0 0; }
+  .kpi-chip.accent-danger .kpi-value { color: var(--danger); }
+  .kpi-chip.tappable { cursor: pointer; }
+  .kpi-chip.tappable:active { transform: scale(0.96); }
+  .kpi-chip .kpi-unit { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .kpi-chip.accent-info .kpi-value { color: var(--info); }
+  .kpi-chip.accent-teal .kpi-value { color: var(--teal); }
+  .kpi-chip.accent-success .kpi-value { color: var(--success); }
+  .kpi-chip.accent-purple .kpi-value { color: var(--purple); }
+  .kpi-loading { height: 28px; width: 60px; background: var(--warm-light); border-radius: 6px; animation: shimmer 1.5s infinite; }
+  @keyframes shimmer { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+  /* ===== QUICK FILTERS ===== */
+  .filter-section { padding: 0 16px 6px; }
+  .filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .qf-chip {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    background: white; border: 1.5px solid var(--border); color: var(--muted);
+    cursor: pointer; white-space: nowrap; -webkit-appearance: none;
+    min-height: 30px; display: inline-flex; align-items: center;
+  }
+  .qf-chip:active { background: #f1f5f9; }
+  .qf-chip.active { background: var(--header-bg); color: white; border-color: var(--header-bg); }
+
+  /* ===== SCROLL AREA ===== */
+  .scroll-area {
+    position: fixed;
+    top: calc(60px + env(safe-area-inset-top, 0px));
+    left: 0; right: 0; bottom: 0;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg);
+  }
+
+  /* ===== SECTION TABS ===== */
+  .section-tabs {
+    display: flex; gap: 0; padding: 0 16px; background: white;
+    border-bottom: 1px solid var(--border); margin-bottom: 2px;
+  }
+  .tab-btn {
+    flex: 1; padding: 10px 16px; background: none; border: none;
+    border-bottom: 3px solid transparent; color: var(--muted);
+    font-size: 13px; font-weight: 600; cursor: pointer; transition: color 0.2s, border-color 0.2s;
+  }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--header-bg); }
+  .tab-btn:active { background: rgba(0,0,0,0.02); }
+  .tab-content { display: none; padding: 0 16px 20px; }
+  .tab-content.active { display: block; }
+
+  /* ===== SECTION LABEL (collapsible) ===== */
+  .section-label {
+    font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 14px 0 6px; display: flex; align-items: center;
+    justify-content: space-between; cursor: pointer; -webkit-user-select: none; user-select: none;
+  }
+  .section-label .collapse-arrow {
+    font-size: 10px; transition: transform 0.2s; display: inline-block; margin-left: 8px;
+  }
+  .section-label .collapse-arrow.collapsed { transform: rotate(-90deg); }
+  .collapsible.collapsed { display: none; }
+
+  /* ===== TECH CARDS ===== */
+  .tech-card {
+    background: white; border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+    border: 1px solid var(--border); display: flex; gap: 12px; align-items: flex-start;
+  }
+  .tech-avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--header-bg); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px; flex-shrink: 0;
+  }
+  .tech-info { flex: 1; min-width: 0; }
+  .tech-name { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .tech-stats { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .tech-bar { height: 5px; background: var(--warm-light); border-radius: 3px; overflow: hidden; }
+  .tech-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .tech-bar-fill.green { background: var(--success); }
+  .tech-bar-fill.yellow { background: var(--warning); }
+  .tech-bar-fill.red { background: var(--danger); }
+  .tech-count { font-size: 22px; font-weight: 800; color: var(--header-bg); text-align: right; line-height: 1; flex-shrink: 0; }
+
+  /* ===== EVENT BREAKDOWN ===== */
+  .breakdown-card {
+    background: white; border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+    border: 1px solid var(--border);
+  }
+  .breakdown-item { margin-bottom: 14px; cursor: pointer; padding: 8px; margin-left: -8px; margin-right: -8px; border-radius: 8px; transition: background 0.15s; }
+  .breakdown-item:active { background: var(--warm-light); }
+  .breakdown-item:last-child { margin-bottom: 0; }
+  .breakdown-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .breakdown-label { font-size: 13px; font-weight: 600; color: var(--text); }
+  .breakdown-count { font-size: 13px; font-weight: 700; color: var(--text); }
+  .breakdown-count .rate { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+  .breakdown-bar { height: 8px; background: var(--warm-light); border-radius: 4px; overflow: hidden; display: flex; }
+  .breakdown-seg { height: 100%; transition: width 0.3s; }
+  .breakdown-seg.seg-submitted { background: var(--success); }
+  .breakdown-seg.seg-notsubmitted { background: var(--danger); }
+  .breakdown-seg.seg-onsite { background: var(--info); }
+  .breakdown-seg.seg-scheduled { background: var(--warm); }
+  .breakdown-seg.seg-overdue { background: #f97316; }
+  .breakdown-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--warm-light); }
+  .legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); font-weight: 600; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  /* ===== ACTIVITY FEED ===== */
+  .time-section-header {
+    font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 12px 0 6px;
+  }
+  .activity-card {
+    background: white; border-radius: 14px; padding: 12px 14px; margin-bottom: 8px;
+    border: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start;
+  }
+  .activity-dot {
+    width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0;
+    background: #ccc;
+  }
+  .activity-dot.submitted { background: var(--success); }
+  .activity-dot.arrived { background: var(--warning); }
+  .activity-dot.enroute { background: var(--info); }
+  .activity-body { flex: 1; min-width: 0; }
+  .activity-primary { font-size: 13px; font-weight: 500; margin-bottom: 3px; line-height: 1.4; }
+  .activity-meta { font-size: 11px; color: var(--muted); }
+  .activity-status {
+    display: inline-block; padding: 2px 8px; border-radius: 20px;
+    font-size: 10px; font-weight: 600; margin-left: 4px;
+  }
+  .activity-status.submitted { background: rgba(16,185,129,0.12); color: var(--success); }
+  .activity-status.arrived { background: rgba(245,158,11,0.12); color: var(--warning); }
+  .activity-status.enroute { background: rgba(59,130,246,0.12); color: var(--info); }
+  .activity-status.not-started { background: rgba(100,116,139,0.1); color: var(--muted); }
+
+  /* ===== DRILL-DOWN VIEW ===== */
+  .drilldown-panel { display: none; padding: 0 16px 20px; }
+  .drilldown-panel.active { display: block; }
+  .main-view.hidden { display: none; }
+
+  /* ===== INSTALL-STYLE TASK CARDS ===== */
+  .task-card {
+    background: white; border-radius: 14px; padding: 12px 14px; margin-bottom: 8px;
+    border: 1px solid var(--border); transition: transform 0.1s; cursor: pointer;
+  }
+  .task-card:active { transform: scale(0.985); }
+  .task-card.border-green { border-left: 3px solid var(--success); }
+  .task-card.border-yellow { border-left: 3px solid var(--warning); }
+  .task-card.border-blue { border-left: 3px solid var(--info); }
+  .task-card.border-red { border-left: 3px solid var(--danger); background: #fff5f5; }
+  .task-card.border-orange { border-left: 3px solid #f97316; }
+  .late-badge { display:inline-flex; align-items:center; gap:3px; padding:2px 7px; border-radius:8px; font-size:9px; font-weight:700; letter-spacing:.3px; margin-left:6px; }
+  .late-badge.predicted { background:#f59e0b; color:#fff; animation:latePulse 1.5s ease-in-out infinite; }
+  .late-badge.late { background:#ef4444; color:#fff; animation:latePulse 1.5s ease-in-out infinite; }
+  .late-badge.noshow { background:#9d174d; color:#fff; }
+  .late-badge.was-late { background:#f1f5f9; color:#94a3b8; font-weight:600; font-size:8px; }
+  @keyframes latePulse { 0%,100%{opacity:1;} 50%{opacity:.65;} }
+  .task-card .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 3px; gap: 8px; }
+  .task-card .card-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
+  .task-card .card-sub { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .task-card .card-sub span + span::before { content: ' \00B7 '; }
+  .status-pill {
+    display: inline-flex; align-items: center; padding: 3px 8px;
+    border-radius: 20px; font-size: 10px; font-weight: 600;
+  }
+  .status-pill.complete { background: rgba(16,185,129,0.12); color: var(--success); }
+  .status-pill.submitted { background: rgba(245,158,11,0.12); color: var(--warning); }
+  .status-pill.onsite { background: rgba(59,130,246,0.12); color: var(--info); }
+  .status-pill.enroute { background: rgba(59,130,246,0.12); color: var(--info); }
+  .status-pill.overdue { background: rgba(239,68,68,0.12); color: var(--danger); }
+  .status-pill.scheduled { background: rgba(100,116,139,0.1); color: var(--muted); }
+  .status-pill.notsubmitted { background: rgba(239,68,68,0.12); color: var(--danger); }
+  /* Field status chips row */
+  .fs-row { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
+  .fs-chip {
+    display: inline-flex; align-items: center; padding: 2px 6px;
+    border-radius: 10px; font-size: 9px; font-weight: 700;
+    background: #e2e8f0; color: #94a3b8;
+  }
+  .fs-chip.on { background: rgba(16,185,129,0.15); color: var(--success); }
+  .fs-chip.off { background: #e2e8f0; color: #94a3b8; }
+  .fs-chip.missed { background: rgba(239,68,68,0.12); color: var(--danger); }
+
+  /* Arrivy drawer inside task cards */
+  .arrivy-drawer-toggle { display:flex; align-items:center; gap:6px; padding:4px 0 0; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  .arrivy-drawer-label { font-size:10px; font-weight:600; color:var(--info); letter-spacing:.3px; text-transform:uppercase; }
+  .arrivy-drawer-arrow { font-size:8px; color:var(--info); transition:transform .2s; display:inline-block; }
+  .arrivy-drawer-arrow.open { transform:rotate(90deg); }
+  .arrivy-drawer-content { padding:6px 0 2px; }
+  .arrivy-drawer-row { display:flex; align-items:center; gap:6px; padding:3px 0; font-size:11px; color:#475569; }
+  .arrivy-drawer-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .arrivy-drawer-tmpl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+  .arrivy-drawer-date { color:var(--muted); font-size:10px; white-space:nowrap; }
+  .arrivy-drawer-crew { color:var(--muted); font-size:10px; white-space:nowrap; max-width:60px; overflow:hidden; text-overflow:ellipsis; }
+  .arrivy-link { display:inline-flex; align-items:center; gap:4px; color:var(--info); font-size:11px; font-weight:600; text-decoration:none; padding:4px 0 0; }
+
+  /* Make tech-card and breakdown-item tappable */
+  .tech-card { cursor: pointer; transition: transform 0.1s; }
+  .tech-card:active { transform: scale(0.985); }
+  .breakdown-item.tappable { cursor: pointer; padding: 8px; margin: 0 -8px 10px; border-radius: 8px; transition: background 0.15s; }
+  .breakdown-item.tappable:active { background: var(--warm-light); }
+
+  /* Collapsible group in drilldown */
+  .group-header {
+    font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 12px 0 6px; border-bottom: 1px solid var(--border);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; -webkit-user-select: none; user-select: none;
+  }
+  .group-header .collapse-arrow { font-size: 10px; transition: transform 0.2s; display: inline-block; }
+  .group-header .collapse-arrow.collapsed { transform: rotate(-90deg); }
+  .group-cards.collapsed { display: none; }
+  .group-header .group-count {
+    background: var(--bg); padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 700; color: var(--text);
+  }
+
+  /* ===== EMPTY / LOADING / ERROR ===== */
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+  .loading-overlay {
+    position: fixed; inset: 0; background: rgba(247,243,240,0.92);
+    z-index: 400; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .loading-overlay.hidden { display: none; }
+  .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--header-bg); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { margin-top: 14px; color: var(--muted); font-size: 14px; }
+  .error-banner {
+    background: #fee2e2; color: #991b1b; padding: 12px 16px; font-size: 13px;
+    display: none; align-items: center; gap: 8px;
+  }
+  .error-banner.show { display: flex; }
+  .error-banner .close { margin-left: auto; padding: 8px; cursor: pointer; font-size: 18px; border: none; background: none; color: inherit; }
+
+  /* ===== SIDE DRAWER ===== */
+  .drawer-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    z-index: 9998; opacity: 0; transition: opacity 0.25s ease;
+  }
+  .drawer-overlay.open { display: block; opacity: 1; }
+  .side-drawer {
+    position: fixed; top: 0; left: -280px; width: 260px; height: 100%; height: 100vh; height: 100dvh;
+    background: white; z-index: 9999; transition: left 0.28s cubic-bezier(0.4,0,0.2,1);
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15); display: flex; flex-direction: column;
+    padding-top: max(20px, env(safe-area-inset-top));
+  }
+  .side-drawer.open { left: 0; }
+  .drawer-header { padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+  .drawer-header h2 { font-size: 16px; font-weight: 700; color: var(--text); }
+  .drawer-header .drawer-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .drawer-nav { flex: 1; padding: 8px 12px; overflow-y: auto; }
+  .drawer-nav a {
+    display: flex; align-items: center; gap: 14px; padding: 14px 12px;
+    border-radius: 12px; text-decoration: none; color: var(--text);
+    font-size: 15px; font-weight: 500; transition: background 0.15s;
+  }
+  .drawer-nav a:active { background: var(--warm-light); }
+  .drawer-nav a.active { background: #f0f4f8; color: var(--header-bg); font-weight: 600; }
+  .drawer-nav a svg { width: 22px; height: 22px; flex-shrink: 0; color: var(--muted); }
+  .drawer-nav a.active svg { color: var(--header-bg); }
+  .nav-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 9px; background: #ef4444; color: white;
+    font-size: 10px; font-weight: 700; margin-left: auto;
+  }
+
+  /* ===== SNAPSHOT ===== */
+  body.snapshot-mode .scroll-area { bottom: 0; }
+  body.snapshot-mode .side-drawer, body.snapshot-mode .drawer-overlay { display: none !important; }
+
+  @media (min-width: 768px) {
+    .kpi-strip { justify-content: center; }
+    .tab-content { max-width: 700px; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="loading-text">Loading field data...</div>
+</div>
+
+<div class="error-banner" id="errorBanner">
+  <span id="errorText"></span>
+  <span class="close" onclick="this.parentElement.classList.remove('show')">&times;</span>
+</div>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-top">
+    <div class="header-left">
+      <button class="back-btn" id="backBtn" onclick="goBackToMain()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <img src="https://raw.githubusercontent.com/quikjimmy/qb-skin/main/qb_skin_embed/assets/Kin%20-%20Square%20Profile-blake-white.png" alt="Kin" style="width:28px;height:28px;border-radius:6px;">
+      <div>
+        <h1 id="headerTitle">Field</h1>
+        <div class="header-sub" id="headerDate"></div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button onclick="toggleSearch()" id="searchBtn" title="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+      <button onclick="toggleDrawer()" id="menuBtn" title="Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+<div class="header-spacer"></div>
+
+<!-- SEARCH BAR -->
+<div class="search-bar" id="searchBar">
+  <input type="text" id="searchInput" placeholder="Search techs or events..." oninput="handleSearch(this.value)" autocomplete="off" autocorrect="off">
+  <button class="search-close" onclick="toggleSearch()">&times;</button>
+</div>
+
+<!-- SCROLL AREA -->
+<div class="scroll-area" id="scrollArea">
+  <!-- MAIN VIEW -->
+  <div class="main-view" id="mainView">
+    <!-- KPI STRIP -->
+    <div class="kpi-strip-wrap"><div class="kpi-strip" id="kpiStrip"></div></div>
+
+    <!-- DATE FILTERS -->
+    <div class="filter-section" id="filterSection">
+      <div class="filter-row" id="dateFilters"></div>
+    </div>
+
+    <!-- SECTION TABS -->
+    <div class="section-tabs" id="sectionTabs">
+      <button class="tab-btn active" data-tab="leaderboard">Leaderboard</button>
+      <button class="tab-btn" data-tab="activity">Activity Feed</button>
+    </div>
+
+    <!-- LEADERBOARD TAB -->
+    <div class="tab-content active" id="leaderboard-tab">
+      <div class="section-label" onclick="toggleSection('techCards')">
+        <span>TECHNICIANS</span>
+        <span class="collapse-arrow" id="arrow_techCards">&#9660;</span>
+      </div>
+      <div class="collapsible" id="techCards"></div>
+
+      <div class="section-label" onclick="toggleSection('eventBreakdown')">
+        <span>BY EVENT TYPE</span>
+        <span class="collapse-arrow" id="arrow_eventBreakdown">&#9660;</span>
+      </div>
+      <div class="collapsible" id="eventBreakdown"></div>
+    </div>
+
+    <!-- ACTIVITY FEED TAB -->
+    <div class="tab-content" id="activity-tab">
+      <div id="activityContainer"></div>
+    </div>
+  </div>
+
+  <!-- DRILL-DOWN VIEW -->
+  <div class="drilldown-panel" id="drilldownPanel">
+    <div id="drilldownContent"></div>
+  </div>
+</div>
+
+<!-- SIDE DRAWER NAV -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
+<div class="side-drawer" id="sideDrawer">
+  <div class="drawer-header" style="display:flex;align-items:center;gap:12px;">
+    <img src="https://raw.githubusercontent.com/quikjimmy/qb-skin/main/qb_skin_embed/assets/Kin%20-%20Square%20Profile-white-black.png" alt="Kin" style="width:36px;height:36px;border-radius:8px;">
+    <div><h2>Core Ops</h2><div class="drawer-sub">Kin Home</div></div>
+  </div>
+  <div class="drawer-nav">
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=cc-quick-glance.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      Home
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=cc-quick-glance.html#favorites">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+      Favorites
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-project-detail.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+      Projects
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-tasks.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M22 5.18L10.59 16.6l-4.24-4.24 1.41-1.41 2.83 2.83 10-10L22 5.18zM19.79 10.22C19.92 10.79 20 11.39 20 12c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8c1.58 0 3.04.46 4.28 1.25l1.44-1.44A9.9 9.9 0 0012 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10c0-1.19-.22-2.33-.6-3.39l-1.61 1.61z"/></svg>
+      Tickets
+      <span class="nav-badge" id="ticketBadge" style="display:none"></span>
+    </a>
+    <a href="javascript:void(0)" class="active">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+      Field
+    </a>
+    <a href="https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-trends.html">
+      <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      Trends
+    </a>
+  </div>
+</div>
+
+<script>
+/* ===== CONFIG ===== */
+var QB = {
+  realm: 'kin.quickbase.com',
+  appId: 'br9kwm8bk',
+  token: 'b6teb3_p3bs_0_bzh28isbyba5yh9ujb73hqthh5',
+  arrivyTable: 'bvbqgs5yc',
+  arrivyTaskLogTable: 'bvbbznmdb'
+};
+
+var LOG_F = {
+  relatedProject: 193,
+  relatedTask: 94,
+  eventType: 76,
+  eventSubType: 77,
+  eventMessage: 74,
+  timestamp: 79,
+  scheduled: 17,
+  statusTitle: 24,
+  reporterName: 14
+};
+var LOG_SELECT = [3, LOG_F.relatedTask, LOG_F.eventType, LOG_F.timestamp, LOG_F.scheduled, LOG_F.reporterName, LOG_F.relatedProject];
+
+var F = {
+  scheduledDateTime: 115,
+  customerFirstName: 47,
+  customerLastName: 48,
+  taskStatus: 85,
+  templateName: 56,
+  taskUrl: 107,
+  enrouteStatus: 116,
+  startedStatus: 117,
+  submittedDateTime: 97,
+  techCompleteDateTime: 137,
+  enrouteName: 145,
+  crew: 268,
+  assignedCrew: 197,
+  installComplete: 270,
+  kw: 198,
+  relatedProject: 6,
+  rtrStatus: 218,
+  rtrReadyCount: 217
+};
+
+var SELECT_FIELDS = [3, F.scheduledDateTime, F.customerFirstName, F.customerLastName, F.taskStatus, F.templateName, F.taskUrl, F.enrouteStatus, F.startedStatus, F.submittedDateTime, F.techCompleteDateTime, F.enrouteName, F.crew, F.assignedCrew, F.installComplete, F.kw, F.relatedProject, F.rtrStatus, F.rtrReadyCount];
+
+/* ===== HELPERS ===== */
+function qbv(rec, fid) { return rec[fid] ? rec[fid].value : null; }
+function escapeHtml(str) { if(!str) return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function formatDate(d) { return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function formatTime(ds) { if(!ds) return '--:--'; var d=new Date(ds); return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}); }
+function getInitials(name) { return name.split(' ').map(function(n){return n[0]||'';}).join('').toUpperCase().slice(0,2); }
+function fmtDateTime(ds) { if(!ds) return '-'; var d=new Date(ds); if(isNaN(d)) return ds; return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true}); }
+function qbStr(rec, fid) {
+  if (!rec || !rec[fid]) return '';
+  var v = rec[fid];
+  if (typeof v === 'object' && v !== null) {
+    if (v.value !== undefined) {
+      var val = v.value;
+      if (typeof val === 'object' && val !== null) return val.name || val.email || String(val) || '';
+      return val ? String(val) : '';
+    }
+    return v.name || v.email || String(v) || '';
+  }
+  return v ? String(v) : '';
+}
+function getCrewName(t) { return qbStr(t, F.crew) || qbStr(t, F.assignedCrew) || qbStr(t, F.enrouteName) || ''; }
+
+/* ===== STATE ===== */
+var allTasks = [];
+var activePreset = 'today';
+var activeTab = 'leaderboard';
+var searchTerm = '';
+
+/* ===== DATE RANGES ===== */
+function getDateRange(preset) {
+  var today = new Date();
+  today.setHours(0,0,0,0);
+  var from = new Date(today);
+  var to = new Date(today);
+  to.setHours(23,59,59,999);
+
+  switch(preset) {
+    case 'yesterday':
+      from.setDate(from.getDate()-1);
+      to = new Date(from); to.setHours(23,59,59,999);
+      break;
+    case 'week':
+      var day=from.getDay(); from.setDate(from.getDate()-(day===0?6:day-1));
+      break;
+    case 'month':
+      from.setDate(1);
+      break;
+    case '30days':
+      from.setDate(from.getDate()-30);
+      break;
+  }
+  return { from: from, to: to };
+}
+
+/* ===== API ===== */
+function apiQuery(where) {
+  return fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST',
+    headers: {
+      'QB-Realm-Hostname': QB.realm,
+      'Authorization': 'QB-USER-TOKEN ' + QB.token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: QB.arrivyTable,
+      where: where,
+      select: SELECT_FIELDS,
+      sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+      options: { top: 1000 }
+    })
+  }).then(function(resp) {
+    if (!resp.ok) throw new Error('API error: ' + resp.status);
+    return resp.json();
+  }).then(function(json) { return json.data || []; });
+}
+
+function apiQueryTable(tableId, where, select, top) {
+  return fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST',
+    headers: {
+      'QB-Realm-Hostname': QB.realm,
+      'Authorization': 'QB-USER-TOKEN ' + QB.token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: tableId,
+      where: where,
+      select: select,
+      options: { top: top || 1000 }
+    })
+  }).then(function(resp) {
+    if (!resp.ok) throw new Error('API error: ' + resp.status);
+    return resp.json();
+  }).then(function(json) { return json.data || []; });
+}
+
+/* ===== LATE STATUS DATA ===== */
+var lateByTask = {}; // taskRid → {type, timestamp, scheduled, crew}
+var lateDataLoaded = false;
+
+function loadLateData() {
+  // Build set of task RIDs and their project RIDs from current data
+  var projRids = {};
+  var taskRidSet = {};
+  allTasks.forEach(function(t) {
+    var taskRid = String(qbv(t, 3) || '');
+    var projRid = String(qbv(t, F.relatedProject) || '');
+    if (taskRid) taskRidSet[taskRid] = true;
+    if (projRid) projRids[projRid] = true;
+  });
+  var projList = Object.keys(projRids);
+  if (!projList.length) return Promise.resolve();
+
+  // Query task log by project RIDs
+  var promises = projList.map(function(projRid) {
+    var where = "{'" + LOG_F.relatedProject + "'.EX.'" + projRid + "'}";
+    return apiQueryTable(QB.arrivyTaskLogTable, where, LOG_SELECT, 300).catch(function() { return []; });
+  });
+
+  return Promise.all(promises).then(function(results) {
+    var priority = { 'NO_SHOW': 3, 'NOSHOW': 3, 'LATE': 2, 'PREDICTED_LATE': 1 };
+    lateByTask = {};
+    results.forEach(function(logs) {
+      logs.forEach(function(log) {
+        var et = (qbv(log, LOG_F.eventType) || '').toUpperCase();
+        var p = priority[et];
+        if (!p) return;
+        var taskRid = String(qbv(log, LOG_F.relatedTask) || '');
+        if (!taskRid || !taskRidSet[taskRid]) return;
+        var existing = lateByTask[taskRid];
+        if (existing && (priority[existing.type] || 0) >= p) return;
+        var type = et === 'NO_SHOW' ? 'NOSHOW' : et;
+        lateByTask[taskRid] = {
+          type: type,
+          timestamp: qbv(log, LOG_F.timestamp) || '',
+          scheduled: qbv(log, LOG_F.scheduled) || '',
+          crew: qbv(log, LOG_F.reporterName) || ''
+        };
+      });
+    });
+    lateDataLoaded = true;
+  });
+}
+
+function getLateDelta(scheduled, timestamp) {
+  if (!scheduled || !timestamp) return '';
+  var s = new Date(scheduled);
+  var t = new Date(timestamp);
+  if (isNaN(s) || isNaN(t)) return '';
+  var diffMin = Math.round((t - s) / 60000);
+  if (diffMin <= 0) return '';
+  if (diffMin < 60) return '+' + diffMin + 'm';
+  var h = Math.floor(diffMin / 60);
+  var m = diffMin % 60;
+  return '+' + h + 'h' + (m > 0 ? m + 'm' : '');
+}
+
+/* ===== LOAD DATA ===== */
+function loadData() {
+  showLoading(true);
+  var range = getDateRange(activePreset);
+  var fromStr = formatDate(range.from) + 'T00:00:00Z';
+  var toStr = formatDate(range.to) + 'T23:59:59Z';
+  var where = "{'" + F.scheduledDateTime + "'.OAF.'" + fromStr + "'}AND{'" + F.scheduledDateTime + "'.OBF.'" + toStr + "'}";
+
+  // Update header date
+  var opts = { month: 'short', day: 'numeric', year: 'numeric' };
+  document.getElementById('headerDate').textContent = activePreset === 'today' ? 'Today' : range.from.toLocaleDateString('en-US', opts);
+
+  apiQuery(where)
+  .then(function(data) {
+    allTasks = data;
+    lateByTask = {};
+    lateDataLoaded = false;
+    renderKPIs();
+    renderLeaderboard();
+    renderEventBreakdown();
+    renderActivityFeed();
+    updateHeaderSubtitle();
+    showLoading(false);
+    // Non-blocking: load late data then re-render with late metrics
+    loadLateData().then(function() {
+      renderKPIs();
+      renderLeaderboard();
+      renderEventBreakdown();
+    }).catch(function(e) { console.warn('Late data load failed:', e); });
+  })
+  .catch(function(e) {
+    console.error('Load error:', e);
+    showError('Failed to load field data: ' + e.message);
+    showLoading(false);
+  });
+}
+
+/* ===== KPI RENDERING ===== */
+function isSurveyOverdue(t) {
+  // Survey-type task, scheduled + 2 hours has passed, and not yet submitted
+  var tmpl = (qbv(t, F.templateName) || '').toLowerCase();
+  if (tmpl.indexOf('survey') < 0) return false;
+  if (qbv(t, F.submittedDateTime)) return false;
+  var sched = qbv(t, F.scheduledDateTime);
+  if (!sched) return false;
+  var schedDate = new Date(sched);
+  var cutoff = new Date(schedDate.getTime() + (2 * 60 * 60 * 1000)); // +2 hours
+  return new Date() > cutoff;
+}
+
+function renderKPIs() {
+  var tasks = getFilteredTasks();
+  var total = tasks.length;
+  var submittedCount = 0;
+  var notSubmittedCount = 0;
+  var ssOverdueCount = 0;
+  var activeNow = 0;
+
+  tasks.forEach(function(t) {
+    var s = getTaskStatus(t);
+    if (s.key === 'submitted') submittedCount++;
+    else if (s.key === 'notsubmitted') notSubmittedCount++;
+    else if (s.key === 'onsite' || s.key === 'enroute') activeNow++;
+    // SS Overdue: survey-specific, scheduled + 2hrs passed
+    if (isSurveyOverdue(t)) ssOverdueCount++;
+  });
+
+  // Count late tasks (surveys only)
+  var lateCount = 0;
+  if (lateDataLoaded) {
+    tasks.forEach(function(t) {
+      var rid = String(qbv(t, 3) || '');
+      var tmpl = (qbv(t, F.templateName) || '').toLowerCase();
+      if (lateByTask[rid] && tmpl.indexOf('survey') >= 0) lateCount++;
+    });
+  }
+
+  document.getElementById('kpiStrip').innerHTML =
+    '<div class="kpi-chip accent-info tappable" onclick="drillDownKPI(\'all\')">' +
+      '<div class="kpi-label">Total</div><div class="kpi-value">' + total + '</div></div>' +
+    '<div class="kpi-chip accent-danger tappable" onclick="drillDownKPI(\'notsubmitted\')">' +
+      '<div class="kpi-label">Not Submitted</div><div class="kpi-value">' + notSubmittedCount + '</div></div>' +
+    (lateDataLoaded ? '<div class="kpi-chip accent-warning tappable" onclick="drillDownKPI(\'late\')">' +
+      '<div class="kpi-label">SS Late</div><div class="kpi-value">' + lateCount + '</div></div>' : '') +
+    '<div class="kpi-chip accent-danger tappable" onclick="drillDownKPI(\'ssoverdue\')">' +
+      '<div class="kpi-label">SS Overdue</div><div class="kpi-value">' + ssOverdueCount + '</div></div>' +
+    '<div class="kpi-chip accent-success tappable" onclick="drillDownKPI(\'submitted\')">' +
+      '<div class="kpi-label">Submitted</div><div class="kpi-value">' + submittedCount + '</div></div>' +
+    '<div class="kpi-chip accent-teal tappable" onclick="drillDownKPI(\'active\')">' +
+      '<div class="kpi-label">On Site Now</div><div class="kpi-value">' + activeNow + '</div></div>';
+}
+
+/* ===== KPI DRILL-DOWN ===== */
+function drillDownKPI(kpiKey) {
+  var tasks = getFilteredTasks();
+  var filtered;
+  var title;
+
+  if (kpiKey === 'all') {
+    filtered = tasks;
+    title = 'All Events';
+  } else if (kpiKey === 'notsubmitted') {
+    filtered = tasks.filter(function(t) { return getTaskStatus(t).key === 'notsubmitted'; });
+    title = 'Not Submitted';
+  } else if (kpiKey === 'ssoverdue') {
+    filtered = tasks.filter(function(t) { return isSurveyOverdue(t); });
+    title = 'SS Overdue';
+  } else if (kpiKey === 'submitted') {
+    filtered = tasks.filter(function(t) { return getTaskStatus(t).key === 'submitted'; });
+    title = 'Submitted';
+  } else if (kpiKey === 'late') {
+    filtered = tasks.filter(function(t) {
+      var tmpl = (qbv(t, F.templateName) || '').toLowerCase();
+      return tmpl.indexOf('survey') >= 0 && lateByTask[String(qbv(t, 3) || '')];
+    });
+    title = 'Late Surveys';
+  } else if (kpiKey === 'active') {
+    filtered = tasks.filter(function(t) {
+      var k = getTaskStatus(t).key;
+      return k === 'onsite' || k === 'enroute';
+    });
+    title = 'On Site Now';
+  } else {
+    filtered = tasks;
+    title = 'Events';
+  }
+
+  showDrillDown(title, filtered);
+}
+
+/* ===== SEARCH FILTER ===== */
+function getFilteredTasks() {
+  if (!searchTerm) return allTasks;
+  var q = searchTerm.toLowerCase();
+  return allTasks.filter(function(t) {
+    var tech = (getCrewName(t) || '').toLowerCase();
+    var tmpl = (qbv(t, F.templateName) || '').toLowerCase();
+    var fn = (qbv(t, F.customerFirstName) || '').toLowerCase();
+    var ln = (qbv(t, F.customerLastName) || '').toLowerCase();
+    return tech.indexOf(q) >= 0 || tmpl.indexOf(q) >= 0 || fn.indexOf(q) >= 0 || ln.indexOf(q) >= 0;
+  });
+}
+
+/* ===== LEADERBOARD ===== */
+var techList = []; // store tech names for safe onclick lookup
+function renderLeaderboard() {
+  var tasks = getFilteredTasks();
+  var techMap = {};
+
+  tasks.forEach(function(t) {
+    var name = getCrewName(t) || 'Unassigned';
+    if (!techMap[name]) techMap[name] = { total: 0, completed: 0 };
+    techMap[name].total++;
+    if (qbv(t, F.submittedDateTime)) techMap[name].completed++;
+  });
+
+  techList = Object.keys(techMap).sort(function(a,b) { return techMap[b].total - techMap[a].total; });
+  var container = document.getElementById('techCards');
+
+  if (!techList.length) {
+    container.innerHTML = '<div class="empty-state">No tasks in selected date range</div>';
+    return;
+  }
+
+  var html = '';
+  techList.forEach(function(name, idx) {
+    var d = techMap[name];
+    var rate = d.total > 0 ? Math.round((d.completed / d.total) * 100) : 0;
+    var barCls = rate >= 80 ? 'green' : (rate >= 50 ? 'yellow' : 'red');
+    html += '<div class="tech-card" onclick="drillDownTech(techList[' + idx + '])">' +
+      '<div class="tech-avatar">' + escapeHtml(getInitials(name)) + '</div>' +
+      '<div class="tech-info">' +
+        '<div class="tech-name">' + escapeHtml(name) + '</div>' +
+        '<div class="tech-stats">' + d.total + ' events · ' + d.completed + ' completed · ' + rate + '% rate</div>' +
+        '<div class="tech-bar"><div class="tech-bar-fill ' + barCls + '" style="width:' + rate + '%"></div></div>' +
+      '</div>' +
+      '<div class="tech-count">' + d.total + '</div>' +
+    '</div>';
+  });
+  container.innerHTML = html;
+}
+
+/* ===== EVENT BREAKDOWN ===== */
+var eventTypeList = []; // store event types for safe onclick lookup
+function renderEventBreakdown() {
+  var tasks = getFilteredTasks();
+
+  // Build per-type status counts
+  var typeMap = {};
+  tasks.forEach(function(t) {
+    var tmpl = qbv(t, F.templateName) || 'Other';
+    if (!typeMap[tmpl]) typeMap[tmpl] = { total: 0, submitted: 0, notsubmitted: 0, onsite: 0, scheduled: 0, late: 0 };
+    typeMap[tmpl].total++;
+    var s = getTaskStatus(t);
+    if (s.key === 'submitted') typeMap[tmpl].submitted++;
+    else if (s.key === 'notsubmitted') typeMap[tmpl].notsubmitted++;
+    else if (s.key === 'onsite' || s.key === 'enroute') typeMap[tmpl].onsite++;
+    else typeMap[tmpl].scheduled++;
+    if (lateDataLoaded && tmpl.toLowerCase().indexOf('survey') >= 0 && lateByTask[String(qbv(t, 3) || '')]) typeMap[tmpl].late++;
+  });
+
+  eventTypeList = Object.keys(typeMap).sort(function(a,b) { return typeMap[b].total - typeMap[a].total; });
+  var container = document.getElementById('eventBreakdown');
+
+  if (!eventTypeList.length) {
+    container.innerHTML = '<div class="empty-state">No data</div>';
+    return;
+  }
+
+  var html = '<div class="breakdown-card">';
+  eventTypeList.forEach(function(type, idx) {
+    var d = typeMap[type];
+    var tot = d.total;
+    var subPct = tot > 0 ? (d.submitted / tot) * 100 : 0;
+    var nsPct = tot > 0 ? (d.notsubmitted / tot) * 100 : 0;
+    var osPct = tot > 0 ? (d.onsite / tot) * 100 : 0;
+    var schPct = tot > 0 ? (d.scheduled / tot) * 100 : 0;
+    var rate = tot > 0 ? Math.round((d.submitted / tot) * 100) : 0;
+    var onTimePct = tot > 0 ? Math.round(((tot - d.late) / tot) * 100) : 100;
+    var lateText = '';
+    if (lateDataLoaded && d.late > 0) {
+      var lateColor = onTimePct >= 90 ? 'var(--success)' : onTimePct >= 70 ? 'var(--warning)' : 'var(--danger)';
+      lateText = '<span style="font-size:10px;color:' + lateColor + ';font-weight:600;margin-left:6px">' + onTimePct + '% on-time</span>';
+    }
+
+    html += '<div class="breakdown-item" onclick="drillDownEventType(eventTypeList[' + idx + '])">' +
+      '<div class="breakdown-top">' +
+        '<div class="breakdown-label">' + escapeHtml(type) + lateText + '</div>' +
+        '<div class="breakdown-count">' + tot + '<span class="rate">' + rate + '%</span></div>' +
+      '</div>' +
+      '<div class="breakdown-bar">' +
+        (subPct > 0 ? '<div class="breakdown-seg seg-submitted" style="width:' + subPct + '%"></div>' : '') +
+        (nsPct > 0 ? '<div class="breakdown-seg seg-notsubmitted" style="width:' + nsPct + '%"></div>' : '') +
+        (osPct > 0 ? '<div class="breakdown-seg seg-onsite" style="width:' + osPct + '%"></div>' : '') +
+        (schPct > 0 ? '<div class="breakdown-seg seg-scheduled" style="width:' + schPct + '%"></div>' : '') +
+      '</div>' +
+    '</div>';
+  });
+
+  // Legend
+  html += '<div class="breakdown-legend">' +
+    '<div class="legend-item"><div class="legend-dot" style="background:var(--success)"></div>Submitted</div>' +
+    '<div class="legend-item"><div class="legend-dot" style="background:var(--danger)"></div>Not Submitted</div>' +
+    '<div class="legend-item"><div class="legend-dot" style="background:var(--info)"></div>On Site</div>' +
+    '<div class="legend-item"><div class="legend-dot" style="background:var(--warm)"></div>Scheduled</div>' +
+  '</div>';
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+/* ===== ACTIVITY FEED ===== */
+function renderActivityFeed() {
+  var tasks = getFilteredTasks();
+  var container = document.getElementById('activityContainer');
+
+  if (!tasks.length) {
+    container.innerHTML = '<div class="empty-state">No activities for this date range</div>';
+    return;
+  }
+
+  var grouped = { morning: [], afternoon: [], evening: [] };
+  tasks.forEach(function(t) {
+    var sched = qbv(t, F.scheduledDateTime);
+    if (sched) {
+      var hour = new Date(sched).getHours();
+      if (hour < 12) grouped.morning.push(t);
+      else if (hour < 17) grouped.afternoon.push(t);
+      else grouped.evening.push(t);
+    }
+  });
+
+  var html = '';
+  var periods = [
+    { key: 'morning', label: 'Morning' },
+    { key: 'afternoon', label: 'Afternoon' },
+    { key: 'evening', label: 'Evening' }
+  ];
+
+  periods.forEach(function(p) {
+    if (!grouped[p.key].length) return;
+    html += '<div class="time-section-header">' + p.label + '</div>';
+
+    grouped[p.key].forEach(function(t) {
+      var sched = qbv(t, F.scheduledDateTime);
+      var fn = qbv(t, F.customerFirstName) || '';
+      var ln = qbv(t, F.customerLastName) || '';
+      var tmpl = qbv(t, F.templateName) || 'Task';
+      var tech = getCrewName(t) || 'Unassigned';
+
+      var status = 'not-started'; var statusLabel = 'Not Started';
+      if (qbv(t, F.submittedDateTime)) { status = 'submitted'; statusLabel = 'Submitted'; }
+      else if (qbv(t, F.startedStatus)) { status = 'arrived'; statusLabel = 'Arrived'; }
+      else if (qbv(t, F.enrouteStatus)) { status = 'enroute'; statusLabel = 'En Route'; }
+
+      html += '<div class="activity-card">' +
+        '<div class="activity-dot ' + status + '"></div>' +
+        '<div class="activity-body">' +
+          '<div class="activity-primary">' + escapeHtml(tech) + ' &mdash; ' + escapeHtml(fn + ' ' + ln).trim() + '</div>' +
+          '<div class="activity-meta">' + formatTime(sched) + ' · ' + escapeHtml(tmpl) +
+            '<span class="activity-status ' + status + '">' + statusLabel + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    });
+  });
+
+  container.innerHTML = html;
+}
+
+/* ===== DATE FILTER RENDER ===== */
+function renderDateFilters() {
+  var presets = [
+    { key: 'today', label: 'Today' },
+    { key: 'yesterday', label: 'Yesterday' },
+    { key: 'week', label: 'This Week' },
+    { key: 'month', label: 'This Month' },
+    { key: '30days', label: 'Last 30 Days' }
+  ];
+  var html = '';
+  presets.forEach(function(p) {
+    html += '<button class="qf-chip' + (activePreset === p.key ? ' active' : '') + '" onclick="setPreset(\'' + p.key + '\')">' + p.label + '</button>';
+  });
+  document.getElementById('dateFilters').innerHTML = html;
+}
+
+function setPreset(key) {
+  activePreset = key;
+  renderDateFilters();
+  loadData();
+}
+
+/* ===== TABS ===== */
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+    btn.classList.add('active');
+    activeTab = btn.getAttribute('data-tab');
+    document.getElementById(activeTab + '-tab').classList.add('active');
+  });
+});
+
+/* ===== COLLAPSIBLE SECTIONS ===== */
+function toggleSection(id) {
+  var el = document.getElementById(id);
+  var arrow = document.getElementById('arrow_' + id);
+  if (el) el.classList.toggle('collapsed');
+  if (arrow) arrow.classList.toggle('collapsed');
+}
+
+/* ===== SEARCH ===== */
+function toggleSearch() {
+  var bar = document.getElementById('searchBar');
+  var isOpen = bar.classList.contains('open');
+  bar.classList.toggle('open');
+  if (!isOpen) {
+    document.getElementById('searchInput').focus();
+  } else {
+    document.getElementById('searchInput').value = '';
+    searchTerm = '';
+    renderKPIs(); renderLeaderboard(); renderEventBreakdown(); renderActivityFeed();
+  }
+}
+
+function handleSearch(val) {
+  searchTerm = val.trim();
+  renderKPIs(); renderLeaderboard(); renderEventBreakdown(); renderActivityFeed();
+}
+
+/* ===== DRAWER ===== */
+function toggleDrawer() {
+  var drawer = document.getElementById('sideDrawer');
+  var overlay = document.getElementById('drawerOverlay');
+  var isOpen = drawer.classList.contains('open');
+  if (isOpen) { drawer.classList.remove('open'); overlay.classList.remove('open'); }
+  else { drawer.classList.add('open'); overlay.classList.add('open'); }
+}
+
+/* ===== DRILL-DOWN NAVIGATION ===== */
+function drillDownTech(techName) {
+  var tasks = getFilteredTasks().filter(function(t) {
+    return (getCrewName(t) || 'Unassigned') === techName;
+  });
+  showDrillDown(techName, tasks);
+}
+
+function drillDownEventType(eventType) {
+  var tasks = getFilteredTasks().filter(function(t) {
+    return (qbv(t, F.templateName) || 'Other') === eventType;
+  });
+  showDrillDown(eventType, tasks);
+}
+
+function showDrillDown(title, tasks) {
+  document.getElementById('mainView').classList.add('hidden');
+  document.getElementById('drilldownPanel').classList.add('active');
+  document.getElementById('backBtn').style.display = 'flex';
+  document.getElementById('headerTitle').textContent = title;
+
+  var container = document.getElementById('drilldownContent');
+
+  if (!tasks.length) {
+    container.innerHTML = '<div class="empty-state">No tasks found</div>';
+    document.getElementById('scrollArea').scrollTop = 0;
+    return;
+  }
+
+  // Group by status
+  var groups = { notsubmitted: [], overdue: [], onsite: [], enroute: [], scheduled: [], submitted: [] };
+  tasks.forEach(function(t) {
+    var status = getTaskStatus(t);
+    if (groups[status.key]) groups[status.key].push(t);
+    else groups.scheduled.push(t);
+  });
+
+  var html = '';
+  var cfg = [
+    { key: 'notsubmitted', label: 'Not Submitted', color: 'color:var(--danger)' },
+    { key: 'overdue', label: 'Overdue', color: 'color:var(--danger)' },
+    { key: 'onsite', label: 'On Site', color: 'color:var(--info)' },
+    { key: 'enroute', label: 'En Route', color: 'color:var(--info)' },
+    { key: 'scheduled', label: 'Scheduled', color: '' },
+    { key: 'submitted', label: 'Submitted', color: 'color:var(--success)' }
+  ];
+
+  cfg.forEach(function(g) {
+    if (!groups[g.key] || !groups[g.key].length) return;
+    var groupId = 'drillgroup_' + g.key;
+    html += '<div class="group-header" style="' + g.color + '" onclick="toggleGroupCards(\'' + groupId + '\')">' +
+      '<span class="collapse-arrow" id="arrow_' + groupId + '">&#9660;</span> ' + g.label +
+      ' <span class="group-count">' + groups[g.key].length + '</span></div>';
+    html += '<div class="group-cards" id="' + groupId + '">';
+    groups[g.key].forEach(function(t) { html += renderTaskCard(t); });
+    html += '</div>';
+  });
+
+  container.innerHTML = html;
+  document.getElementById('scrollArea').scrollTop = 0;
+}
+
+function goBackToMain() {
+  document.getElementById('mainView').classList.remove('hidden');
+  document.getElementById('drilldownPanel').classList.remove('active');
+  document.getElementById('backBtn').style.display = 'none';
+  document.getElementById('headerTitle').textContent = defaultTitle;
+  document.getElementById('scrollArea').scrollTop = 0;
+}
+
+function getTaskStatus(t) {
+  var arrivyStatus = (qbv(t, F.taskStatus) || '').toLowerCase();
+  var submittedDt = qbv(t, F.submittedDateTime);
+  var arrivedDt = qbv(t, F.startedStatus);
+  var enrouteDt = qbv(t, F.enrouteStatus);
+  var isArrivyComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete';
+  var isOverdue = arrivyStatus === 'overdue';
+
+  // Truth-based status: what ACTUALLY happened, not what Arrivy's label says
+
+  // 1. Arrivy says complete/SWC but tech never submitted their form = Not Submitted (red flag)
+  if (isArrivyComplete && !submittedDt) return { key: 'notsubmitted', label: 'Not Submitted', cls: 'overdue', border: 'border-red' };
+
+  // 2. Tech submitted their form = Submitted (the real completion signal)
+  if (submittedDt) return { key: 'submitted', label: 'Submitted', cls: 'complete', border: 'border-green' };
+
+  // 3. Overdue = past scheduled time, nothing done
+  if (isOverdue) return { key: 'overdue', label: 'Overdue', cls: 'overdue', border: 'border-red' };
+
+  // 4. Tech arrived on site but hasn't submitted yet
+  if (arrivedDt) return { key: 'onsite', label: 'On Site', cls: 'onsite', border: 'border-blue' };
+
+  // 5. Tech en route
+  if (enrouteDt) return { key: 'enroute', label: 'En Route', cls: 'enroute', border: 'border-blue' };
+
+  // 6. Nothing happened yet
+  return { key: 'scheduled', label: 'Scheduled', cls: 'scheduled', border: '' };
+}
+
+function getStatusEmoji(t) {
+  var s = getTaskStatus(t);
+  if (s.key === 'submitted') return '\u2705';
+  if (s.key === 'notsubmitted') return '\u274C';
+  if (s.key === 'onsite') return '\uD83D\uDEA7';
+  if (s.key === 'enroute') return '\uD83D\uDE97';
+  if (s.key === 'overdue') return '\u26A0\uFE0F';
+  return '\u23F3';
+}
+
+function renderTaskCard(t) {
+  var fn = qbv(t, F.customerFirstName) || '';
+  var ln = qbv(t, F.customerLastName) || '';
+  var name = (fn + ' ' + ln).trim() || 'Unknown';
+  var tmpl = qbv(t, F.templateName) || 'Task';
+  var crew = getCrewName(t) || 'TBA';
+  var sched = qbv(t, F.scheduledDateTime);
+  var taskUrl = qbv(t, F.taskUrl);
+  var kw = parseFloat(qbv(t, F.kw) || 0);
+  var projRid = qbv(t, F.relatedProject);
+  var taskRid = qbv(t, 3);
+  var status = getTaskStatus(t);
+  var emoji = getStatusEmoji(t);
+  var installComp = (qbv(t, F.installComplete) || '').toLowerCase() === 'yes';
+  var submittedDt = qbv(t, F.submittedDateTime);
+  var rtrStatus = (qbv(t, F.rtrStatus) || '').toLowerCase();
+  var rtrCount = parseInt(qbv(t, F.rtrReadyCount) || 0);
+
+  var erOn = qbv(t, F.enrouteStatus) ? 'on' : 'off';
+  var osOn = qbv(t, F.startedStatus) ? 'on' : 'off';
+  var subCls = submittedDt ? 'on' : ((installComp && !submittedDt) ? 'missed' : 'off');
+  var compCls = installComp ? 'on' : 'off';
+
+  // Determine event category from template name
+  var tmplLow = tmpl.toLowerCase();
+  var eventCategory = 'install'; // default
+  if (tmplLow.indexOf('survey') >= 0 || tmplLow.indexOf('document') >= 0) eventCategory = 'survey';
+  else if (tmplLow.indexOf('inspection') >= 0 || tmplLow.indexOf('inspect') >= 0) eventCategory = 'inspection';
+  else if (tmplLow.indexOf('service') >= 0) eventCategory = 'service';
+
+  // Build chip row based on event category
+  var chipsHtml = '';
+  var arrivyStatus = (qbv(t, F.taskStatus) || '').toLowerCase();
+  var isTaskComplete = arrivyStatus === 'complete' || arrivyStatus === 'site work complete';
+
+  if (eventCategory === 'install' || eventCategory === 'default') {
+    // Install / Electrical Upgrade: ER | OS | SUB | COMP | RTR
+    var rtrChip = '';
+    if (rtrStatus.indexOf('pass') >= 0) rtrChip = '<span class="fs-chip on">\u2705 RTR</span>';
+    else if (rtrStatus.indexOf('fail') >= 0) rtrChip = '<span class="fs-chip missed">\u274C RTR</span>';
+    else if (rtrStatus || rtrCount > 0) rtrChip = '<span class="fs-chip off">\u26A0\uFE0F RTR</span>';
+    else if (installComp) rtrChip = '<span class="fs-chip" style="background:#f97316;color:#fff">!RTR</span>';
+    else rtrChip = '<span class="fs-chip off">RTR</span>';
+
+    chipsHtml =
+      '<span class="fs-chip ' + erOn + '">\uD83D\uDE97 ER</span>' +
+      '<span class="fs-chip ' + osOn + '">\uD83D\uDEA7 OS</span>' +
+      '<span class="fs-chip ' + subCls + '">' + (submittedDt ? '\u2705' : '\u274C') + ' SUB</span>' +
+      '<span class="fs-chip ' + compCls + '">' + (installComp ? '\u2705' : '') + ' COMP</span>' +
+      rtrChip;
+
+  } else if (eventCategory === 'survey') {
+    // Survey / Document: ER | OS | SUB | APPR
+    // Without project data we use: submitted = form done, complete status = approved proxy
+    var apprCls = isTaskComplete ? 'on' : (submittedDt && !isTaskComplete ? 'off' : 'off');
+    var apprIcon = isTaskComplete ? '\u2705' : '';
+    chipsHtml =
+      '<span class="fs-chip ' + erOn + '">\uD83D\uDE97 ER</span>' +
+      '<span class="fs-chip ' + osOn + '">\uD83D\uDEA7 OS</span>' +
+      '<span class="fs-chip ' + subCls + '">' + (submittedDt ? '\u2705' : '\u274C') + ' SUB</span>' +
+      '<span class="fs-chip ' + apprCls + '">' + apprIcon + ' APPR</span>';
+
+  } else if (eventCategory === 'inspection') {
+    // Inspection: ER | OS | SUB | PASS
+    var isFailed = arrivyStatus.indexOf('fail') >= 0;
+    var passCls = isTaskComplete && !isFailed ? 'on' : (isFailed ? 'missed' : 'off');
+    var passIcon = isTaskComplete && !isFailed ? '\u2705' : (isFailed ? '\u274C' : '');
+    chipsHtml =
+      '<span class="fs-chip ' + erOn + '">\uD83D\uDE97 ER</span>' +
+      '<span class="fs-chip ' + osOn + '">\uD83D\uDEA7 OS</span>' +
+      '<span class="fs-chip ' + subCls + '">' + (submittedDt ? '\u2705' : (isTaskComplete ? '\u274C' : '')) + ' SUB</span>' +
+      '<span class="fs-chip ' + passCls + '">' + passIcon + ' PASS</span>';
+
+  } else if (eventCategory === 'service') {
+    // Service: ER | OS | SUB | RESOLVED
+    var resolvedCls = isTaskComplete ? 'on' : 'off';
+    var resolvedIcon = isTaskComplete ? '\u2705' : '';
+    chipsHtml =
+      '<span class="fs-chip ' + erOn + '">\uD83D\uDE97 ER</span>' +
+      '<span class="fs-chip ' + osOn + '">\uD83D\uDEA7 OS</span>' +
+      '<span class="fs-chip ' + subCls + '">' + (submittedDt ? '\u2705' : '\u274C') + ' SUB</span>' +
+      '<span class="fs-chip ' + resolvedCls + '">' + resolvedIcon + ' DONE</span>';
+  }
+
+  // Sub-line: time · template · kW · crew
+  var subParts = [fmtDateTime(sched), escapeHtml(tmpl)];
+  if (kw > 0) subParts.push(kw.toFixed(1) + ' kW');
+  subParts.push(escapeHtml(crew));
+
+  // Project detail link
+  var projectUrl = projRid ? 'https://kin.quickbase.com/db/br9kwm8bk?a=dbpage&pagename=qb-skin-project-detail.html#rid=' + encodeURIComponent(projRid) : '';
+  var cardClick = projectUrl ? ' onclick="if(!event.target.closest(\'.arrivy-link,.arrivy-drawer-toggle,.arrivy-drawer-content\')){window.location.href=\'' + projectUrl + '\';}"' : '';
+
+  // Arrivy drawer (lazy-load all tasks for this project)
+  var drawerHtml = '';
+  if (projRid) {
+    var drawerId = 'adrawer_' + String(projRid) + '_' + String(taskRid || '');
+    drawerHtml = '<div class="arrivy-drawer-slot" data-project-rid="' + escapeHtml(String(projRid)) + '" data-current-rid="' + escapeHtml(String(taskRid || '')) + '" data-loaded="0">' +
+      '<div class="arrivy-drawer-toggle" onclick="event.stopPropagation();toggleArrivyDrawer(this.parentElement)">' +
+        '<span class="arrivy-drawer-label">Field Activity</span><span class="arrivy-drawer-arrow">&#9654;</span>' +
+      '</div>' +
+      '<div id="' + drawerId + '" class="arrivy-drawer-content" style="display:none"></div>' +
+    '</div>';
+  }
+
+  // Late badge
+  var lateBadgeHtml = '';
+  if (lateDataLoaded && taskRid && lateByTask[String(taskRid)] && tmplLow.indexOf('survey') >= 0) {
+    var li = lateByTask[String(taskRid)];
+    var curSt = (qbv(t, F.taskStatus) || '').toLowerCase().replace(/\s+/g, '');
+    var isStillLate = curSt === 'late' || curSt === 'predictedlate' || curSt === 'predicted_late' || curSt === 'noshow';
+    if (isStillLate) {
+      var lBadgeCls = li.type === 'NOSHOW' ? 'noshow' : (li.type === 'LATE' ? 'late' : 'predicted');
+      var lLabel = li.type === 'NOSHOW' ? 'NO SHOW' : (li.type === 'LATE' ? 'LATE' : 'PRED. LATE');
+      var lDelta = getLateDelta(li.scheduled, li.timestamp);
+      lateBadgeHtml = '<span class="late-badge ' + lBadgeCls + '">' + lLabel + (lDelta ? ' ' + lDelta : '') + '</span>';
+    } else {
+      lateBadgeHtml = '<span class="late-badge was-late">was late</span>';
+    }
+  }
+
+  return '<div class="task-card ' + status.border + '" style="cursor:pointer"' + cardClick + '>' +
+    '<div class="card-header">' +
+      '<div class="card-title">' + emoji + ' ' + escapeHtml(name) + '</div>' +
+      '<span class="status-pill ' + status.cls + '">' + escapeHtml(status.label) + '</span>' + lateBadgeHtml +
+    '</div>' +
+    '<div class="card-sub">' + subParts.join(' &middot; ') + '</div>' +
+    '<div class="fs-row">' + chipsHtml + '</div>' +
+    (taskUrl ? '<a class="arrivy-link" href="' + escapeHtml(taskUrl) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in Arrivy &#8599;</a>' : '') +
+    drawerHtml +
+  '</div>';
+}
+
+function toggleGroupCards(groupId) {
+  var group = document.getElementById(groupId);
+  var arrow = document.getElementById('arrow_' + groupId);
+  if (group) group.classList.toggle('collapsed');
+  if (arrow) arrow.classList.toggle('collapsed');
+}
+
+/* ===== ARRIVY DRAWER (lazy-load all tasks for a project) ===== */
+var drawerCache = {};
+
+function toggleArrivyDrawer(slot) {
+  if (!slot) return;
+  var projRid = String(slot.dataset.projectRid || '');
+  var currentRid = slot.dataset.currentRid || '';
+  var contentEl = slot.querySelector('.arrivy-drawer-content');
+  var arrowEl = slot.querySelector('.arrivy-drawer-arrow');
+  var labelEl = slot.querySelector('.arrivy-drawer-label');
+  if (!contentEl) return;
+
+  // Already loaded — just toggle
+  if (slot.dataset.loaded === '1') {
+    var isOpen = contentEl.style.display !== 'none';
+    contentEl.style.display = isOpen ? 'none' : 'block';
+    if (arrowEl) arrowEl.classList.toggle('open', !isOpen);
+    return;
+  }
+
+  // First click — fetch all Arrivy tasks for this project
+  if (labelEl) labelEl.textContent = 'Loading...';
+
+  if (drawerCache[projRid]) {
+    renderDrawerRows(drawerCache[projRid], projRid, currentRid, contentEl, labelEl, arrowEl, slot);
+    return;
+  }
+
+  var where = "{'" + F.relatedProject + "'.EX.'" + projRid + "'}";
+  fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST',
+    headers: {
+      'QB-Realm-Hostname': QB.realm,
+      'Authorization': 'QB-USER-TOKEN ' + QB.token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: QB.arrivyTable,
+      where: where,
+      select: SELECT_FIELDS,
+      sortBy: [{ fieldId: F.scheduledDateTime, order: 'ASC' }],
+      options: { top: 200 }
+    })
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(json) {
+    var tasks = json.data || [];
+    drawerCache[projRid] = tasks;
+    renderDrawerRows(tasks, projRid, currentRid, contentEl, labelEl, arrowEl, slot);
+  })
+  .catch(function(e) {
+    console.error('Drawer load error:', e);
+    if (labelEl) labelEl.textContent = 'Field Activity (error)';
+  });
+}
+
+function renderDrawerRows(tasks, projRid, currentRid, contentEl, labelEl, arrowEl, slot) {
+  if (!tasks.length) {
+    if (labelEl) labelEl.textContent = 'No field activity';
+    slot.dataset.loaded = '1';
+    return;
+  }
+
+  var rows = '';
+  tasks.forEach(function(t) {
+    var rid = qbv(t, 3);
+    var tmpl = qbv(t, F.templateName) || 'Task';
+    var dt = qbv(t, F.scheduledDateTime);
+    var crew = getCrewName(t);
+    var st = (qbv(t, F.taskStatus) || 'Scheduled').toLowerCase();
+    var isCurrent = String(rid) === String(currentRid);
+
+    var dotColor = '#94a3b8';
+    if (st === 'complete' || st === 'site work complete') dotColor = '#10b981';
+    else if (st === 'overdue') dotColor = '#ef4444';
+    else if (qbv(t, F.submittedDateTime)) dotColor = '#f59e0b';
+    else if (qbv(t, F.startedStatus)) dotColor = '#3b82f6';
+    else if (qbv(t, F.enrouteStatus)) dotColor = '#3b82f6';
+
+    var highlight = isCurrent ? ' style="background:#f0f9ff;border-radius:6px;padding:2px 4px;margin:-2px -4px"' : '';
+    var fmtDt = dt ? new Date(dt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBD';
+
+    var dRtr = (qbv(t, F.rtrStatus) || '').toLowerCase();
+    var rtrDotColor = dRtr.indexOf('pass') >= 0 ? '#10b981' : dRtr.indexOf('fail') >= 0 ? '#ef4444' : dRtr ? '#f59e0b' : '#cbd5e1';
+    var rtrDot = '<span style="width:6px;height:6px;border-radius:50%;background:' + rtrDotColor + ';display:inline-block;margin-left:2px"></span>';
+
+    var tmplDisplay = tmpl.length > 22 ? tmpl.slice(0, 20) + '\u2026' : tmpl;
+    rows += '<div class="arrivy-drawer-row"' + highlight + '>' +
+      '<span class="arrivy-drawer-dot" style="background:' + dotColor + '"></span>' +
+      '<span class="arrivy-drawer-tmpl">' + escapeHtml(tmplDisplay) + rtrDot + '</span>' +
+      '<span class="arrivy-drawer-date">' + fmtDt + '</span>' +
+      (crew ? '<span class="arrivy-drawer-crew">' + escapeHtml(crew.split(' ')[0]) + '</span>' : '') +
+    '</div>';
+  });
+
+  contentEl.innerHTML = rows;
+  contentEl.style.display = 'block';
+  if (labelEl) labelEl.textContent = 'Field Activity (' + tasks.length + ')';
+  if (arrowEl) arrowEl.classList.add('open');
+  slot.dataset.loaded = '1';
+}
+
+/* ===== LOADING/ERROR ===== */
+function showLoading(show) {
+  document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
+}
+function showError(msg) {
+  document.getElementById('errorText').textContent = msg;
+  document.getElementById('errorBanner').classList.add('show');
+}
+
+/* ===== PERSONALIZED GREETING ===== */
+var detectedUserName = '';
+var defaultTitle = 'Field';
+
+function getTimeGreeting() {
+  var h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function detectCurrentUser() {
+  return fetch('https://' + QB.realm + '/db/main?a=API_GetUserInfo&fmt=structured', {
+    method: 'GET', credentials: 'include'
+  })
+  .then(function(resp) {
+    if (!resp.ok) throw new Error('Not in QB');
+    return resp.text();
+  })
+  .then(function(xml) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(xml, 'text/xml');
+    var errcode = doc.querySelector('errcode');
+    if (errcode && errcode.textContent !== '0') throw new Error('Auth error');
+    var firstName = doc.querySelector('firstName');
+    if (firstName && firstName.textContent.trim()) {
+      detectedUserName = firstName.textContent.trim();
+      defaultTitle = getTimeGreeting() + ', ' + detectedUserName;
+      document.getElementById('headerTitle').textContent = defaultTitle;
+    }
+  })
+  .catch(function() {
+    defaultTitle = getTimeGreeting();
+    document.getElementById('headerTitle').textContent = defaultTitle;
+  });
+}
+
+function updateHeaderSubtitle() {
+  var tasks = allTasks;
+  var notSub = 0; var overdue = 0;
+  tasks.forEach(function(t) {
+    var s = getTaskStatus(t);
+    if (s.key === 'notsubmitted') notSub++;
+    else if (s.key === 'overdue') overdue++;
+  });
+
+  var el = document.getElementById('headerDate');
+  var opts = { month: 'short', day: 'numeric', year: 'numeric' };
+  var range = getDateRange(activePreset);
+  var dateText = activePreset === 'today' ? 'Today' : range.from.toLocaleDateString('en-US', opts);
+
+  var alerts = [];
+  if (notSub > 0) alerts.push(notSub + ' not submitted');
+  if (overdue > 0) alerts.push(overdue + ' overdue');
+
+  if (alerts.length > 0) {
+    el.innerHTML = dateText + ' &middot; <span style="color:#ef4444;font-weight:600">' + alerts.join(', ') + '</span>';
+  } else {
+    el.textContent = dateText;
+  }
+}
+
+/* ===== INIT ===== */
+function loadOverdueTicketBadge() {
+  var today = new Date();
+  var todayStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
+  fetch('https://api.quickbase.com/v1/records/query', {
+    method: 'POST',
+    headers: { 'QB-Realm-Hostname': QB.realm, 'Authorization': 'QB-USER-TOKEN ' + QB.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: 'bstdqwrkg',
+      select: [3],
+      where: "{'91'.XEX.'Completed'}AND{'91'.XEX.'Closed'}AND{'91'.XEX.'Complete'}AND{'166'.XEX.'true'}AND{'95'.OBF.'" + todayStr + "'}",
+      options: { top: 500 }
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(json) {
+    var count = (json.data || []).length;
+    var badge = document.getElementById('ticketBadge');
+    if (badge && count > 0) { badge.textContent = count; badge.style.display = 'inline-flex'; }
+  })
+  .catch(function() {});
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  detectCurrentUser().then(function() {
+    renderDateFilters();
+    loadData();
+  });
+  loadOverdueTicketBadge();
+});
+</script>
+</body>
+</html>

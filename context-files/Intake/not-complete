@@ -1,0 +1,73 @@
+//https://api.quickbase.com/v1/reports/635?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "635",
+  "incomplete": false,
+  "name": "Intake 2.0 Dashboard: All In-Process Projects",
+  "properties": {
+    "columnProperties": [
+      {
+        "fieldId": 189,
+        "labelOverride": "State",
+        "required": false
+      },
+      {
+        "fieldId": 255,
+        "justification": 15,
+        "labelOverride": "Project Status",
+        "required": false
+      },
+      {
+        "fieldId": 522,
+        "justification": 2,
+        "labelOverride": "Sold Date",
+        "required": false
+      },
+      {
+        "fieldId": 1828,
+        "labelOverride": "Intake Progress",
+        "required": false
+      },
+      {
+        "fieldId": 1871,
+        "justification": 1,
+        "labelOverride": "Missing Items",
+        "required": false
+      }
+    ],
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      145,
+      522,
+      255,
+      347,
+      189,
+      1871,
+      1828
+    ],
+    "filter": "({'347'.EX.'In Queue'}OR{'347'.EX.'Processing'}OR{'347'.EX.'Rejected'})AND{'-1'.EX.'1'}AND{'606'.CT.'Kin'}AND{'622'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Status],\r\n\"Cancelled\",0,\r\n\"ROR\",0,\r\n\"Lost\",0,\r\n1\r\n)",
+        "id": -1,
+        "label": "Exclude Status"
+      }
+    ],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 522,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "table",
+  "usedCount": 7289,
+  "usedLast": "2026-05-05T21:12:00Z"
+}

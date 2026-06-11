@@ -1,0 +1,41 @@
+//https://api.quickbase.com/v1/reports/1025?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "1025",
+  "incomplete": false,
+  "name": "Funding Dashboard: M2 Not Ready to Request (KPI) Pending Follow-Up",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'2050'.EX.'Not Ready for M2'}AND{'2589'.OBF.'3 days ago'}AND{'2569'.XEX.'1'}AND{'2568'.XEX.'1'}AND{'1942'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "fieldType": "date",
+        "formula": "WeekdayAdd(Today(),3)",
+        "id": -1,
+        "label": "SLA Timeout"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "chart",
+  "usedCount": 3392,
+  "usedLast": "2026-05-14T21:10:00Z"
+}

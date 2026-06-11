@@ -1,0 +1,48 @@
+//https://api.quickbase.com/v1/reports/611?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "611",
+  "incomplete": false,
+  "name": "Intake 2.0 Dashboard: Rejected Intake",
+  "properties": {
+    "columnProperties": [
+      {
+        "fieldId": 1828,
+        "justification": 641282616,
+        "labelOverride": "Completion %",
+        "required": false
+      }
+    ],
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      145,
+      1800,
+      1828,
+      -1
+    ],
+    "filter": "{'255'.EX.'Rejected'}AND{'347'.XEX.'Surrendered'}AND{'347'.XEX.'Complete'}AND{'606'.CT.'Kin'}AND{'622'.XEX.'1'}AND{'-1'.GT.'36'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": 2,
+        "fieldType": "numeric",
+        "formula": "ToHours(Now()-[Max Intake Event: Finished Processing Timestamp])",
+        "id": -1,
+        "label": "Hours since last Event"
+      }
+    ],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": -1,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "table",
+  "usedCount": 6268,
+  "usedLast": "2026-05-05T21:17:00Z"
+}

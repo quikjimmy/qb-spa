@@ -1,0 +1,102 @@
+//https://api.quickbase.com/v1/reports/43?tableId=br9kwm8xp
+
+{
+  "description": "",
+  "id": "43",
+  "incomplete": false,
+  "name": "Org Database: AHJ Permit Timelines",
+  "properties": {
+    "columnProperties": [
+      {
+        "fieldId": 243,
+        "justification": 3,
+        "labelOverride": "Building Permit Turnaround",
+        "required": false
+      },
+      {
+        "fieldId": 244,
+        "justification": 3,
+        "labelOverride": "Electrical Permit Turnaround",
+        "required": false
+      },
+      {
+        "fieldId": 245,
+        "justification": 3,
+        "labelOverride": "Zoning Permit Turnaround",
+        "required": false
+      },
+      {
+        "fieldId": 246,
+        "justification": 3,
+        "labelOverride": "Permit Turnaround",
+        "required": false
+      },
+      {
+        "fieldId": 247,
+        "justification": 3,
+        "labelOverride": "# of Building Permits",
+        "required": false
+      },
+      {
+        "fieldId": 248,
+        "justification": 3,
+        "labelOverride": "# of Electrical Permits",
+        "required": false
+      },
+      {
+        "fieldId": 249,
+        "justification": 3,
+        "labelOverride": "# of Zoning Permits",
+        "required": false
+      },
+      {
+        "fieldId": 250,
+        "justification": 3,
+        "labelOverride": "# of Permits",
+        "required": false
+      }
+    ],
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      3,
+      17,
+      95,
+      56,
+      190,
+      251,
+      250,
+      247,
+      249,
+      248,
+      246,
+      243,
+      245,
+      244,
+      218,
+      1
+    ],
+    "filter": "{'17'.EX.'Jurisdiction'}",
+    "formulaFields": [],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 246,
+        "order": "ASC"
+      },
+      {
+        "fieldId": 190,
+        "order": "DESC"
+      },
+      {
+        "fieldId": 1,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "br9kwm8xp"
+  },
+  "type": "table",
+  "usedCount": 295,
+  "usedLast": "2026-05-05T15:36:00Z"
+}

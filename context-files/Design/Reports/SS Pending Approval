@@ -1,0 +1,41 @@
+//table id = br9vmrkp8, report id = 20
+{
+  "description": "My Description",
+  "id": "20",
+  "incomplete": false,
+  "name": "Survey Pending Approval",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'239'.XEX.''}AND{'130'.EX.''}AND{'128'.XCT.'Rejected'}AND({'242'.CT.'Kin'}OR{'242'.CT.'Revelation'})AND{'-1'.EX.'1'}AND{'241'.XEX.'ROR'}AND{'241'.XEX.'Cancelled'}AND{'241'.XEX.'ARC'}AND{'241'.XEX.'Lost'}AND{'241'.XEX.'Rejected'}AND{'241'.XEX.'On Hold'}AND{'286'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Project - Status],\r\n\"Intake Hold\",0,\r\n\"Finance Hold\",0,\r\n\"HOA Hold\",0,\r\n\"NEM Hold\",0,\r\n\"ROR\",0,\r\n\"Cancelled\",0,\r\n\"Pending Cancel\",0,\r\n\"Complete\",0,\r\n\"Completed | Paid\",0,\r\n\"Completed\",0,\r\n\"Customer Hold\",0,\r\n\"Rejected\",0,\r\n\"Lost\",0,\r\n\"ARC\",0,\r\n\"Customer Hold\",0,\r\n1)",
+        "id": -1,
+        "label": "Exclude"
+      }
+    ],
+    "tableId": "br9vmrkp8"
+  },
+  "type": "chart",
+  "usedCount": 2175,
+  "usedLast": "2026-04-30T22:00:00Z"
+}

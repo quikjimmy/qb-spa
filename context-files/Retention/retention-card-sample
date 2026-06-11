@@ -1,0 +1,261 @@
+var text cardBorder = If(
+  not(IsNull([Retention Closeout: Resolved Date/Time])),
+  If([Retention Closeout: Resolution Type] = "Cancel",
+    "border-left: 4px solid #dc3545;",
+    "border-left: 4px solid #3cc151;"),
+  ""
+);
+
+var text statusColor = If(
+  [Pending Cancel: Request Status] = "New Request", "#5e9dff",
+  If([Pending Cancel: Request Status] = "Working", "#f9c301",
+  If([Pending Cancel: Request Status] = "Saved", "#3cc151",
+  If([Pending Cancel: Request Status] = "Cancelled", "#dc3545",
+  "#6c757d")))
+);
+
+var text statusLabel = [Pending Cancel: Request Status];
+
+var text reasonBgColor = If(
+  not(IsNull([Retention Closeout: Resolved Date/Time])),
+  If([Retention Closeout: Resolution Type] = "Cancel", "#f8d7da",
+    If([Retention Closeout: Resolution Type] = "Saved" or [Retention Closeout: Resolution Type] = "Saved by Rep", "#d4edda",
+    "#fff3cd")),
+  "#fff3cd"
+);
+
+var text reasonTextColor = If(
+  not(IsNull([Retention Closeout: Resolved Date/Time])),
+  If([Retention Closeout: Resolution Type] = "Cancel", "#721c24",
+    If([Retention Closeout: Resolution Type] = "Saved" or [Retention Closeout: Resolution Type] = "Saved by Rep", "#155724",
+    "#856404")),
+  "#856404"
+);
+
+var text resolvedColor = If(
+  [Retention Closeout: Resolution Type] = "Cancel", "#dc3545",
+  If([Retention Closeout: Resolution Type] = "Saved" or [Retention Closeout: Resolution Type] = "Saved by Rep", "#3cc151",
+  "#333")
+);
+
+var text isCloseout = If(not(IsNull([Retention Closeout: Resolved Date/Time])), "yes", "no");
+
+var text dash = "—";
+
+var text hasRecentAttemptNote = If([Pending Cancel: Recent Attempt Note]<>"", "yes", "no");
+
+"<div style='border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; background-color: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 340px; box-sizing: border-box; cursor: pointer; text-align: left; " & $cardBorder & "'>" &
+
+"<div style='display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; gap: 8px;'>" &
+  "<div style='text-align: left; min-width: 0; flex: 1;'>" &
+    "<div style='font-weight: bold; font-size: 14px; word-wrap: break-word;'><a href='https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8na/action/dr?rid=" & [Related Project] & "' target='_blank' style='color: #0d6efd; text-decoration: none;'>" & [Record Title: Name + Is ROR] & "</a></div>" &
+    "<div style='font-size: 11px; color: #666; margin-top: 2px;'>" & [Project - System Size(kW)] & " kW · " & [Max Project Progress] & "</div>" &
+  "</div>" &
+  "<div style='display: inline-block; font-size: 10px; font-weight: bold; padding: 3px 8px; border-radius: 4px; white-space: nowrap; background-color: " & $statusColor & "; color: #fff; flex-shrink: 0;'>" & $statusLabel & "</div>" &
+"</div>" &
+
+"<div style='font-size: 11px; color: #666; margin-bottom: 6px; line-height: 1.4;'>" &
+  "<span style='color: #999;'>Requested:</span> " & ToText([Cancel Request: Official Requested Date]) & " · <span style='color: #999;'>by</span> " & UserToName([Cancel Request - Requested By]) &
+  If($isCloseout = "yes",
+    " · <span style='color: #999;'>Resolved:</span> <span style='font-weight: 600; color: " & $resolvedColor & ";'>" & ToText([Retention Closeout: Resolved Date/Time]) & "</span>",
+    ""
+  ) &
+"</div>" &
+
+"<div style='background: " & $reasonBgColor & "; border-radius: 4px; padding: 5px 9px; font-size: 11px; color: " & $reasonTextColor & "; font-weight: 600; margin-bottom: 8px;'>" &
+  If($isCloseout = "yes",
+    "Resolution: " & [Retention Closeout: Resolution Type] & If(ToText([Retention Closeout: Cancel Reason])<>"", " · Reason: " & [Retention Closeout: Cancel Reason], ""),
+    "Reason: " & [Cancel Request - Reason Dropdown]
+  ) &
+"</div>" &
+
+"<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>" &
+
+If($isCloseout = "yes" or $hasRecentAttemptNote = "no",
+  "<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>" &
+    If($isCloseout = "yes", "Resolution note", "Cancel note") &
+  "</div>" &
+  "<div style='background: #f8f9fa; border-radius: 6px; padding: 7px 9px; font-size: 11px; color: #666; line-height: 1.5; max-height: 80px; overflow-y: auto;'>" &
+    If($isCloseout = "yes",
+      If([Retention Closeout: Resolution Note]<>"", [Retention Closeout: Resolution Note], $dash),
+      If([Cancel Request - Cancel Note]<>"", [Cancel Request - Cancel Note], $dash)
+    ) &
+  "</div>" &
+  "<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>",
+  ""
+) &
+
+"<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>" &
+  If($isCloseout = "yes", "Outreach summary", "Outreach activity") &
+"</div>" &
+
+"<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+  "<span style='color: #888;'>Total outreaches</span>" &
+  "<span style='color: #333; font-weight: 600;'>" & ToText([Pending Cancel: Total # of Outreaches]) & "</span>" &
+"</div>" &
+
+"<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+  "<span style='color: #888;'>Successful contacts</span>" &
+  "<span style='color: " & If([Pending Cancel: Total # of Successful Contact Attempts (formula)] > 0, "#3cc151", "#333") & "; font-weight: 600;'>" & ToText([Pending Cancel: Total # of Successful Contact Attempts (formula)]) & "</span>" &
+"</div>" &
+
+If($isCloseout = "no",
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+    "<span style='color: #888;'>Attempted (no contact)</span>" &
+    "<span style='color: #333; font-weight: 600;'>" & ToText([Pending Cancel: # of Attempted Contact Outreaches (formula)]) & "</span>" &
+  "</div>" &
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+    "<span style='color: #888;'>Attempts since last contact</span>" &
+    "<span style='color: #333; font-weight: 600;'>" &
+      If([Pending Cancel: # of Attempts Since Last Contact (formula)] > 0,
+        ToText([Pending Cancel: # of Attempts Since Last Contact (formula)]),
+        $dash) &
+    "</span>" &
+  "</div>" &
+
+  If([Pending Cancel: Total # of Outreaches] > 0,
+    "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+      "<span style='color: #888;'>Last outreach</span>" &
+      "<span style='color: #333; font-weight: 600;'>" & If(not(IsNull([Pending Cancel: Last Outreach Timestamp])), ToText([Pending Cancel: Last Outreach Timestamp]), $dash) & "</span>" &
+    "</div>" &
+    "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+      "<span style='color: #888;'>Last contact</span>" &
+      "<span style='color: #333; font-weight: 600;'>" & If(not(IsNull([Pending Cancel: Last Contact Timestamp])), ToText([Pending Cancel: Last Contact Timestamp]), $dash) & "</span>" &
+    "</div>" &
+
+    If(not(IsNull([Pending Cancel: Time Since Last Contact])),
+      "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+        "<span style='color: #888;'>Time since last contact</span>" &
+        "<span style='color: #dc3545; font-weight: 600;'>" & [Pending Cancel: Time Since Last Contact] & "</span>" &
+      "</div>",
+      ""
+    ) &
+
+    If(not(IsNull([Pending Cancel: Time Since Last Outreach])),
+      "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+        "<span style='color: #888;'>Time since last outreach</span>" &
+        "<span style='color: #856404; font-weight: 600;'>" & [Pending Cancel: Time Since Last Outreach] & "</span>" &
+      "</div>",
+      ""
+    ) &
+
+    "<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>" &
+    "<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>Latest attempt note</div>" &
+    "<div style='background: #f8f9fa; border-radius: 6px; padding: 7px 9px; font-size: 11px; color: #666; line-height: 1.5; max-height: 80px; overflow-y: auto;'>" &
+      If([Pending Cancel: Recent Attempt Note]<>"", [Pending Cancel: Recent Attempt Note], $dash) &
+    "</div>",
+    ""
+  ),
+  ""
+) &
+
+"<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>" &
+
+If($isCloseout = "no",
+
+  "<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>Assignment & follow-up</div>" &
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+    "<span style='color: #888;'>Assigned to</span>" &
+    "<span style='color: #333; font-weight: 600;'>" & If(not(IsNull([Pending Cancel: Assigned User])), UserToName([Pending Cancel: Assigned User]), $dash) & "</span>" &
+  "</div>" &
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+    "<span style='color: #888;'>Next outreach due</span>" &
+    "<span style='color: " & If(not(IsNull([Pending Cancel: Next Outreach Due Date/Time])), "#0d6efd", "#999") & "; font-weight: 600;'>" &
+      If(not(IsNull([Pending Cancel: Next Outreach Due Date/Time])), ToText([Pending Cancel: Next Outreach Due Date/Time]), $dash) &
+    "</span>" &
+  "</div>" &
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px;'>" &
+    "<span style='color: #888;'>Follow-up scheduled</span>" &
+    "<span style='color: " & If(not(IsNull([Pending Cancel: Follow Up Scheduled])), "#0d6efd", "#999") & "; font-weight: 600;'>" &
+      If(not(IsNull([Pending Cancel: Follow Up Scheduled])), ToText([Pending Cancel: Follow Up Scheduled]), $dash) &
+    "</span>" &
+  "</div>" &
+
+  "<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>",
+
+  ""
+) &
+
+"<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>Closer contact</div>" &
+
+"<div style='display: flex; align-items: flex-start; gap: 6px; padding: 3px 0;'>" &
+  "<span style='font-size: 11px; flex-shrink: 0;'>&#128100;</span>" &
+  "<span style='font-size: 11px; color: #555; word-wrap: break-word; min-width: 0;'>" &
+    If([Related Project: Closer]<>"", [Related Project: Closer], "Unassigned") &
+    If([Related Project: Closer Phone]<>"",
+      " · <a href='tel:" & [Related Project: Closer Phone] & "' style='color: #0d6efd; text-decoration: none;'>" & [Related Project: Closer Phone] & "</a>",
+      "") &
+    If([Related Project: Closer Email]<>"",
+      " · " & [Related Project: Closer Email],
+      "") &
+  "</span>" &
+"</div>" &
+
+"<hr style='border: none; border-top: 1px solid #eee; margin: 8px 0;'>" &
+
+If($isCloseout = "yes" and [Retention Closeout: Resolution Type] = "Cancel",
+
+  "<div style='font-size: 10px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;'>Cancel fee breakdown</div>" &
+
+  "<div style='display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; background: #fff8e1; border-radius: 6px; font-size: 12px;'>" &
+    "<span style='color: #666;'>Original fee</span>" &
+    "<span style='font-weight: bold; color: #333;'>" & [Pending Cancel: Cancel Fee] & "</span>" &
+  "</div>" &
+
+  If(not(IsNull([Retention Closeout: Cancel Fee Adjustment])),
+    "<div style='display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; background: #fff3cd; border-radius: 6px; font-size: 12px; margin-top: 4px;'>" &
+      "<span style='color: #666;'>Adjusted to</span>" &
+      "<span style='font-weight: bold; color: #dc3545;'>" & [Retention Closeout: Cancel Fee Adjustment] & "</span>" &
+    "</div>",
+    ""
+  ) &
+
+  If([Retention Closeout: Cancel Fee Waive/Override Reason]<>"",
+    "<div style='font-size: 10px; color: #888; margin-top: 4px; font-style: italic;'>Reason: " & [Retention Closeout: Cancel Fee Waive/Override Reason] & "</div>",
+    ""
+  ) &
+
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px; margin-top: 4px;'>" &
+    "<span style='color: #888;'>Waive cancel fee?</span>" &
+    "<span style='color: #333; font-weight: 600;'>" & If([Retention Closeout: Waive Cancel Fee], "Yes", "No") & "</span>" &
+  "</div>",
+
+
+  If($isCloseout = "yes" and ([Retention Closeout: Resolution Type] = "Saved" or [Retention Closeout: Resolution Type] = "Saved by Rep"),
+
+    "<div style='display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; background: #d4edda; border-radius: 6px; font-size: 12px;'>" &
+      "<span style='color: #666;'>Cancel fee</span>" &
+      "<span style='font-weight: bold; color: #155724;'>" & [Pending Cancel: Cancel Fee] & " — N/A (saved)</span>" &
+    "</div>",
+
+    "<div style='display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; background: #fff8e1; border-radius: 6px; font-size: 12px;'>" &
+      "<span style='color: #666;'>Cancel fee</span>" &
+      "<span style='font-weight: bold; color: #333;'>" & [Pending Cancel: Cancel Fee] & "</span>" &
+    "</div>"
+
+  )
+) &
+
+If($isCloseout = "yes" and [Retention Closeout: Project Delay Type]<>"",
+  "<div style='display: flex; justify-content: space-between; align-items: baseline; padding: 1px 0; font-size: 12px; margin-top: 4px;'>" &
+    "<span style='color: #888;'>Project delay type</span>" &
+    "<span style='color: #856404; font-weight: 600;'>" & [Retention Closeout: Project Delay Type] & "</span>" &
+  "</div>",
+  ""
+) &
+
+"</div>"
+
+var number created = ToNumber(Year(ToDate([Date Created]))&WeekOfYear([Date Created])); 
+var number nowDay =ToNumber(Year(Today())&WeekOfYear(Today()));
+
+Case($nowDay-$created,
+0,"Week 1",
+1,"Week 1",
+2,"Week 2 & Week 3",
+3,"Week 2 & Week 3","Week 4+")

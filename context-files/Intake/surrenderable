@@ -1,0 +1,42 @@
+//https://api.quickbase.com/v1/reports/637?tableId=br9kwm8na
+
+{
+  "description": "My Description",
+  "id": "637",
+  "incomplete": false,
+  "name": "Intake 2.0 Dashboard: Ready for Surrender",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'347'.EX.'Rejected'}AND{'-1'.EX.'1'}AND({'1966'.OBF.'7 days ago'}OR({'1966'.EX.''}AND{'522'.OBF.'10 days ago'}))",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Status],\r\n\"Cancelled\",0,\r\n\"ROR\",0,\r\n\"Lost\",0,\r\n\"ARC\",0,\r\n\"Pending Cancel\",0,\r\n1\r\n)",
+        "id": -1,
+        "label": "Status Exclusion"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "chart",
+  "usedCount": 5987,
+  "usedLast": "2026-05-05T21:11:00Z"
+}

@@ -1,0 +1,31 @@
+//https://api.quickbase.com/v1/reports/24?tableId=bsiripd8r
+
+{
+  "description": "",
+  "id": "24",
+  "incomplete": false,
+  "name": "Prior Status is Rejected",
+  "properties": {
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      13,
+      1,
+      56
+    ],
+    "filter": "{'9'.EX.'Rejected'}AND{'56'.XEX.''}",
+    "formulaFields": [],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 2,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "bsiripd8r"
+  },
+  "type": "table",
+  "usedCount": 2,
+  "usedLast": "2026-05-21T01:59:00Z"
+}

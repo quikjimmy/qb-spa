@@ -1,0 +1,44 @@
+//https://api.quickbase.com/v1/reports/982?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "982",
+  "incomplete": false,
+  "name": "Funding Dashboard: M2 Approved, Not Received KPI (Amount)",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "aggregation": "SUM",
+        "fieldId": -1,
+        "label": "",
+        "type": "field-value"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'2050'.CT.'M2 Approved'}AND{'2569'.XEX.'1'}AND{'2568'.XEX.'1'}AND{'1942'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": 0,
+        "fieldType": "currency",
+        "formula": "[Funding Dashboard: M2 Expected  Amount (Calc)]",
+        "id": -1,
+        "label": "M2"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "chart",
+  "usedCount": 519,
+  "usedLast": "2026-05-14T21:08:00Z"
+}

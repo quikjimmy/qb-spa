@@ -6,3 +6,4 @@ dist
 server/uploads/
 *.db-shm
 *.db-wal
+recovered-wip-2026-06-09/

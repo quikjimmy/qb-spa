@@ -1,0 +1,52 @@
+//https://api.quickbase.com/v1/reports/146?tableId=bsbhp6zhm
+
+{
+  "description": "",
+  "id": "146",
+  "incomplete": false,
+  "name": "Permitting Dashboard: Revisions Submitted",
+  "properties": {
+    "summarize": [
+      {
+        "showAs": 0,
+        "type": "number-of-records"
+      },
+      {
+        "aggregation": "SUM",
+        "fieldId": -1,
+        "showAs": 0,
+        "type": "field-value"
+      }
+    ],
+    "summaryFormulas": [],
+    "summaryVariables": []
+  },
+  "query": {
+    "filter": "{'296'.XEX.''}",
+    "formulaFields": [
+      {
+        "decimalPrecision": 0,
+        "fieldType": "numeric",
+        "formula": "[Project - System Size(kW)]",
+        "id": -1,
+        "label": "KiloWatts"
+      },
+      {
+        "fieldType": "text",
+        "formula": "ToText([Project - Assigned Permit User])",
+        "id": -100,
+        "label": "Permit User"
+      }
+    ],
+    "groupBy": [
+      {
+        "fieldId": -100,
+        "grouping": "equal-values"
+      }
+    ],
+    "tableId": "bsbhp6zhm"
+  },
+  "type": "summary",
+  "usedCount": 533,
+  "usedLast": "2026-05-05T15:30:00Z"
+}

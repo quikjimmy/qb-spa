@@ -1,0 +1,81 @@
+//https://api.quickbase.com/v1/reports/7?tableId=bsbhp6zhm
+//Grouped by design type
+
+{
+  "description": "",
+  "id": "7",
+  "incomplete": false,
+  "name": "Ready to Submit CAD",
+  "properties": {
+    "columnProperties": [
+      {
+        "fieldId": 87,
+        "justification": 2,
+        "labelOverride": "Survey Sub",
+        "required": false
+      },
+      {
+        "fieldId": 88,
+        "justification": 2,
+        "labelOverride": "Survey Appr",
+        "required": false
+      },
+      {
+        "fieldId": 99,
+        "justification": 3,
+        "labelOverride": "Time for Design",
+        "required": false
+      },
+      {
+        "fieldId": 439,
+        "justification": 1,
+        "labelOverride": "Assigned Designer",
+        "required": false
+      }
+    ],
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      11,
+      213,
+      87,
+      88,
+      164,
+      285,
+      435,
+      439,
+      99
+    ],
+    "filter": "({'19'.EX.''}AND{'73'.EX.'Kin Home'}AND{'-102'.EX.'1'}AND{'38'.EX.'Approved'}AND{'209'.XCT.'Hard'}AND{'7'.XHAS.'6-Completed'}AND{'7'.XHAS.'7-Void'}AND{'7'.XHAS.'8-Cancelled'}AND{'7'.XHAS.'3-On Hold'}AND{'7'.XHAS.'5-Rejected'})AND{'156'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Project - Status],\r\n\"Intake Hold\",0,\r\n\"Finance Hold\",0,\r\n\"NEM Hold\",0,\r\n\"Roof Hold\",0,\r\n\"ROR\",0,\r\n\"Cancelled\",0,\r\n\"Pending Cancel\",0,\r\n\"Complete\",0,\r\n\"Completed | Paid\",0,\r\n\"Completed\",0,\r\n\"Customer Hold\",0,\r\n\"Rejected\",0,\r\n\"Lost\",0,\r\n\"ARC\",0,\r\n\"Customer Hold\",0,\r\n1)",
+        "id": -102,
+        "label": "Exclude"
+      }
+    ],
+    "groupBy": [
+      {
+        "fieldId": 8,
+        "grouping": "equal-values"
+      }
+    ],
+    "sortBy": [
+      {
+        "fieldId": 8,
+        "order": "DESC"
+      },
+      {
+        "fieldId": 87,
+        "order": "ASC"
+      }
+    ],
+    "tableId": "bsbhp6zhm"
+  },
+  "type": "table",
+  "usedCount": 8883,
+  "usedLast": "2026-04-30T22:12:00Z"
+}

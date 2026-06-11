@@ -486,14 +486,14 @@ onUnmounted(() => { unsubLive?.() })
         </button>
       </div>
 
-      <!-- Compose: collapsed prompt -->
-      <div v-if="!showCompose" class="mb-8 -mx-4 sm:mx-0">
-        <div class="bg-white sm:rounded-3xl feed-soft-shadow overflow-hidden">
-          <div class="p-4 flex items-center gap-3">
+      <!-- Compose: collapsed prompt — flat row, tonal pill -->
+      <div v-if="!showCompose" class="mb-8">
+        <div>
+          <div class="py-1 flex items-center gap-3">
             <div class="w-10 h-10 rounded-full bg-[#e7e8e8] flex items-center justify-center shrink-0">
               <span class="text-xs font-bold text-[#2d2f2f]">{{ getInitials(auth.user?.name || '?') }}</span>
             </div>
-            <button class="flex-1 text-left text-sm text-[#acadad] hover:text-[#5a5c5c] transition-colors" @click="showCompose = true">
+            <button class="flex-1 text-left text-sm text-[#757777] hover:text-[#5a5c5c] bg-[#f4f4f4] hover:bg-[#efefef] rounded-full px-4 py-2.5 transition-colors cursor-pointer" @click="showCompose = true">
               What's happening?
             </button>
             <div class="flex items-center gap-2">
@@ -509,7 +509,7 @@ onUnmounted(() => { unsubLive?.() })
       </div>
 
       <!-- Compose: expanded -->
-      <div v-else class="mb-8 bg-white sm:rounded-3xl feed-soft-shadow -mx-4 sm:mx-0 overflow-hidden">
+      <div v-else class="mb-8 bg-[#f8f8f8] rounded-3xl -mx-4 sm:mx-0 overflow-hidden">
         <!-- Header bar -->
         <div class="flex items-center justify-between px-4 py-3 border-b border-[#f0f1f1]">
           <button class="text-sm font-semibold text-[#5a5c5c] hover:text-[#2d2f2f] transition-colors" @click="cancelCompose">Cancel</button>
@@ -620,11 +620,11 @@ onUnmounted(() => { unsubLive?.() })
       </div>
 
       <!-- Loading -->
-      <div v-if="loading" class="space-y-12">
-        <div v-for="i in 3" :key="i" class="bg-white rounded-3xl overflow-hidden feed-soft-shadow">
-          <div class="p-4 flex items-center gap-3"><div class="w-10 h-10 rounded-full bg-[#e7e8e8] animate-pulse" /><div class="flex-1 space-y-1"><div class="h-3.5 w-24 rounded bg-[#e7e8e8] animate-pulse" /><div class="h-2.5 w-16 rounded bg-[#f0f1f1] animate-pulse" /></div></div>
-          <div class="px-4"><div class="aspect-video rounded-3xl bg-[#f0f1f1] animate-pulse" /></div>
-          <div class="p-5 space-y-2"><div class="h-3 w-48 rounded bg-[#e7e8e8] animate-pulse" /><div class="h-3 w-full rounded bg-[#f0f1f1] animate-pulse" /></div>
+      <div v-if="loading" class="space-y-10">
+        <div v-for="i in 3" :key="i">
+          <div class="py-2.5 flex items-center gap-3"><div class="w-10 h-10 rounded-full bg-[#e7e8e8] animate-pulse" /><div class="flex-1 space-y-1"><div class="h-3.5 w-24 rounded bg-[#e7e8e8] animate-pulse" /><div class="h-2.5 w-16 rounded bg-[#f0f1f1] animate-pulse" /></div></div>
+          <div class="-mx-4 sm:mx-0"><div class="aspect-video sm:rounded-2xl bg-[#f0f1f1] animate-pulse" /></div>
+          <div class="pt-3 space-y-2"><div class="h-3 w-48 rounded bg-[#e7e8e8] animate-pulse" /><div class="h-3 w-full rounded bg-[#f0f1f1] animate-pulse" /></div>
         </div>
       </div>
 
@@ -634,14 +634,16 @@ onUnmounted(() => { unsubLive?.() })
         <p v-if="auth.isAdmin" class="text-sm text-feed-muted mt-2">Sync from QB to populate the feed.</p>
       </div>
 
-      <!-- Feed -->
-      <TransitionGroup v-else name="feed-live" tag="div" class="space-y-12">
-        <article v-for="item in items" :key="item.id" class="feed-card bg-white sm:rounded-3xl overflow-hidden feed-soft-shadow group -mx-4 sm:mx-0">
+      <!-- Feed — flat Instagram-style flow: no card boxes, the hero/media
+           is the only visual block; headers and captions sit directly on
+           the page surface. -->
+      <TransitionGroup v-else name="feed-live" tag="div" class="space-y-10">
+        <article v-for="item in items" :key="item.id" class="feed-card group">
 
           <!-- Profile header: a person ONLY when attribution is certain
                (webhook payload named them) — otherwise the project headlines
                with a brand-mark avatar and no doer claim. -->
-          <div class="p-4 flex items-center justify-between">
+          <div class="py-2.5 flex items-center justify-between">
             <div v-if="item.actor_name" class="flex items-center gap-3">
               <button @click="selectPerson(item.actor_name)" class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 overflow-hidden relative" :class="item.event_type === 'agent_run' ? 'bg-cyan-100' : 'bg-[#e7e8e8]'">
                 <span class="text-xs font-bold" :class="item.event_type === 'agent_run' ? 'text-cyan-700' : 'text-[#2d2f2f]'">{{ item.event_type === 'agent_run' ? 'AI' : getInitials(item.actor_name) }}</span>
@@ -674,15 +676,15 @@ onUnmounted(() => { unsubLive?.() })
             </div>
           </div>
 
-          <!-- Hero content area (not for user posts) -->
-          <div v-if="item.event_type !== 'user_post'" class="sm:px-4">
+          <!-- Hero content area (not for user posts) — full-bleed on mobile -->
+          <div v-if="item.event_type !== 'user_post'" class="-mx-4 sm:mx-0">
             <FeedHero :hero="getHero(item)" :title="item.title" :project-id="item.project_id" :project-name="item.project_name" @open-project="openProjectPeek" />
           </div>
 
-          <!-- Media gallery -->
-          <div v-if="item.media?.length" class="sm:px-4">
+          <!-- Media gallery — full-bleed on mobile -->
+          <div v-if="item.media?.length" class="-mx-4 sm:mx-0">
             <div
-              class="sm:rounded-3xl overflow-hidden grid"
+              class="sm:rounded-2xl overflow-hidden grid"
               :class="item.media.length === 1 ? '' : 'grid-cols-2 gap-0.5'"
             >
               <template v-for="(m, idx) in item.media.slice(0, 4)" :key="m.id">
@@ -718,8 +720,8 @@ onUnmounted(() => { unsubLive?.() })
           </div>
 
           <!-- Interaction bar -->
-          <div class="p-5">
-            <div class="flex items-center justify-between mb-4">
+          <div class="pt-3 pb-1">
+            <div class="flex items-center justify-between mb-3">
               <div class="flex items-center gap-5">
                 <!-- Heart -->
                 <button
@@ -787,7 +789,7 @@ onUnmounted(() => { unsubLive?.() })
           </div>
 
           <!-- Comments -->
-          <div v-if="expandedComments.has(item.id)" class="bg-[#f6f6f6] px-5 py-3">
+          <div v-if="expandedComments.has(item.id)" class="py-1">
             <div v-for="c in commentsByItem.get(item.id)" :key="c.id" class="py-2">
               <p class="text-xs text-[#5a5c5c]"><span class="font-bold text-[#2d2f2f]">{{ c.user_name }}</span> {{ c.body }}</p>
               <p class="text-[10px] text-[#acadad] mt-0.5">{{ timeAgo(c.created_at) }}</p>
@@ -812,7 +814,7 @@ onUnmounted(() => { unsubLive?.() })
                 @update:model-value="(v: string | number) => { commentInput.set(item.id, String(v)); detectMention(String(v), item.id) }"
                 @keydown.enter="postComment(item.id)"
                 placeholder="Add a comment... @ to tag"
-                class="text-sm h-9 bg-white border-0 rounded-xl focus-visible:ring-1 focus-visible:ring-[#acadad]/30"
+                class="text-sm h-9 bg-[#f4f4f4] border-0 rounded-full px-4 focus-visible:ring-1 focus-visible:ring-[#acadad]/30"
               />
               <button
                 class="text-sm font-bold feed-sig-text shrink-0 px-2 disabled:opacity-30"
@@ -838,8 +840,10 @@ onUnmounted(() => { unsubLive?.() })
 </template>
 
 <style scoped>
+/* One continuous white surface — posts are not boxes; the hero/media
+   block is the only visual container (Instagram-style flow). */
 .feed-page {
-  background: #f6f6f6;
+  background: #ffffff;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 .feed-sig-gradient { background: linear-gradient(135deg, #B6004F 0%, #FF9742 100%); }
@@ -868,6 +872,6 @@ onUnmounted(() => { unsubLive?.() })
    math sane before first render. */
 .feed-card {
   content-visibility: auto;
-  contain-intrinsic-size: auto 560px;
+  contain-intrinsic-size: auto 500px;
 }
 </style>

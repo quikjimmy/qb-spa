@@ -1,0 +1,48 @@
+//https://api.quickbase.com/v1/reports/111?tableId=bscs3z866
+
+{
+  "description": "",
+  "id": "111",
+  "incomplete": false,
+  "name": "Permitting Dashboard: Installed without Permit Approval - No Revisions",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'-1'.CT.'1'}AND{'175'.XTV.'Permit Approved'}AND{'20'.EX.''}AND{'67'.XEX.''}AND{'234'.XEX.''}AND{'214'.XEX.'1'}AND({'219'.EX.''}OR({'219'.XEX.''}AND{'222'.XEX.''}))",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Project - Status],\r\n\"Rejected\",0,\r\n\"ROR\",0,\r\n\"Cancelled\",0,\r\n\"ARC\",0,\r\n\"Pending Cancel\",0,\r\n\"Lost\",0,\r\n\"Finance Hold\",0,\r\n\"Hoa Hold\",0,\r\n\"On Hold\",0,\r\n\"Pending Cancel\",0,\r\n\"Complete\",0,\r\n\"Completed\",0,\r\n\"Roof Hold\",0,\r\n1\r\n)",
+        "id": -1,
+        "label": "Status"
+      },
+      {
+        "fieldType": "text",
+        "formula": "ToText([Permit Missing Items])",
+        "id": -100,
+        "label": "Missing Items"
+      }
+    ],
+    "tableId": "bscs3z866"
+  },
+  "type": "chart",
+  "usedCount": 499,
+  "usedLast": "2026-05-05T00:50:00Z"
+}

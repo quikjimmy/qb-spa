@@ -1,0 +1,46 @@
+// https://api.quickbase.com/v1/reports/69?tableId=bscs3z866
+
+{
+  "description": "",
+  "id": "69",
+  "incomplete": false,
+  "name": "Permitting Dashboard: Electrical Permits Submitted",
+  "properties": {
+    "summarize": [
+      {
+        "showAs": 0,
+        "type": "number-of-records"
+      },
+      {
+        "aggregation": "SUM",
+        "fieldId": -1,
+        "showAs": 0,
+        "type": "field-value"
+      }
+    ],
+    "summaryFormulas": [],
+    "summaryVariables": []
+  },
+  "query": {
+    "filter": "{'169'.XEX.''}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "[Project - System Size(kW)]",
+        "id": -1,
+        "label": "Kilowatts"
+      }
+    ],
+    "groupBy": [
+      {
+        "fieldId": 160,
+        "grouping": "equal-values"
+      }
+    ],
+    "tableId": "bscs3z866"
+  },
+  "type": "summary",
+  "usedCount": 585,
+  "usedLast": "2026-05-05T15:27:00Z"
+}

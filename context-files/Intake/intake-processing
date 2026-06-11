@@ -1,0 +1,66 @@
+// https://api.quickbase.com/v1/reports/10?tableId=bt4a8ypkq
+
+{
+  "description": "",
+  "id": "10",
+  "incomplete": false,
+  "name": "Intake 2.0 Dashboard: Processing",
+  "properties": {
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      106,
+      49,
+      72,
+      210
+    ],
+    "filter": "{'196'.EX.'Processing'}",
+    "formulaFields": [],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 2,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "bt4a8ypkq"
+  },
+  "type": "table",
+  "usedCount": 4481,
+  "usedLast": "2026-05-05T21:13:00Z"
+}
+
+//Intake status bar progress
+
+var number IA = If([Reportable: Installation Agreement]="Approve",1,0);
+var number Finance = If([Reportable: Finance Approved]="Approve",1,0);
+var number FullUB = If([Reportable: Full Utility Bill]="Approve",1,0);
+var number Consumption = If([Reportable: Consumption Audit]="Approve",1,0);
+var number SiteSurvey = If([Reportable: Site Survey Scheduled]="Approve",1,0);
+var number WelcomeCall = If([Reportable: Welcome Call Scheduled]="Approve",1,0);
+var number Adders = If([Reportable: Adders]="Approve",1,0);
+
+
+
+
+
+
+
+var number complete = Sum($ia,$finance,$fullub,$consumption,$sitesurvey,$welcomecall,$adders)/7;
+
+var number percentComplete = ToNumber($Complete); // Assuming [% Complete] is a field with a percentage value
+var text percentDisplay = ToText(Round($percentComplete * 100)) & "%";
+
+
+
+var text progressBar = 
+  "<div style='position: relative; width: 200px; height: 18px; background-color: #e0e0e0; border-radius: 10px; overflow: hidden;'>" &
+  "<div style='min-width: 10px; width: " & ToText(Min(Max($percentComplete * 200, 0), 200)) & "px; height: 18px; background-color: #4CAF50; border-radius: 10px;'>" & "</div>" &
+  "<div style='position: absolute; top: 0px; left: 10px; color: " & If($percentComplete > 0.05, "white", "#4CAF50") & "; line-height: 18px;'>" & $percentDisplay & "</div>" &
+  "</div>";
+
+"<div style='width: 200px; height: 18px;'>" &
+
+   $progressBar &
+"</div>"

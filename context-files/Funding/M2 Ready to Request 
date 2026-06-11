@@ -1,0 +1,44 @@
+//https://api.quickbase.com/v1/reports/970?tableId=br9kwm8na
+
+{
+  "description": "My Description",
+  "id": "970",
+  "incomplete": false,
+  "name": "Funding Dashboard: M2 Ready to Request (Amount) KPI",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "aggregation": "SUM",
+        "fieldId": -1,
+        "label": "",
+        "type": "field-value"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'2050'.CT.'Ready to Request M2'}AND{'2569'.XEX.'1'}AND{'2568'.XEX.'1'}AND{'1942'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": 0,
+        "fieldType": "currency",
+        "formula": "[Funding Dashboard: M2 Expected  Amount (Calc)]",
+        "id": -1,
+        "label": "M2"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "chart",
+  "usedCount": 621,
+  "usedLast": "2026-05-14T20:52:00Z"
+}

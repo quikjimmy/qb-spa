@@ -1,0 +1,32 @@
+//https://api.quickbase.com/v1/reports/124?tableId=bsbguxz4i
+
+{
+  "description": "",
+  "id": "124",
+  "incomplete": false,
+  "name": "When INSPX Was Scheduled",
+  "properties": {
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      13,
+      1,
+      2,
+      310
+    ],
+    "filter": "{'6'.EX.'Final Inspection'}",
+    "formulaFields": [],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 1,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "bsbguxz4i"
+  },
+  "type": "table",
+  "usedCount": 2,
+  "usedLast": "2026-05-21T02:11:00Z"
+}

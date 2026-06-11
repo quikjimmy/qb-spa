@@ -23,7 +23,7 @@ const showSparks = computed(() =>
 </script>
 
 <template>
-  <div class="hero-scene sm:rounded-3xl overflow-hidden p-8 flex flex-col justify-center items-center text-center min-h-[210px] relative" :class="[`hero-${hero.family}`, toneClass]">
+  <div class="hero-scene sm:rounded-2xl overflow-hidden p-8 flex flex-col justify-center items-center text-center min-h-[210px] relative" :class="[`hero-${hero.family}`, toneClass]">
     <!-- Drifting light orbs (all scenes) -->
     <div class="orb orb-a" aria-hidden="true" />
     <div class="orb orb-b" aria-hidden="true" />

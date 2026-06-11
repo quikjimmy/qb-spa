@@ -1,0 +1,106 @@
+//https://api.quickbase.com/v1/reports/116?tableId=bscs3z866
+
+{
+  "description": "",
+  "id": "116",
+  "incomplete": false,
+  "name": "Permit Dashboard: Follow Up List",
+  "properties": {
+    "columnProperties": [
+      {
+        "fieldId": 25,
+        "labelOverride": "Customer Name",
+        "required": false
+      },
+      {
+        "fieldId": 68,
+        "labelOverride": "Project Status",
+        "required": false
+      },
+      {
+        "fieldId": 135,
+        "labelOverride": "AHJ Name",
+        "required": false
+      },
+      {
+        "fieldId": 162,
+        "labelOverride": "Assigned User",
+        "required": false
+      },
+      {
+        "fieldId": 210,
+        "justification": 2,
+        "labelOverride": "PTO Approved Date",
+        "required": false
+      },
+      {
+        "fieldId": 228,
+        "justification": 2,
+        "labelOverride": "Follow Up Date",
+        "required": false
+      },
+      {
+        "fieldId": 234,
+        "justification": 2,
+        "labelOverride": "Install Completed Date",
+        "required": false
+      }
+    ],
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      162,
+      68,
+      15,
+      25,
+      135,
+      175,
+      228,
+      168,
+      234,
+      210,
+      226
+    ],
+    "filter": "{'228'.XEX.''}AND{'228'.OBF.'today'}AND{'-1'.EX.'1'}AND{'67'.XEX.''}AND{'214'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Project - Status],\r\n\"Rejected\",0,\r\n\"ROR\",0,\r\n\"Cancelled\",0,\r\n\"ARC\",0,\r\n\"Pending Cancel\",0,\r\n\"Lost\",0,\r\n\"Finance Hold\",0,\r\n\"Hoa Hold\",0,\r\n\"On Hold\",0,\r\n\"Pending Cancel\",0,\r\n\"Complete\",0,\r\n\"Completed\",0,\r\n1\r\n)",
+        "id": -1,
+        "label": "Exclude"
+      },
+      {
+        "fieldType": "text",
+        "formula": "If([Calculated Follow Up Date]=Today(),\"Due Today\",\"Overdue\")",
+        "id": -100,
+        "label": "Due Today?"
+      }
+    ],
+    "groupBy": [
+      {
+        "fieldId": -100,
+        "grouping": "equal-values"
+      },
+      {
+        "fieldId": 233,
+        "grouping": "equal-values"
+      }
+    ],
+    "sortBy": [
+      {
+        "fieldId": -100,
+        "order": "ASC"
+      },
+      {
+        "fieldId": 233,
+        "order": "ASC"
+      }
+    ],
+    "tableId": "bscs3z866"
+  },
+  "type": "table",
+  "usedCount": 476,
+  "usedLast": "2026-05-05T15:35:00Z"
+}

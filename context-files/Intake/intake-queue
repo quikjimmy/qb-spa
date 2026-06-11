@@ -1,0 +1,41 @@
+//https://api.quickbase.com/v1/reports/610?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "610",
+  "incomplete": false,
+  "name": "Intake 2.0 Dashboard: Ready for Intake",
+  "properties": {
+    "displayOnlyNewOrChangedRecords": false
+  },
+  "query": {
+    "fields": [
+      145,
+      1800,
+      522,
+      255,
+      347
+    ],
+    "filter": "{'347'.EX.'In Queue'}AND{'-1'.EX.'1'}AND{'606'.CT.'Kin'}AND{'622'.XEX.'1'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Status],\r\n\"Cancelled\",0,\r\n\"ROR\",0,\r\n\"Lost\",0,\r\n1\r\n)",
+        "id": -1,
+        "label": "Exclude Status"
+      }
+    ],
+    "groupBy": [],
+    "sortBy": [
+      {
+        "fieldId": 522,
+        "order": "DESC"
+      }
+    ],
+    "tableId": "br9kwm8na"
+  },
+  "type": "table",
+  "usedCount": 681,
+  "usedLast": "2026-05-05T21:15:00Z"
+}

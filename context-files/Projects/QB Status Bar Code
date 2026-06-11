@@ -1,0 +1,601 @@
+var Text status = Upper([Status]);
+
+// Edit status pencil
+var Text statusEditPencil = "<a href='" & URLRoot() & "db/" & [_DBID_NOTES] & "?a=API_GenAddRecordForm&_fid_13=" & URLEncode([Record ID#]) & "&_fid_141=Rep%20Visible&_fid_7=Status%20Update&z=" & Rurl() & "' style='font-size:12px; text-decoration:none; margin-left:-4px; color:#666;' title='Update Status'>✏️</a>";
+
+// TPO Indicator
+var Text lenderName = ToText([Lender - Lookup]);
+var Bool isTPO = Contains($lenderName, "LightReach") or Contains($lenderName, "GoodLeap (TPO)");
+var Bool isSkylight = Contains($lenderName, "Skylight");
+var Bool isCash = Contains(Lower($lenderName), "cash");
+var Text tpoIndicator = If($isTPO, "<span style='background-color:#FF6B6B !important; color:white !important; padding:4px 8px; border-radius:4px; font-weight:bold; font-size:10pt; margin-left:8px;' title='Third Party Owned'>TPO</span>", "");
+
+// Palmetto/LightReach link icon - show if lender contains LightReach AND has Loan ID
+var Text lenderLoanId = ToText([Lender Loan ID]);
+
+//System Variables
+// System & Financial Details Tooltip
+var Text moduleBrand = ToText([Module Brand]);
+var Text moduleModel = ToText([Module]);
+var Text moduleCount = ToText([Panel Count]);
+var Text inverterBrand = ToText([Inverter Brand]);
+var Text inverterModel = ToText([Inverter]);
+var Text inverterCount = ToText([# of Inverters]);
+var Text estProduction = ToText([Estimated Production]);
+var Text sysOffset = ToText([System Offset Pct]);
+
+var Text grossCost = ToText([Gross Cost]);
+var Text grossPPW = ToText([Gross PPW]);
+var Text netCost = ToText([Cost - System Cost Net]);
+var Text netPPW = ToText([Net PPW]);
+var Text soldNetPPW = ToText([Sold Net PPW]);
+var Text addersList = ToText([Captivate Adders List]);
+
+var Text systemTooltip = "SYSTEM DETAILS&#10;━━━━━━━━━━━━━━&#10;Est. Production: " & $estProduction & "&#10;Sys Offset: " & $sysOffset & "%&#10;&#10;MODULES&#10;Brand: " & $moduleBrand & "&#10;Model: " & $moduleModel & "&#10;Count: " & $moduleCount & "&#10;&#10;INVERTER&#10;Brand: " & $inverterBrand & "&#10;Model: " & $inverterModel & "&#10;Count: " & $inverterCount & "&#10;&#10;FINANCIALS&#10;━━━━━━━━━━━━━━&#10;Gross Cost: $" & $grossCost & "&#10;Gross PPW: $" & $grossPPW & "&#10;Net Cost: $" & $netCost & "&#10;Net PPW: $" & $netPPW & "&#10;Sold Net PPW: $" & $soldNetPPW & "&#10;&#10;ADDERS&#10;━━━━━━━━━━━━━━&#10;" & $addersList;
+
+var Text systemInfoIcon = "<span style='cursor:help; margin-left:6px;' title='" & $systemTooltip & "'>ℹ️</span>";
+
+// Multi-user Star feature - checks if current user is in the list
+var Text currentUserEmail = ToText(User());
+var Text starredUsersList = ToText([Starred By Users]);
+var Bool isStarredByMe = Contains($starredUsersList, $currentUserEmail);
+
+// For List - User fields, we need to build the complete new list
+var Text newStarredList = If(
+    $isStarredByMe,
+    Trim(SearchAndReplace($starredUsersList, $currentUserEmail, "")),
+    If($starredUsersList = "", 
+        $currentUserEmail, 
+        $starredUsersList & ";" & $currentUserEmail
+    )
+);
+
+// ============ FUNDING STATUS INDICATORS ============
+var Text ntpSubmittedDate = ToText([NTP - Submitted Date]);
+var Text ntpApprovedDate = ToText([NTP - Approval Date]);
+var Text mOneStatus = ToText([Funding Dashboard: M1 Status]);
+var Text mTwoStatus = ToText([Funding Dashboard: M2 Status]);
+var Text mThreeStatus = ToText([Funding Dashboard: M3 Status]);
+var Bool installScheduled = not IsNull([Minimum Install Start Date]);
+var Bool mTwoReceived = Contains($mTwoStatus, "Received");
+
+// Clawback detection
+var Number mOneNetReceived = [Receivables Table: Net M1 Received];
+var Number mTwoNetReceived = [Receivables Table: Net M2 Received];
+var Number mThreeNetReceived = [Receivables Table: Net M3 Received];
+var Bool mOneClawback = $mOneNetReceived < 0;
+var Bool mTwoClawback = $mTwoNetReceived < 0;
+var Bool mThreeClawback = $mThreeNetReceived < 0;
+
+// M1 Dates for tooltip
+var Text mOneRequestedDate = ToText([Funding Dashboard: Official M1 Requested Date]);
+var Text mOneRejectedDate = ToText([Funding Dashboard: Max M1 Event - Rejected Date]);
+var Text mOneApprovedDate = ToText([Funding Dashboard: Max M1 Event - Approved Date]);
+var Text mOneDepositDate = ToText([Receivables Table: M1 Deposit Date]);
+
+// M2 Dates for tooltip
+var Text mTwoRequestedDate = ToText([Funding Dashboard: Official M2 Requested Date]);
+var Text mTwoRejectedDate = ToText([Funding Dashboard: Max M2 Event - Rejected Date]);
+var Text mTwoApprovedDate = ToText([Funding Dashboard: Max M2 Event - Approved Date]);
+var Text mTwoDepositDate = ToText([Receivables Table: Actual M2 Deposit Date]);
+
+// M3 Dates for tooltip
+var Text mThreeRequestedDate = ToText([Funding Dashboard: Official M3 Requested Date]);
+var Text mThreeRejectedDate = ToText([Funding Dashboard: Max M3 Event - Rejected Date]);
+var Text mThreeApprovedDate = ToText([Funding Dashboard: Max M3 Event - Approved Date]);
+var Text mThreeDepositDate = ToText([Receivables Table: Actual M3 Deposit Date]);
+
+// Build NTP tooltip
+var Text ntpTooltip = If(
+    $ntpApprovedDate <> "", "NTP Approved",
+    If($ntpSubmittedDate <> "", "NTP Submitted", "NTP Not Started")
+) &
+    "&#10;━━━━━━━━━━" &
+    "&#10;Submitted: " & If($ntpSubmittedDate <> "", $ntpSubmittedDate, "—") &
+    "&#10;Approved: " & If($ntpApprovedDate <> "", $ntpApprovedDate, "—");
+
+// Build M1 tooltip
+var Text mOneTooltip = If($mOneClawback, "⚠️ CLAWBACK&#10;", "") &
+    If($mOneStatus <> "", $mOneStatus, "M1 Not Started") &
+    "&#10;━━━━━━━━━━" &
+    "&#10;Requested: " & If($mOneRequestedDate <> "", $mOneRequestedDate, "—") &
+    "&#10;Rejected: " & If($mOneRejectedDate <> "", $mOneRejectedDate, "—") &
+    "&#10;Approved: " & If($mOneApprovedDate <> "", $mOneApprovedDate, "—") &
+    "&#10;Deposited: " & If($mOneDepositDate <> "", $mOneDepositDate, "—");
+
+// Build M2 tooltip
+var Text mTwoTooltip = If($mTwoClawback, "⚠️ CLAWBACK&#10;", "") &
+    If($mTwoStatus <> "", $mTwoStatus, "M2 Not Started") &
+    "&#10;━━━━━━━━━━" &
+    "&#10;Requested: " & If($mTwoRequestedDate <> "", $mTwoRequestedDate, "—") &
+    "&#10;Rejected: " & If($mTwoRejectedDate <> "", $mTwoRejectedDate, "—") &
+    "&#10;Approved: " & If($mTwoApprovedDate <> "", $mTwoApprovedDate, "—") &
+    "&#10;Deposited: " & If($mTwoDepositDate <> "", $mTwoDepositDate, "—");
+
+// Build M3 tooltip
+var Text mThreeTooltip = If($mThreeClawback, "⚠️ CLAWBACK&#10;", "") &
+    If($mThreeStatus <> "", $mThreeStatus, "M3 Not Started") &
+    "&#10;━━━━━━━━━━" &
+    "&#10;Requested: " & If($mThreeRequestedDate <> "", $mThreeRequestedDate, "—") &
+    "&#10;Rejected: " & If($mThreeRejectedDate <> "", $mThreeRejectedDate, "—") &
+    "&#10;Approved: " & If($mThreeApprovedDate <> "", $mThreeApprovedDate, "—") &
+    "&#10;Deposited: " & If($mThreeDepositDate <> "", $mThreeDepositDate, "—");
+
+// Determine status color for each milestone
+// Gray = not started, Blue = submitted/requested, Orange = approved, Green = received, Red = rejected, Purple = clawback
+
+// NTP Status Color (already handles dates, no status text to worry about)
+var Text ntpColor = If(
+    $ntpApprovedDate <> "", "#28a745",
+    If($ntpSubmittedDate <> "", "#17a2b8",
+    "#ccc")
+);
+
+// M1 Status Color - case insensitive
+var Text mOneStatusUpper = Upper($mOneStatus);
+var Text mOneColor = If(
+    $mOneClawback, "#800080",
+    If(Contains($mOneStatusUpper, "RECEIVED") or Contains($mOneStatusUpper, "FULLY FUNDED"), "#28a745",
+    If(Contains($mOneStatusUpper, "REJECTED"), "#DC3545",
+    If(Contains($mOneStatusUpper, "APPROVED"), "#FFA500",
+    If(Contains($mOneStatusUpper, "PENDING"), "#17a2b8",
+    "#ccc"))))
+);
+
+// M2 Status Color - case insensitive
+var Text mTwoStatusUpper = Upper($mTwoStatus);
+var Text mTwoColor = If(
+    $mTwoClawback, "#800080",
+    If(Contains($mTwoStatusUpper, "RECEIVED") or Contains($mTwoStatusUpper, "FULLY FUNDED"), "#28a745",
+    If(Contains($mTwoStatusUpper, "REJECTED"), "#DC3545",
+    If(Contains($mTwoStatusUpper, "APPROVED"), "#FFA500",
+    If(Contains($mTwoStatusUpper, "PENDING"), "#17a2b8",
+    "#ccc"))))
+);
+
+// M3 Status Color - case insensitive
+var Text mThreeStatusUpper = Upper($mThreeStatus);
+var Text mThreeColor = If(
+    $mThreeClawback, "#800080",
+    If(Contains($mThreeStatusUpper, "RECEIVED") or Contains($mThreeStatusUpper, "FULLY FUNDED"), "#28a745",
+    If(Contains($mThreeStatusUpper, "REJECTED"), "#DC3545",
+    If(Contains($mThreeStatusUpper, "APPROVED"), "#FFA500",
+    If(Contains($mThreeStatusUpper, "PENDING"), "#17a2b8",
+    "#ccc"))))
+);
+
+// Build compact funding indicators
+// NTP Indicator
+var Text ntpIndicator = "<span style='display:inline-block; padding:2px 6px; border-radius:3px; font-size:8pt; font-weight:bold; background:" & $ntpColor & " !important; color:" & If($ntpColor = "#ccc", "#666", "white") & " !important; margin-right:3px;' title='" & $ntpTooltip & "'>NTP</span>";
+
+var Text mOneIndicator = "<span style='display:inline-block; padding:2px 6px; border-radius:3px; font-size:8pt; font-weight:bold; background:" & $mOneColor & " !important; color:" & If($mOneColor = "#ccc", "#666", "white") & " !important; margin-right:3px;' title='" & $mOneTooltip & "'>M1</span>";
+
+var Text mTwoIndicator = If(
+    Contains($lenderName, "LightReach") and $lenderLoanId <> "" and $mTwoColor <> "#ccc",
+    "<a href='https://palmetto.finance/accounts/" & $lenderLoanId & "/installation-package/edit' target='_blank' style='text-decoration:none;'><span style='display:inline-block; padding:2px 6px; border-radius:3px; font-size:8pt; font-weight:bold; background:" & $mTwoColor & " !important; color:" & If($mTwoColor = "#ccc", "#666", "white") & " !important; margin-right:3px; cursor:pointer;' title='" & $mTwoTooltip & "'>M2</span></a>",
+    "<span style='display:inline-block; padding:2px 6px; border-radius:3px; font-size:8pt; font-weight:bold; background:" & $mTwoColor & " !important; color:" & If($mTwoColor = "#ccc", "#666", "white") & " !important; margin-right:3px;' title='" & $mTwoTooltip & "'>M2</span>"
+);
+
+var Text mThreeIndicator = "<span style='display:inline-block; padding:2px 6px; border-radius:3px; font-size:8pt; font-weight:bold; background:" & $mThreeColor & " !important; color:" & If($mThreeColor = "#ccc", "#666", "white") & " !important;' title='" & $mThreeTooltip & "'>M3</span>";
+
+// Show all funding indicators
+var Text fundingIndicators = $ntpIndicator & $mOneIndicator & $mTwoIndicator & $mThreeIndicator;
+
+// Funding display wrapper
+var Text fundingDisplay = If(
+    $mOneStatus <> "" or $installScheduled,
+    "<span style='margin-right:8px;'>" & $fundingIndicators & "</span>",
+    ""
+);
+
+// Star toggle link
+var text starToggle = If(
+    $isStarredByMe,
+    "<a href='" & URLRoot() & "db/br9kwm8na?a=API_EditRecord&rid=" & [Record ID#] & "&_fid_2653=" & URLEncode($newStarredList) & "&rdr=" & URLEncode(URLRoot() & "db/br9kwm8na?a=dr&rid=" & [Record ID#]) & "' style='font-size:18px;text-decoration:none;color:#f4b400;cursor:pointer;' title='Click to unstar'>★</a>",
+    "<a href='" & URLRoot() & "db/br9kwm8na?a=API_EditRecord&rid=" & [Record ID#] & "&_fid_2653=" & URLEncode($newStarredList) & "&rdr=" & URLEncode(URLRoot() & "db/br9kwm8na?a=dr&rid=" & [Record ID#]) & "' style='font-size:18px;text-decoration:none;color:#cccccc;cursor:pointer;' title='Click to star'>☆</a>"
+);
+
+// Days in current status - round to whole number
+var Number daysInStatus = Int(ToDays(Now() - [Maximum Modified Date Time]));
+
+// Determine status color based on status text
+var Bool isComplete = Contains($status, "COMPLETE");
+var Bool isCancel = Contains($status, "CANCEL") and not Contains($status, "PENDING");
+var Bool isHold = Contains($status, "HOLD");
+var Bool isRejected = $status = "REJECTED";
+var Bool isActive = $status = "ACTIVE";
+
+var Text statusColor = If($isComplete, "#FFFFFF", If($isCancel, "#FFB3B3", If($status = "PENDING CANCEL", "#FFA500", If($isHold, "#FFF9C4", If($isRejected, "#FFD699", If($isActive, "#C8E6C9", "#4CAF50"))))));
+
+var Text statusTextColor = If($isComplete, "#333", If($status = "PENDING CANCEL", "white", If($statusColor = "#4CAF50", "white", "#333")));
+var Text statusIcon = If($isComplete, "✓ ", "");
+var Text statusBorder = If($isComplete, " border:2px solid #ddd;", "");
+
+var Text statusBubble = "<span style='display:inline-block; padding:6px 10px; background-color:" & $statusColor & " !important; color:" & $statusTextColor & " !important; border-radius:15px; font-weight:bold; font-size:10pt;" & $statusBorder & "'>" & $statusIcon & $status & "</span>" & $statusEditPencil & If($daysInStatus > 0, "<span style='font-size:8pt; color:#999 !important; margin-left:3px;'>(" & ToText($daysInStatus) & "d)</span>", "");
+
+// Clawback indicator
+var Text clawbackBadge = If([Receivables Table: Net M2 Received] < 0, "<span style='background:#800080; color:white; padding:5px 12px; border-radius:15px; font-size:0.85em; font-weight:bold; margin-right:8px;'>💸 CLAWEDBACK</span>", "");
+
+// Finance terms - hide if cash, remove extra % sign
+var Text financeTerms = If(not $isCash and ToText([Finance Term - Lookup]) <> "" and ToText([Finance Rate - Lookup]) <> "", "<span style='font-size:10pt; color:#666; margin-left:8px;'>" & [Finance Term - Lookup] & "yr/" & [Finance Rate - Lookup] & "</span>", "");
+
+
+
+var Text palmettoIcon = If(
+    Contains($lenderName, "LightReach") and $lenderLoanId <> "",
+    "<a href='https://palmetto.finance/accounts/" & $lenderLoanId & "' target='_blank' style='text-decoration:none; margin-left:6px;' title='Open in Palmetto Finance'><img src='https://media.licdn.com/dms/image/v2/D560BAQHji0oqjsy2hQ/company-logo_200_200/B56Zdkp5NKGsAM-/0/1749740394008/palmetto_logo?e=2147483647&v=beta&t=VTrI8YiJVCjSxhLwJx1FmKEgmLJCdZXhfTDmuZhV3E4' style='width:16px; height:16px; vertical-align:middle; border-radius:3px;'/></a>",
+    ""
+);
+
+// GoodLeap link icon - different URL for TPO vs non-TPO
+var Bool isGoodLeapTPO = Contains($lenderName, "GoodLeap (TPO)");
+var Bool isGoodLeapNonTPO = Contains($lenderName, "GoodLeap") and not Contains($lenderName, "(TPO)");
+
+var Text goodleapUrl = If(
+    $isGoodLeapTPO and $lenderLoanId <> "",
+    "https://origin.goodleap.com/tpo/" & $lenderLoanId,
+    If(
+        $isGoodLeapNonTPO and $lenderLoanId <> "",
+        "https://origin.goodleap.com/loans/" & $lenderLoanId,
+        ""
+    )
+);
+
+var Text goodleapIcon = If(
+    $goodleapUrl <> "",
+    "<a href='" & $goodleapUrl & "' target='_blank' style='text-decoration:none; margin-left:6px;' title='Open in GoodLeap'><img src='https://media.licdn.com/dms/image/v2/D560BAQFqat6A_xZxFg/company-logo_200_200/B56ZTSjOPbHEAQ-/0/1738699236636/goodleap_logo?e=2147483647&v=beta&t=PoKuKN1n3FjUXpXkfqdA6R5lySFoNoNQ8cruapDDuSQ' style='width:16px; height:16px; vertical-align:middle; border-radius:3px;'/></a>",
+    ""
+);
+
+var Text skylightUrl = If(
+    $isSkylight and $lenderLoanId <> "",
+    "https://installer.skylightlending.com/leases/all-leases/" & $lenderLoanId,
+    ""
+);
+var Text skylightIcon = If(
+    $skylightUrl <> "",
+    "<a href='" & $skylightUrl & "' target='_blank' style='text-decoration:none; margin-left:6px;' title='Open in Skylight Lending'><img src='https://media.licdn.com/dms/image/v2/D4E0BAQGHt20YiPsQ0Q/company-logo_200_200/B4EZnUqpSRKwAM-/0/1760209573502/skylight2_logo?e=2147483647&v=beta&t=GSKi9O9uQXxxeAmeWv_rmul6PCkRooTcbhYjWSXBwgo' style='width:16px; height:16px; vertical-align:middle; border-radius:3px;'/></a>",
+    ""
+);
+
+// Lender display with clickable name for LightReach or GoodLeap
+var Text lenderNameDisplay = If(
+    Contains($lenderName, "LightReach") and $lenderLoanId <> "",
+    "<a href='https://palmetto.finance/accounts/" & $lenderLoanId & "' target='_blank' style='font-size:10pt; font-weight:500; color:#333; text-decoration:underline; cursor:pointer;' title='Open in Palmetto Finance'>" & $lenderName & "</a>",
+    If(
+        $goodleapUrl <> "",
+        "<a href='" & $goodleapUrl & "' target='_blank' style='font-size:10pt; font-weight:500; color:#333; text-decoration:underline; cursor:pointer;' title='Open in GoodLeap'>" & $lenderName & "</a>",
+        If(
+            $skylightUrl <> "",
+            "<a href='" & $skylightUrl & "' target='_blank' style='font-size:10pt; font-weight:500; color:#333; text-decoration:underline; cursor:pointer;' title='Open in Skylight Lending'>" & $lenderName & "</a>",
+            "<span style='font-size:10pt; font-weight:500; color:#333;'>" & $lenderName & "</span>"
+        )
+    )
+);
+
+// Combined lender icon (only one will show based on lender type)
+var Text lenderIcon = $palmettoIcon & $goodleapIcon & $skylightIcon;
+
+// Lender display with funding indicators and clawback badge
+var Text lenderDisplay = $fundingDisplay & $clawbackBadge & If($lenderName <> "", $lenderNameDisplay & $lenderIcon & $tpoIndicator & $financeTerms, $tpoIndicator & $financeTerms);
+
+// Custom Urgent Banner
+var Text urgentBannerText = ToText([Custom Urgent Message Banner - Input]);
+
+// Cancel banner
+var Text cancelBanner = If($isCancel, 
+    "<div style='background:#DC3545; color:white; padding:12px; margin-bottom:10px; border-radius:6px; font-weight:bold; text-align:center; font-size:12pt;'>✖ PROJECT CANCELED ✖</div>", 
+    "");
+
+// Pending Cancel banner
+var Text pendingCancelBanner = If($status = "PENDING CANCEL", 
+    "<div style='background:#FFA500; color:white; padding:12px; margin-bottom:10px; border-radius:6px; font-weight:bold; text-align:center; font-size:12pt;'>⚠️ PENDING CANCELLATION ⚠️</div>", 
+    "");
+
+var Text urgentBanner = If($urgentBannerText <> "" and $urgentBannerText <> "0", "<div style='background:#C94C4C; color:white; padding:12px; margin-bottom:10px; border-radius:6px; font-weight:bold; text-align:center; font-size:11pt;'>⚠️ " & $urgentBannerText & " ⚠️</div>", "");
+
+// Customer info
+var Text customerName = ToText([Customer Name]);
+var Text customerAddress = ToText([Customer Address]);
+var Text mapsIcon = "<a href='https://www.google.com/maps/search/?api=1&query=" & URLEncode($customerAddress) & "' target='_blank' style='text-decoration:none; font-size:16px;' title='Open in Google Maps'>📍</a>";
+var Text addressWithIcon = $mapsIcon & " <span style='margin-left:4px;'><a href='https://www.google.com/maps/search/?api=1&query=" & URLEncode($customerAddress) & "' target='_blank' style='font-size:10pt; color:#666; text-decoration:none;' title='Open in Google Maps'>" & $customerAddress & "</a></span>";
+
+// Google Drive
+var Text googleDriveIcon = If(ToText([Google Drive Link]) <> "", "<a href='" & [Google Drive Link] & "' target='_blank' style='text-decoration:none;' title='Open Google Drive folder'><img src='https://www.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png' style='width:14px; height:14px; vertical-align:middle;'/></a>", "");
+
+// Enerflo link
+var Text enerfloUrl = ToText([Enerflo_Project_LInk]);
+var Text enerfloIcon = If($enerfloUrl <> "", 
+    "<a href='" & $enerfloUrl & "' target='_blank' style='text-decoration:none;' title='Open in Enerflo'><img src='https://media.licdn.com/dms/image/v2/C560BAQEKOv71jOpI9w/company-logo_200_200/company-logo_200_200/0/1630598932441?e=2147483647&v=beta&t=-zzd4Ocu5JPiWKGdMWSO6sRezP9IoQNFQlWEO0JjDrc' style='width:16px; height:16px; vertical-align:middle; border-radius:3px;'/></a>", 
+    "");
+
+// Arrivy - parse task list for tooltip
+var Text arrivyTaskList = ToText([Combined Text combo_string_for_project_status]);
+
+// Strip sort date prefixes completely (format: YYYY-MM-DD~)
+var Text arrivyStripA = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyTaskList, "2025-01-", ""), "2025-02-", ""), "2025-03-", ""), "2025-04-", "");
+var Text arrivyStripB = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripA, "2025-05-", ""), "2025-06-", ""), "2025-07-", ""), "2025-08-", "");
+var Text arrivyStripC = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripB, "2025-09-", ""), "2025-10-", ""), "2025-11-", ""), "2025-12-", "");
+var Text arrivyStripD = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripC, "2026-01-", ""), "2026-02-", ""), "2026-03-", ""), "2026-04-", "");
+var Text arrivyStripE = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripD, "2026-05-", ""), "2026-06-", ""), "2026-07-", ""), "2026-08-", "");
+var Text arrivyStripF = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripE, "2026-09-", ""), "2026-10-", ""), "2026-11-", ""), "2026-12-", "");
+var Text arrivyStripG = SearchAndReplace($arrivyStripF, "9999-99-99~", "");
+
+// Strip remaining day numbers (01~ through 31~)
+var Text arrivyStripDayA = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripG, "01~", ""), "02~", ""), "03~", ""), "04~", ""), "05~", "");
+var Text arrivyStripDayB = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripDayA, "06~", ""), "07~", ""), "08~", ""), "09~", ""), "10~", "");
+var Text arrivyStripDayC = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripDayB, "11~", ""), "12~", ""), "13~", ""), "14~", ""), "15~", "");
+var Text arrivyStripDayD = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripDayC, "16~", ""), "17~", ""), "18~", ""), "19~", ""), "20~", "");
+var Text arrivyStripDayE = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripDayD, "21~", ""), "22~", ""), "23~", ""), "24~", ""), "25~", "");
+var Text arrivyStripDayF = SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace(SearchAndReplace($arrivyStripDayE, "26~", ""), "27~", ""), "28~", ""), "29~", ""), "30~", ""), "31~", "");
+
+// Format: type~date~icon~crew -> ▶ type: date | icon | 👷 crew
+var Text arrivyFormatted = SearchAndReplace(
+    SearchAndReplace(
+        SearchAndReplace(
+            SearchAndReplace($arrivyStripDayF,
+                ";", "&#10;▶ "),
+            "~", ": "),
+        ": ✅: ", " | ✅ | 👷 "),
+    ": ○: ", " | ○ | 👷 ");
+
+var Text arrivyFormattedB = SearchAndReplace(
+    SearchAndReplace($arrivyFormatted,
+        ": 🔧: ", " | 🔧 | 👷 "),
+    ": 🚗: ", " | 🚗 | 👷 ");
+
+var Text arrivyFormattedC = SearchAndReplace(SearchAndReplace($arrivyFormattedB, ": ❌: ", " | ❌ | 👷 "), " ; ", ", ");
+
+// Build final tooltip - add first arrow
+var Text arrivyTooltipClean = If($arrivyTaskList <> "",
+    "ARRIVY TASKS&#10;━━━━━━━━━━━━━━&#10;▶ " & $arrivyFormattedC,
+    "No Arrivy Tasks"
+);
+
+// Arrivy - always show logo, link only if task exists
+var Number arrivyTaskId = [Maximum Arrivy Task ID];
+var Text arrivyViewIcon = If($arrivyTaskId > 0, 
+    "<a href='https://app.arrivy.com/tasks/" & ToText($arrivyTaskId) & "' target='_blank' style='text-decoration:none;' title='" & $arrivyTooltipClean & "'><img src='https://play-lh.googleusercontent.com/PxnxVA5h4WmHagvly3BrCghOA9hMMyGiuGOw7MbYClIWKV-xwDmUaPnCnhcC0kERUKo' style='width:16px; height:16px; vertical-align:middle; border-radius:3px;'/></a>", 
+    "<img src='https://play-lh.googleusercontent.com/PxnxVA5h4WmHagvly3BrCghOA9hMMyGiuGOw7MbYClIWKV-xwDmUaPnCnhcC0kERUKo' style='width:16px; height:16px; vertical-align:middle; border-radius:3px; opacity:0.4;' title='" & $arrivyTooltipClean & "'/>"
+);
+var Text arrivyAddIcon = "<a href='" & URLRoot() & "db/" & [_DBID_TABLE_2] & "?a=API_GenAddRecordForm&_fid_6=" & URLEncode([Record ID#]) & "&z=" & Rurl() & "' style='text-decoration:none; margin-left:3px; vertical-align:middle;' title='Schedule Field Visit'><img src='https://images.quickbase.com/si/16/721-task_add.png' style='width:16px; height:16px; vertical-align:middle;'/></a>";
+
+var Text arrivyIcon = $arrivyViewIcon & $arrivyAddIcon;
+
+// Contact icons with delimiters
+var Text phoneNumber = ToText([Residential Client Main Contact Record ID# - Mobile Phone]);
+var Text emailAddress = ToText([Residential Client Main Contact Record ID# - Email]);
+var Text phoneLink = If($phoneNumber <> "", "<a href='tel:" & $phoneNumber & "' style='font-size:14px; text-decoration:none;' title='Call " & $phoneNumber & "'>📞</a>", "");
+var Text smsLink = If($phoneNumber <> "", "<a href='sms:" & $phoneNumber & "' style='font-size:14px; text-decoration:none;' title='SMS " & $phoneNumber & "'>💬</a>", "");
+var Text emailLink = If($emailAddress <> "", "<a href='mailto:" & $emailAddress & "' style='font-size:14px; text-decoration:none;' title='Email " & $emailAddress & "'>✉️</a>", "");
+
+// Build contact icons with pipe delimiters
+var Text delimiter = " <span style='color:#ccc;'>|</span> ";
+
+var Text contactIconsA = If($phoneLink <> "", $phoneLink, "");
+var Text contactIconsB = If($smsLink <> "", If($contactIconsA <> "", $contactIconsA & $delimiter, "") & $smsLink, $contactIconsA);
+var Text contactIconsC = If($emailLink <> "", If($contactIconsB <> "", $contactIconsB & $delimiter, "") & $emailLink, $contactIconsB);
+var Text contactIconsD = If($googleDriveIcon <> "", If($contactIconsC <> "", $contactIconsC & $delimiter, "") & $googleDriveIcon, $contactIconsC);
+var Text contactIconsE = If($enerfloIcon <> "", If($contactIconsD <> "", $contactIconsD & $delimiter, "") & $enerfloIcon, $contactIconsD);
+var Text contactIcons = If($arrivyIcon <> "", If($contactIconsE <> "", $contactIconsE & $delimiter, "") & $arrivyIcon, $contactIconsE);
+
+// PPW Alert
+var number redline = Case([Customer - State], "California", 2.8, 2.4);
+var text ppwAlert = If([Net PPW] < $redline, "<span style='color:#DC3545; font-weight:bold; font-size:10pt; margin-right:12px;' title='Below state redline of $" & ToText($redline) & "/W'>⚠️ LOW PPW</span>", "");
+
+// Other alerts
+var Text unresponsiveIndicator = If([Is Unresponsive?] = "Unresponsive", "<span style='color:red; font-weight:bold; font-size:10pt; margin-right:12px;' title='Customer is unresponsive'>⚠️ UNRESPONSIVE</span>", "");
+var Text salesAidIndicator = If([# of Open Sales Aid records] > 0, "<a href='" & URLRoot() & "db/bt3m39fgr?a=q&qid=32' style='color:#FF6B6B; font-weight:bold; font-size:10pt; margin-right:12px; text-decoration:none;' title='View Open Sales Aid Records'>📋 Sales Aid Open</a>", "");
+
+// Active tickets - combined service and general tickets
+var Number openServiceTickets = [# of Active Service Records];
+var Number openAccountTickets = [# of Open Ticket records];
+
+var Text serviceTicketsLink = If($openServiceTickets > 0, 
+    "<a href='https://kin.quickbase.com/db/bt4r9f4vu?a=q&qid=37&nv=1&v0=" & ToText([Record ID#]) & "' target='_blank' style='display:inline-block; padding:6px 10px; border:1px solid #ddd; border-radius:6px; background:#f8f8f8; text-decoration:none; color:#004aad; font-weight:600; margin-right:8px;'>🔧 " & ToText($openServiceTickets) & " Service Ticket" & If($openServiceTickets > 1, "s", "") & "</a>", 
+    "");
+
+var Text accountTicketsLink = If($openAccountTickets > 0, 
+    "<a href='https://kin.quickbase.com/db/bstdqwrkg?a=q&qid=5&query=%7B%2726%27.EX.%27" & ToText([Record ID#]) & "%27%7D' target='_blank' style='display:inline-block; padding:6px 10px; border:1px solid #ddd; border-radius:6px; background:#f8f8f8; text-decoration:none; color:#004aad; font-weight:600;'>🎟️ " & ToText($openAccountTickets) & " Ticket" & If($openAccountTickets > 1, "s", "") & "</a>", 
+    "");
+
+var Text activeTicketsLink = $serviceTicketsLink & $accountTicketsLink;
+
+// Days since last note
+var Text daysSinceNote = If([since_last_note] > 7, "<span style='color:orange; font-weight:bold; font-size:10pt;' title='Last note was " & [since_last_note] & " days ago'>" & [since_last_note] & " days</span>", If([since_last_note] >= 0, "<span style='font-size:10pt;'>" & ToText([since_last_note]) & " days</span>", "<span style='font-size:10pt;'>N/A</span>"));
+
+// Add note button using existing logic
+var number salesTeam = If([Sales Team - Current User?] > 0 or [Team Member - Closer - Region Manager - Current User?] > 0 or [Team Member - Closer - Office Manager - Current User?] > 0, 1, 0);
+var Text addNoteButton = If($salesTeam = 1, 
+    "<a href='" & URLRoot() & "db/" & [_DBID_NOTES] & "?a=API_GenAddRecordForm&_fid_7=" & URLEncode("Sales") & "&_fid_10=1&_fid_141=" & URLEncode("Rep Visible") & "&_fid_13=" & URLEncode([Record ID#]) & "&z=" & Rurl() & "' style='font-size:14px; text-decoration:none; margin-left:8px; padding:4px 8px; background:#4CAF50; color:white; border-radius:4px;' title='Add a note'>📝</a>",
+    "<a href='" & URLRoot() & "db/" & [_DBID_NOTES] & "?a=API_GenAddRecordForm&_fid_13=" & URLEncode([Record ID#]) & "&z=" & Rurl() & "' style='font-size:14px; text-decoration:none; margin-left:8px; padding:4px 8px; background:#4CAF50; color:white; border-radius:4px;' title='Add a note'>📝</a>");
+
+// Hold time - convert duration field to days and round to whole number
+var Number holdDays = Int(ToDays([Total Time On Hold]));
+var Text holdTime = If($holdDays > 0, "<span style='font-size:10pt; color:#F57C00; margin-left:16px;' title='Total time project has been on hold'><b>Hold Time:</b> " & ToText($holdDays) & " days</span>", "");
+
+// Bubbles
+var Text greenBubble = "<img src=\"https://images.quickbase.com/si/16/222-point_green.png\" alt=\"green\">";
+var Text grayBubble = "<img src=\"https://kin.quickbase.com/up/bud2m3duz/a/r7/e6\" width=\"16\">";
+var Text salesDateBubble = If(ToText([Sales Date]) <> "", "<a href='" & URLRoot() & "db/br9kwm8na?a=er&rid=" & [Record ID#] & "' style='text-decoration:none;' title='Sales Date: " & ToText([Sales Date]) & "'>" & $greenBubble & "</a>", $grayBubble);
+
+// Milestone bubbles
+var text Intakebubble = If(ToText([Max Intake Event: Record ID#]) <> "", "<a href='" & URLRoot() & "db/bt4a8ypkq?a=er&rid=" & [Max Intake Event: Record ID#] & "' title='" & [Intake Missing Items: Combined] & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Intake Bubble]) & "</a>", ToText([Project Status Bar - Intake Bubble]));
+var text surveybubble = If(ToText([Maximum Survey Record ID#]) <> "", "<a href='" & URLRoot() & "db/br9vmrkp8?a=er&rid=" & [Maximum Survey Record ID#] & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Survey - Bubble]) & "</a>", ToText([Project Status Bar - Survey - Bubble]));
+var text NEMbubble = If(ToText([xx.Maximum Interconnection Record ID#]) <> "", "<a href='" & URLRoot() & "db/bseufp79y?a=er&rid=" & [xx.Maximum Interconnection Record ID#] & "' title='" & SearchAndReplace(ToText([NEM Items Missing]), ";", "|") & "' style='text-decoration:none;'>" & ToText([Project Status Bar - NEM - Icon]) & "</a>", ToText([Project Status Bar - NEM - Icon]));
+var text Designbubble = If(ToText([xx.Maximum Design Record ID#]) <> "", "<a href='" & URLRoot() & "db/bsbhp6zhm?a=er&rid=" & [xx.Maximum Design Record ID#] & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Design - Icon]) & "</a>", ToText([Project Status Bar - Design - Icon]));
+var text permitbubble = If(ToText([xx.Maximum Permit Record ID#]) <> "", "<a href='" & URLRoot() & "db/bscs3z866?a=er&rid=" & [xx.Maximum Permit Record ID#] & "' title='" & SearchAndReplace(ToText([Permit Missing Items]), ";", "|") & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Permitting - Icon]) & "</a>", ToText([Project Status Bar - Permitting - Icon]));
+var text installbubble = If(ToText([xx.Maximum Installation Record ID#]) <> "", "<a href='" & URLRoot() & "db/bsbkmcgfs?a=er&rid=" & [xx.Maximum Installation Record ID#] & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Install - Icon]) & "</a>", ToText([Project Status Bar - Install - Icon]));
+var text inspectionbubble = If(ToText([xx.Maximum Inspection Record ID#]) <> "", "<a href='" & URLRoot() & "db/bsc3v7tdg?a=er&rid=" & [xx.Maximum Inspection Record ID#] & "' style='text-decoration:none;'>" & ToText([Project Status Bar - Inspection - Icon]) & "</a>", ToText([Project Status Bar - Inspection - Icon]));
+var text PTObubble = If(ToText([xx.Maximum PTO Record ID#]) <> "", "<a href='" & URLRoot() & "db/bscs3z866?a=er&rid=" & [xx.Maximum PTO Record ID#] & "' title='" & SearchAndReplace(ToText([PTO Items Missing]), ";", "|") & "' style='text-decoration:none;'>" & ToText([Project Status Bar - PTO - Icon]) & "</a>", ToText([Project Status Bar - PTO - Icon]));
+
+// ============ SURVEY TO DESIGN SLA CONNECTOR ============
+var Number surveyToDesignDays = If(
+    not IsNull([Survey Submitted Date]) and not IsNull([Minimum Initial Design Completed]),
+    WeekdaySub([Minimum Initial Design Completed], [Survey Submitted Date]),
+    If(
+        not IsNull([Survey Submitted Date]) and IsNull([Minimum Initial Design Completed]),
+        WeekdaySub(Today(), [Survey Submitted Date]),
+        -1
+    )
+);
+
+var Bool surveyToDesignInFlight = not IsNull([Survey Submitted Date]) and IsNull([Minimum Initial Design Completed]);
+
+var Text surveyToDesignColor = If(
+    $surveyToDesignDays <= 1, "#28a745",
+    If($surveyToDesignDays <= 2, "#FFA500", "#DC3545")
+);
+
+var Text surveyToDesignWarning = If(
+    $surveyToDesignDays >= 3 and not IsNull([Minimum Initial Design Completed]),
+    " ⚠",
+    ""
+);
+
+var Text surveyToDesignTransit = If(
+    $surveyToDesignDays >= 0,
+    If(
+        $surveyToDesignInFlight,
+        "<span style='font-size:8pt; color:" & $surveyToDesignColor & "; font-style:italic;'>← " & ToText($surveyToDesignDays) & "d →</span>",
+        "<span style='font-size:8pt; color:" & $surveyToDesignColor & ";'>← " & ToText($surveyToDesignDays) & "d →" & $surveyToDesignWarning & "</span>"
+    ),
+    ""
+);
+
+// Survey cell with absolutely positioned connector that overflows to the right
+var Text surveyCellContent = "<div style='position:relative; display:inline-block;'>" & $surveybubble & "<div style='position:absolute; left:100%; top:50%; transform:translateY(-50%); white-space:nowrap; padding:0 8px; z-index:10;'>" & $surveyToDesignTransit & "</div></div>";
+
+// ============ DESIGN TO PERMIT SLA CONNECTOR ============
+var Number designToPermitDays = If(
+    not IsNull([Minimum Initial Design Completed]) and not IsNull([Permit Submitted]),
+    WeekdaySub([Permit Submitted], [Minimum Initial Design Completed]),
+    If(
+        not IsNull([Minimum Initial Design Completed]) and IsNull([Permit Submitted]),
+        WeekdaySub(Today(), [Minimum Initial Design Completed]),
+        -1
+    )
+);
+
+var Bool designToPermitInFlight = not IsNull([Minimum Initial Design Completed]) and IsNull([Permit Submitted]);
+
+var Text designToPermitColor = If(
+    $designToPermitDays <= 1, "#28a745",
+    If($designToPermitDays < 3, "#FFA500", "#DC3545")
+);
+
+var Text designToPermitWarning = If(
+    $designToPermitDays >= 3 and not IsNull([Permit Submitted]),
+    " ⚠",
+    ""
+);
+
+var Text designToPermitTransit = If(
+    $designToPermitDays >= 0,
+    If(
+        $designToPermitInFlight,
+        "<span style='font-size:8pt; color:" & $designToPermitColor & "; font-style:italic;'>← " & ToText($designToPermitDays) & "d →</span>",
+        "<span style='font-size:8pt; color:" & $designToPermitColor & ";'>← " & ToText($designToPermitDays) & "d →" & $designToPermitWarning & "</span>"
+    ),
+    ""
+);
+
+// Design cell with absolutely positioned connector that overflows to the right
+var Text designCellContent = "<div style='position:relative; display:inline-block;'>" & $designbubble & "<div style='position:absolute; left:100%; top:50%; transform:translateY(-50%); white-space:nowrap; padding:0 8px; z-index:10;'>" & $designToPermitTransit & "</div></div>";
+
+// ============ INSTALL TO INSPECTION SLA CONNECTOR ============
+var Number installToInspectionDays = If(
+    not IsNull([Install Completed Date]) and not IsNull([Passing Inspection Completed Date]),
+    WeekdaySub([Passing Inspection Completed Date], [Install Completed Date]),
+    If(
+        not IsNull([Install Completed Date]) and IsNull([Passing Inspection Completed Date]),
+        WeekdaySub(Today(), [Install Completed Date]),
+        -1
+    )
+);
+
+var Bool installToInspectionInFlight = not IsNull([Install Completed Date]) and IsNull([Passing Inspection Completed Date]);
+
+var Text installToInspectionColor = If(
+    $installToInspectionDays <= 3, "#28a745",
+    If($installToInspectionDays <= 5, "#FFA500", "#DC3545")
+);
+
+var Text installToInspectionWarning = If(
+    $installToInspectionDays >= 6 and not IsNull([Passing Inspection Completed Date]),
+    " ⚠",
+    ""
+);
+
+var Text installToInspectionTransit = If(
+    $installToInspectionDays >= 0,
+    If(
+        $installToInspectionInFlight,
+        "<span style='font-size:8pt; color:" & $installToInspectionColor & "; font-style:italic;'>← " & ToText($installToInspectionDays) & "d →</span>",
+        "<span style='font-size:8pt; color:" & $installToInspectionColor & ";'>← " & ToText($installToInspectionDays) & "d →" & $installToInspectionWarning & "</span>"
+    ),
+    ""
+);
+
+// Install cell with absolutely positioned connector that overflows to the right
+var Text installCellContent = "<div style='position:relative; display:inline-block;'>" & $installbubble & "<div style='position:absolute; left:100%; top:50%; transform:translateY(-50%); white-space:nowrap; padding:0 8px; z-index:10;'>" & $installToInspectionTransit & "</div></div>";
+
+// ============ INSPECTION TO PTO SLA CONNECTOR ============
+var Number inspectionToPtoDays = If(
+    not IsNull([Passing Inspection Completed Date]) and not IsNull([PTO Submitted Date]),
+    WeekdaySub([PTO Submitted Date], [Passing Inspection Completed Date]),
+    If(
+        not IsNull([Passing Inspection Completed Date]) and IsNull([PTO Submitted Date]),
+        WeekdaySub(Today(), [Passing Inspection Completed Date]),
+        -1
+    )
+);
+
+var Bool inspectionToPtoInFlight = not IsNull([Passing Inspection Completed Date]) and IsNull([PTO Submitted Date]);
+
+var Text inspectionToPtoColor = If(
+    $inspectionToPtoDays <= 1, "#28a745",
+    If($inspectionToPtoDays <= 5, "#FFA500", "#DC3545")
+);
+
+var Text inspectionToPtoWarning = If(
+    $inspectionToPtoDays > 5 and not IsNull([PTO Submitted Date]),
+    " ⚠",
+    ""
+);
+
+var Text inspectionToPtoTransit = If(
+    $inspectionToPtoDays >= 0,
+    If(
+        $inspectionToPtoInFlight,
+        "<span style='font-size:8pt; color:" & $inspectionToPtoColor & "; font-style:italic;'>← " & ToText($inspectionToPtoDays) & "d →</span>",
+        "<span style='font-size:8pt; color:" & $inspectionToPtoColor & ";'>← " & ToText($inspectionToPtoDays) & "d →" & $inspectionToPtoWarning & "</span>"
+    ),
+    ""
+);
+
+// Inspection cell with absolutely positioned connector that overflows to the right
+var Text inspectionCellContent = "<div style='position:relative; display:inline-block;'>" & $inspectionbubble & "<div style='position:absolute; left:100%; top:50%; transform:translateY(-50%); white-space:nowrap; padding:0 8px; z-index:10;'>" & $inspectionToPtoTransit & "</div></div>";
+
+// Durations
+var Text designMilestoneDuration = If(not IsNull([Survey Submitted Date]) and not IsNull([Minimum Initial CAD Design Approved]), "<span style='font-size:9pt; color:#666;'>(" & ToText(WeekdaySub([Minimum Initial CAD Design Approved], [Survey Submitted Date])) & " days)</span>", "");
+var Text permitMilestoneDuration = If(not IsNull([Permit Submitted]) and not IsNull([Permit Approved]), "<span style='font-size:9pt; color:#666;'>(" & ToText(WeekdaySub([Permit Approved], [Permit Submitted])) & " days)</span>", "");
+var Text nemMilestoneDuration = If(not IsNull([NEM Submitted Date]) and not IsNull([NEM Approved Date]), "<span style='font-size:9pt; color:#666;'>(" & ToText(WeekdaySub([NEM Approved Date], [NEM Submitted Date])) & " days)</span>", "");
+var Text installMilestoneDuration = If(not IsNull([Minimum Install Start Date]) and not IsNull([Install Completed Date]), "<span style='font-size:9pt; color:#666;'>(" & ToText(WeekdaySub([Install Completed Date], ToDate([Minimum Install Start Date]))) & " days)</span>", "");
+var Text ptoMilestoneDuration = If(not IsNull([PTO Submitted Date]) and not IsNull([PTO Approved Date]), "<span style='font-size:9pt; color:#666;'>(" & ToText(WeekdaySub([PTO Approved Date], [PTO Submitted Date])) & " days)</span>", "");
+var Text intakeMilestoneDuration = If(not IsNull([Intake First Pass: Processing Time]), "<span style='font-size:9pt; color:#666;'>(" & ToText([Intake First Pass: Processing Time]) & ")</span>", "");
+
+// Background
+var text background = If($status = "PENDING CANCEL", "#FFF3E0", If($isCancel, "#F0F0F0", "#FFFFFF"));
+var Text borderStyle = If($isCancel, "border:3px solid #DC3545;", If($status = "PENDING CANCEL", "border:3px solid #FFA500;", "box-shadow: 0 2px 8px rgba(0,0,0,0.1);"));
+var text allAlerts = $ppwAlert & $unresponsiveIndicator & $salesAidIndicator;
+
+ToText("<div style='background-color:" & $background & "; padding:12px; border-radius:8px; " & $borderStyle & " font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; max-width:100%; position:relative;'>" & 
+
+$cancelBanner & $pendingCancelBanner & $urgentBanner &
+
+"<div style='display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #eee;'>\n    <div style='display:flex; align-items:center;'>\n        <span style='font-size:14pt; font-weight:bold; color:#333;'>" & $starToggle & " " & $customerName & "</span>\n        <span style='margin-left:12px;'>" & $contactIcons & "</span>\n    </div>\n    <div style='display:flex; align-items:center; gap:12px;'>" & $statusBubble & "</div>\n</div>\n\n<div style='display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #eee;'>\n    <div style='display:flex; align-items:center;'>" & $addressWithIcon & "</div>\n    <div style='display:flex; align-items:center;'>" & $lenderDisplay & "</div>\n</div>\n\n<div style='display:flex; align-items:center; justify-content:space-between; padding:8px 0; background:#f9f9f9; border-radius:6px; margin-top:10px;'>\n    <div style='padding:8px; font-size:10pt;'><b style='color:#555;'>System Size:</b> <span style='color:#333;'>" & [System Size(kW)] & " kW</span>" & $systemInfoIcon & "</div>\n    <div style='padding:8px; font-size:10pt;'><b style='color:#555;'>Utility:</b> <span style='color:#333;'><a href='https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8xp/action/dr?rid=" & [xx.Related Organization - Utility] & "' target='_blank' style='color:#333; text-decoration:none;' title='Open Utility Record'>" & [Utility Name] & "</a></span></div>\n    <div style='padding:8px; font-size:10pt;'><b style='color:#555;'>AHJ:</b> <span style='color:#333;'><a href='https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8xp/action/dr?rid=" & [Related Organization - AHJ] & "' target='_blank' style='color:#333; text-decoration:none;' title='Open AHJ Record'>" & [AHJ Name] & "</a></span></div>\n    <div style='padding:8px; font-size:10pt;'><b style='color:#555;'>Coordinator:</b> <span style='color:#333;'>" & [Project Coordinator] & "</span></div>\n</div>" & 
+
+If($allAlerts <> "", "<div style='background:#FFF3CD; border-left:4px solid #FFC107; padding:10px; margin:10px 0; border-radius:4px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;'>" & $allAlerts & "</div>", "") & 
+
+"<table cellspacing='0' cellpadding='0' width='100%' style='background:white; border-radius:6px; border-collapse:collapse; table-layout:fixed; margin-top:10px; overflow:visible;'>\n    <tr style='background:#f5f5f5;'>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Sales</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Intake</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Survey</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Design</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Permit</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>NEM</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>HOA</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Install</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>Inspection</th>\n        <th style='text-align:center; font-size:10pt; padding:8px 4px; border-bottom:2px solid #ddd; font-weight:bold; width:10%;'>PTO</th>\n    </tr>\n    <tr>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & $salesDateBubble & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & $intakebubble & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible; position:relative;'>" & $surveyCellContent & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible; position:relative;'>" & $designCellContent & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & $permitbubble & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & $nembubble & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & [Project Status Bar - HOA - Icon] & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible; position:relative;'>" & $installCellContent & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible; position:relative;'>" & $inspectionCellContent & "</td>\n        <td style='text-align:center; padding:12px 4px; overflow:visible;'>" & $ptobubble & "</td>\n    </tr>\n    <tr style='border-top:1px solid #eee;'>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & ToText(ToDate([Sales Date])) & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Intake Date] & "<br/>" & $intakeMilestoneDuration & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Survey - Date] & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Design - Date] & "<br/>" & $designMilestoneDuration & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Permitting - Date] & "<br/>" & $permitMilestoneDuration & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - NEM - Date] & "<br/>" & $nemMilestoneDuration & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - HOA - Date] & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Install - Date] & "<br/>" & $installMilestoneDuration & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - Inspection - Date] & "</td>\n        <td style='text-align:center; white-space:nowrap; font-size:10pt; color:#888; padding:8px 4px;'>" & [Project Status Bar - PTO - Date] & "<br/>" & $ptoMilestoneDuration & "</td>\n    </tr>\n</table>\n\n\n<div style='margin-top:10px; padding-top:10px; border-top:1px solid #eee; display:flex; justify-content:space-between; align-items:center;'>\n    <div style='text-align:left;'>" & $activeTicketsLink & "</div>\n    <div style='text-align:right;'>\n        <span style='font-size:10pt; color:#666;'><b>Last Note:</b> " & $daysSinceNote & "</span>" & $addNoteButton & $holdTime & "\n    </div>\n</div>\n</div>")

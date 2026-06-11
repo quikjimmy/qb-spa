@@ -1,0 +1,34 @@
+//https://api.quickbase.com/v1/reports/1036?tableId=br9kwm8na
+
+{
+  "description": "",
+  "id": "1036",
+  "incomplete": false,
+  "name": "Funding Dashboard: M3 Pending Approval Follow Up Not Needed",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "({'2051'.CT.'Pending M3 Approval'}OR{'2051'.CT.'Pending M3 Deposit'})AND{'2569'.XEX.'1'}AND{'2593'.OAF.'2 days ago'}AND{'2568'.XEX.'1'}AND{'1942'.XEX.'1'}",
+    "formulaFields": [],
+    "tableId": "br9kwm8na"
+  },
+  "type": "chart",
+  "usedCount": 1522,
+  "usedLast": "2026-05-28T18:26:00Z"
+}

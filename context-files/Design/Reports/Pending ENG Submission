@@ -1,0 +1,43 @@
+//Pending ENG Submission = get
+https://api.quickbase.com/v1/reports/10?tableId=bsbhp6zhm
+
+{
+  "description": "My Description",
+  "id": "10",
+  "incomplete": false,
+  "name": "ENG Design Pending Submittal - Chart",
+  "properties": {
+    "chartType": "solid-gauge",
+    "dataSources": [
+      {
+        "label": "",
+        "type": "number-of-records"
+      }
+    ],
+    "range": {
+      "intervalsPercentage": [
+        30,
+        70
+      ],
+      "largestValue": 0,
+      "smallestValue": 0,
+      "type": "defined"
+    }
+  },
+  "query": {
+    "filter": "{'33'.XEX.''}AND{'-1'.EX.'1'}AND{'34'.EX.''}AND{'7'.XHAS.'3-On Hold'}AND{'7'.XHAS.'5-Rejected'}AND{'7'.XHAS.'7-Void'}AND{'7'.XHAS.'8-Cancelled'}",
+    "formulaFields": [
+      {
+        "decimalPrecision": -1,
+        "fieldType": "numeric",
+        "formula": "Case([Project - Status],\r\n\"Intake Hold\",0,\r\n\"Finance Hold\",0,\r\n\"HOA Hold\",0,\r\n\"NEM Hold\",0,\r\n\"ROR\",0,\r\n\"Cancelled\",0,\r\n\"Pending Cancel\",0,\r\n\"Complete\",0,\r\n\"Completed | Paid\",0,\r\n\"Completed\",0,\r\n\"Customer Hold\",0,\r\n\"Rejected\",0,\r\n\"Lost\",0,\r\n\"ARC\",0,\r\n\"Customer Hold\",0,\r\n1)",
+        "id": -1,
+        "label": "Exclude"
+      }
+    ],
+    "tableId": "bsbhp6zhm"
+  },
+  "type": "chart",
+  "usedCount": 414,
+  "usedLast": "2026-04-30T22:05:00Z"
+}
