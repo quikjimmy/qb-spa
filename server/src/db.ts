@@ -197,10 +197,11 @@ try {
   db.exec(`DELETE FROM feed_items WHERE qb_source = 'task_log' AND event_type = 'task_event' AND metadata IS NULL`)
 
   // The feed is for SIGNIFICANT account events (2026-06-11, James):
-  // notes are out entirely, and "submitted" milestone churn (survey/
-  // permit/PTO submitted — fids 164/207/537) is out to match the live
-  // mint path's "major + scheduled" curation. Idempotent.
-  db.exec(`DELETE FROM feed_items WHERE event_type = 'note_added'`)
+  // milestones + status changes (+ user posts) ONLY. Notes, tickets and
+  // Arrivy task events are out entirely; "submitted" milestone churn
+  // (fids 164/207/537) is out to match the live mint path's "major +
+  // scheduled" curation. Idempotent.
+  db.exec(`DELETE FROM feed_items WHERE event_type IN ('note_added', 'ticket_created', 'task_event')`)
   db.exec(`
     DELETE FROM feed_items
     WHERE event_type = 'milestone' AND (
