@@ -153,11 +153,6 @@ function hdrs() {
   return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' }
 }
 
-function todayIso(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
 function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -196,7 +191,7 @@ function setInitialRange() {
 }
 
 function apiParams(extra?: Record<string, string>): URLSearchParams {
-  const p = new URLSearchParams({ today: todayIso() })
+  const p = new URLSearchParams()
   if (dateFrom.value) p.set('date_from', dateFrom.value)
   if (dateTo.value) p.set('date_to', dateTo.value)
   if (retryStatus.value) p.set('retry_status', retryStatus.value)

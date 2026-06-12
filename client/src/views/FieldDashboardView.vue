@@ -5,7 +5,6 @@ import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import FieldPerformance from '@/components/FieldPerformance.vue'
 import DataFreshness from '@/components/DataFreshness.vue'
-import { userTz, localTodayIso, localDayBoundsToUtc } from '@/lib/dates'
 
 // Field Ops dashboard — Vue rebuild of context-files/Field/example view.
 // Pulls Arrivy task data from /api/field/tasks (which proxies QuickBase),
@@ -515,57 +514,13 @@ function projectUrl(t: QbRecord): string {
 // ─── Loading ──
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
-// Resolve a preset → UTC ISO bounds anchored to the *user's* local
-// calendar. The server otherwise uses Date.setHours(0,0,0,0) which
-// evaluates in server-local TZ (UTC on Railway), so after ~6pm
-// Mountain "today" silently rolls forward and the user loses the
-// current day from the filter.
-function presetBounds(p: typeof preset.value): { fromIso: string; toIso: string } {
-  const tz = userTz()
-  const today = localTodayIso()
-  const [y, m, d] = today.split('-').map(n => parseInt(n, 10))
-  const todayUtc = new Date(Date.UTC(y!, m! - 1, d!, 12))
-  function dateNDaysAgo(n: number): string {
-    const o = new Date(todayUtc); o.setUTCDate(todayUtc.getUTCDate() - n)
-    return o.toISOString().slice(0, 10)
-  }
-  switch (p) {
-    case 'today': {
-      const b = localDayBoundsToUtc(today, tz)
-      return { fromIso: b.from, toIso: b.to }
-    }
-    case 'yesterday': {
-      const y1 = dateNDaysAgo(1)
-      const b = localDayBoundsToUtc(y1, tz)
-      return { fromIso: b.from, toIso: b.to }
-    }
-    case 'week': {
-      // ISO week: Monday → today.
-      const dow = todayUtc.getUTCDay()
-      const monOffset = dow === 0 ? 6 : dow - 1
-      const monStart = dateNDaysAgo(monOffset)
-      return { fromIso: localDayBoundsToUtc(monStart, tz).from, toIso: localDayBoundsToUtc(today, tz).to }
-    }
-    case 'month': {
-      const monthStart = `${y}-${String(m).padStart(2, '0')}-01`
-      return { fromIso: localDayBoundsToUtc(monthStart, tz).from, toIso: localDayBoundsToUtc(today, tz).to }
-    }
-    case '30days': {
-      const start = dateNDaysAgo(30)
-      return { fromIso: localDayBoundsToUtc(start, tz).from, toIso: localDayBoundsToUtc(today, tz).to }
-    }
-  }
-  // Fallback (TS exhaustive check would catch this) — treat as today.
-  const b = localDayBoundsToUtc(today, tz)
-  return { fromIso: b.from, toIso: b.to }
-}
-
 async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    const { fromIso, toIso } = presetBounds(preset.value)
-    const params = new URLSearchParams({ preset: preset.value, fromIso, toIso, tz: userTz() })
+    // Presets resolve server-side on the office calendar (issue #29) so
+    // every viewer sees the same task set for "Today".
+    const params = new URLSearchParams({ preset: preset.value })
     const res = await fetch(`/api/field/tasks?${params}`, { headers: hdrs() })
     if (!res.ok) { errorMsg.value = `Field tasks failed (${res.status})`; return }
     const data = await res.json() as TasksResponse

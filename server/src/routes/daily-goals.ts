@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import cron from 'node-cron'
 import jwt from 'jsonwebtoken'
 import db from '../db'
+import { OFFICE_TZ, officeDateOf, addDaysIso } from '../lib/officeTime'
 import { requireRole } from '../middleware/auth'
 import { fetchPermitRows, permitFieldValue, permitIsSet, type QbRecord } from './permit-analytics'
 import { fetchDesignRows } from './design-analytics'
@@ -278,34 +279,9 @@ db.prepare(
 ).run()
 
 // ─── Date helpers ─────────────────────────────────────────
-// All dates are local ISO YYYY-MM-DD in the *office* timezone — not
-// the host's timezone. Railway runs in UTC, so on a Mountain-Time
-// office at 6pm the host has already rolled to "tomorrow". Anchoring
-// every date derivation here means /summary, target lock-in, and
-// live-source queries all agree on what "today" is.
-//
-// Override via SCOREBOARD_TZ env var (any IANA zone). Defaults to
-// America/Denver to match the existing agent-scheduler cron config.
-const OFFICE_TZ = process.env['SCOREBOARD_TZ'] || 'America/Denver'
-
-function isoDate(d: Date): string {
-  // en-CA renders as YYYY-MM-DD by spec — the cheapest way to format
-  // a date in a specific timezone without pulling in a tz library.
-  return d.toLocaleDateString('en-CA', { timeZone: OFFICE_TZ })
-}
-
-// Calendar-day addition on an ISO string. We compute via UTC midnight
-// math so DST transitions don't accidentally shift the result back or
-// forward by a day at 2am.
-function addDaysIso(iso: string, n: number): string {
-  const [y, m, d] = iso.split('-').map(Number)
-  const t = Date.UTC(y!, (m ?? 1) - 1, d ?? 1) + n * 86_400_000
-  const out = new Date(t)
-  const yy = out.getUTCFullYear()
-  const mm = String(out.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(out.getUTCDate()).padStart(2, '0')
-  return `${yy}-${mm}-${dd}`
-}
+// All dates are local ISO YYYY-MM-DD in the *office* timezone — see
+// lib/officeTime (honors SCOREBOARD_TZ for back-compat).
+const isoDate = officeDateOf
 
 // Office-TZ-aware version of getDay() — returns the long weekday name.
 function dayNameOf(d: Date): string {

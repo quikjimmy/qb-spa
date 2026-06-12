@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeTodayIso } from '../lib/officeTime'
 import { computeDeciles } from '../lib/deciles'
 
 const router = Router()
@@ -13,8 +14,7 @@ router.get('/', (req: Request, res: Response): void => {
   const lender = req.query['lender'] as string | undefined
   const epc = req.query['epc'] as string | undefined
   const nemUser = req.query['nem_user'] as string | undefined
-  const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  const today = officeTodayIso()
   const dateFrom = req.query['date_from'] as string | undefined
   const dateTo = req.query['date_to'] as string | undefined
   const useBizDays = req.query['biz_days'] === '1'

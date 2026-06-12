@@ -1,7 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { useAuthStore } from './auth'
-import { localTodayIso } from '@/lib/dates'
 
 export const useTicketBadgesStore = defineStore('ticketBadges', () => {
   const overdue = ref(0)
@@ -13,7 +12,7 @@ export const useTicketBadgesStore = defineStore('ticketBadges', () => {
     const auth = useAuthStore()
     if (!auth.token) return
     try {
-      const qp = new URLSearchParams({ today: localTodayIso() })
+      const qp = new URLSearchParams()
       if (auth.user?.name) qp.set('user', auth.user.name)
       const res = await globalThis.fetch(`/api/tickets/badges?${qp}`, {
         headers: { Authorization: `Bearer ${auth.token}` },

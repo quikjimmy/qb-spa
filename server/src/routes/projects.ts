@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeDateOf, officeDaysAgo, officeDaysFromNow, officeTodayIso } from '../lib/officeTime'
 import { isReferralAgent, activationWhere, canViewerSeeProject } from '../lib/referralAgent'
 import { mintFromProjectDiff } from '../lib/feedMint'
 
@@ -478,26 +479,11 @@ interface TierInputs {
   m2_net_received?: number | string | null
 }
 
-// Date math anchored to Kin HQ's local calendar (America/Denver). The server
-// runs UTC on Railway, so a naive `toISOString().slice(0, 10)` returns the
-// UTC date — which after 6pm Denver flips to "tomorrow" and shifts every
-// tier classification + KPI date filter. Intl.DateTimeFormat with
-// timeZone: 'America/Denver' gives the local YYYY-MM-DD regardless of
-// where the server runs. en-CA formats as YYYY-MM-DD natively.
-const DENVER_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/Denver',
-  year: 'numeric', month: '2-digit', day: '2-digit',
-})
-function denverDateOf(d: Date): string { return DENVER_DATE_FMT.format(d) }
-function daysAgo(n: number): string {
-  return denverDateOf(new Date(Date.now() - n * 86400_000))
-}
-function daysFromNow(n: number): string {
-  return denverDateOf(new Date(Date.now() + n * 86400_000))
-}
-function todayIso(): string {
-  return denverDateOf(new Date())
-}
+// Date math anchored to the office calendar — see lib/officeTime.
+const denverDateOf = officeDateOf
+const daysAgo = (n: number): string => officeDaysAgo(n)
+const daysFromNow = (n: number): string => officeDaysFromNow(n)
+const todayIso = (): string => officeTodayIso()
 function isSet(v: string | null | undefined): boolean {
   return !!(v && v.trim() !== '' && v !== '0')
 }
@@ -914,7 +900,7 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
 
   // Fetch upcoming Arrivy tasks and attach next task to each project
   try {
-    const today = new Date().toISOString().split('T')[0]!
+    const today = officeTodayIso()
     const taskRes = await fetch('https://api.quickbase.com/v1/records/query', {
       method: 'POST',
       headers: {

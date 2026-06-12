@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import cron from 'node-cron'
 import db from '../db'
 import { isAppActive } from '../lib/activity'
+import { officeTodayIso } from '../lib/officeTime'
 
 const router = Router()
 
@@ -233,8 +234,9 @@ router.get('/', (req: Request, res: Response): void => {
   if (coordinator) { baseWhere += ' AND coordinator = ?'; baseParams.push(coordinator) }
   if (Number.isFinite(projectId) && projectId > 0) { baseWhere += ' AND project_rid = ?'; baseParams.push(projectId) }
 
-  const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  // Day boundaries are classified on the office calendar (issue #29) — the
+  // server is authoritative so every viewer sees the same KPI counts.
+  const today = officeTodayIso()
 
   // KPI counts — based on current filters but NOT the due filter
   const allOpen = (db.prepare(`SELECT COUNT(*) as c FROM ticket_cache ${baseWhere}`).get(...baseParams) as { c: number }).c
@@ -295,8 +297,9 @@ router.get('/', (req: Request, res: Response): void => {
 // Lightweight badge counts for sidebar (optionally filtered by user name)
 router.get('/badges', (req: Request, res: Response): void => {
   const userName = req.query['user'] as string | undefined
-  const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  // Day boundaries are classified on the office calendar (issue #29) — the
+  // server is authoritative so every viewer sees the same KPI counts.
+  const today = officeTodayIso()
   let where = "WHERE status NOT IN ('Completed','Closed','Complete')"
   const params: unknown[] = []
   if (userName) { where += ' AND assigned_to = ?'; params.push(userName) }

@@ -14,6 +14,7 @@
 
 import type { StepState as BaseStepState } from './milestones'
 import { weekdaysBetween, weekdaysSinceToday } from './bizDays'
+import { isPast as datesIsPast } from './dates'
 import type { ArrivyStatusKey } from './arrivyStatus'
 
 // Extend the base step state with 'cancelled' so milestones can render the
@@ -136,18 +137,9 @@ function has(v: string | null | undefined): boolean {
   return !!(v && String(v).trim() !== '' && v !== '0' && v !== '-')
 }
 
-function localTodayIso(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
 function isPast(s: string | null | undefined): boolean {
   if (!has(s)) return false
-  const v = String(s)
-  if (v.length === 10 && !v.includes('T')) return v < localTodayIso()
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return false
-  return d.toISOString().slice(0, 10) < localTodayIso()
+  return datesIsPast(String(s))
 }
 
 // MM/DD format (zero-padded) — what shows beneath the dot in the strip

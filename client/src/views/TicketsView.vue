@@ -69,7 +69,7 @@ function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type'
 
 async function loadTickets() {
   loading.value = true
-  const params = new URLSearchParams({ limit: '100', pivot: pivotDimension.value, today: localTodayIso() })
+  const params = new URLSearchParams({ limit: '100', pivot: pivotDimension.value })
   if (search.value.trim()) params.set('q', search.value.trim())
   if (dueFilter.value) params.set('due', dueFilter.value)
   if (fPriority.value) params.set('priority', fPriority.value)

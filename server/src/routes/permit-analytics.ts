@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeTodayIso } from '../lib/officeTime'
 
 const router = Router()
 
@@ -745,8 +746,7 @@ function listRows(rows: PermitRow[], limit = 200) {
 
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const clientToday = String(req.query['today'] || '')
-    const today = /^\d{4}-\d{2}-\d{2}$/.test(clientToday) ? clientToday : new Date().toISOString().slice(0, 10)
+    const today = officeTodayIso()
     const from = String(req.query['date_from'] || '') || undefined
     const to = String(req.query['date_to'] || '') || undefined
     const bizFactor = req.query['biz_days'] === '1' ? 5 / 7 : 1
@@ -815,8 +815,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/drill', async (req: Request, res: Response): Promise<void> => {
   try {
-    const clientToday = String(req.query['today'] || '')
-    const today = /^\d{4}-\d{2}-\d{2}$/.test(clientToday) ? clientToday : new Date().toISOString().slice(0, 10)
+    const today = officeTodayIso()
     const bizFactor = req.query['biz_days'] === '1' ? 5 / 7 : 1
     const rawRows = await fetchPermitRows()
     const filtered = filterRows(normalizeRows(rawRows, today, bizFactor), req)

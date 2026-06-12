@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeTodayIso } from '../lib/officeTime'
 import { buildM1NotM2, type Filters } from './reports'
 
 const router = Router()
@@ -211,7 +212,7 @@ router.get('/overview', (req: Request, res: Response): void => {
       }
     }
     res.json({
-      asOf: new Date().toISOString().slice(0, 10),
+      asOf: officeTodayIso(),
       activeMilestone: milestone,
       milestones,
       byLender: lenderBreakdown(milestone, filters),
@@ -273,7 +274,7 @@ router.get('/m2-not-m3', (req: Request, res: Response): void => {
       LIMIT 5000
     `).all(...ACTIONABLE_M3, ...fc.params)
     res.json({
-      asOf: new Date().toISOString().slice(0, 10),
+      asOf: officeTodayIso(),
       buckets,
       rows,
       appliedFilters: filters,

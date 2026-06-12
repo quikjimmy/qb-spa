@@ -9,6 +9,7 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { arrivyConfigured, getArrivyTask, getArrivyTaskFiles, ArrivyApiError, type ArrivyFile, type ArrivyTask } from '../lib/arrivy'
+import { officeTodayIso, officeDayBoundsUtc, addDaysIso } from '../lib/officeTime'
 import { syncArrivyUsers } from '../lib/arrivyUsersSync'
 import { notifyPcOfSurveyCancel } from '../lib/notify'
 
@@ -81,22 +82,6 @@ export async function qbQuery(tableId: string, where: string, select: number[], 
   return json.data || []
 }
 
-// Date helpers
-function fmtDate(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-function fmtDateInTz(d: Date, tz: string): string {
-  try {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(d)
-  } catch {
-    return d.toISOString().slice(0, 10)
-  }
-}
 export function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
@@ -124,31 +109,27 @@ function overlayActiveSignals(base: QbRecord, active: QbRecord): QbRecord {
   }
   return out
 }
-function dateRange(preset: string): { from: Date; to: Date } {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const from = new Date(today)
-  const to = new Date(today)
-  to.setHours(23, 59, 59, 999)
+// Resolve a preset to office-calendar dates (issue #29). The server is
+// authoritative for day boundaries so every viewer sees the same task set
+// regardless of their browser timezone.
+function presetOfficeRange(preset: string): { fromDate: string; toDate: string } {
+  const today = officeTodayIso()
   switch (preset) {
     case 'yesterday': {
-      from.setDate(from.getDate() - 1)
-      const t = new Date(from); t.setHours(23, 59, 59, 999)
-      return { from, to: t }
+      const d = addDaysIso(today, -1)
+      return { fromDate: d, toDate: d }
     }
     case 'week': {
-      const day = from.getDay()
-      from.setDate(from.getDate() - (day === 0 ? 6 : day - 1))
-      return { from, to }
+      // ISO week: Monday → today. Noon-UTC anchor keeps getUTCDay stable.
+      const dow = new Date(`${today}T12:00:00Z`).getUTCDay()
+      return { fromDate: addDaysIso(today, -(dow === 0 ? 6 : dow - 1)), toDate: today }
     }
     case 'month':
-      from.setDate(1)
-      return { from, to }
+      return { fromDate: `${today.slice(0, 7)}-01`, toDate: today }
     case '30days':
-      from.setDate(from.getDate() - 30)
-      return { from, to }
+      return { fromDate: addDaysIso(today, -30), toDate: today }
     default:
-      return { from, to }
+      return { fromDate: today, toDate: today }
   }
 }
 
@@ -158,25 +139,11 @@ function dateRange(preset: string): { from: Date; to: Date } {
 // classifier port stays a 1:1 translation of the original.
 router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
   const preset = String(req.query['preset'] || 'today')
-  // Prefer client-supplied UTC bounds — the client knows its own tz and
-  // resolves presets against the user's local calendar. Server-side
-  // dateRange() falls back to UTC-anchored math which silently rolls
-  // "today" forward after 6pm Mountain on Railway.
-  const fromIsoQ = String(req.query['fromIso'] || '')
-  const toIsoQ = String(req.query['toIso'] || '')
-  const tz = String(req.query['tz'] || 'UTC')
-  let from: Date, to: Date, fromStr: string, toStr: string
-  if (fromIsoQ && toIsoQ && !isNaN(new Date(fromIsoQ).getTime()) && !isNaN(new Date(toIsoQ).getTime())) {
-    from = new Date(fromIsoQ)
-    to = new Date(toIsoQ)
-    fromStr = from.toISOString()
-    toStr = to.toISOString()
-  } else {
-    const r = dateRange(preset)
-    from = r.from; to = r.to
-    fromStr = `${fmtDate(from)}T00:00:00Z`
-    toStr = `${fmtDate(to)}T23:59:59Z`
-  }
+  // Presets resolve against the office calendar (issue #29), so the window
+  // can't silently roll forward at 6pm Mountain when the UTC date flips.
+  const { fromDate, toDate } = presetOfficeRange(preset)
+  const fromStr = officeDayBoundsUtc(fromDate).from.toISOString()
+  const toStr = officeDayBoundsUtc(toDate).to.toISOString()
   const where = `{'${F.scheduledDateTime}'.OAF.'${fromStr}'}AND{'${F.scheduledDateTime}'.OBF.'${toStr}'}`
   try {
     const scheduledRecords = await qbQuery(QB.arrivyTable, where, SELECT_FIELDS, {
@@ -192,8 +159,8 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
       const projectRid = String(rec[String(F.relatedProject)]?.value || '')
       if (projectRid) relevantProjectRids.add(projectRid)
     }
-    const fromLocal = fmtDateInTz(from, tz)
-    const toLocal = fmtDateInTz(to, tz)
+    const fromLocal = fromDate
+    const toLocal = toDate
     const installRows = db.prepare(
       `SELECT record_id FROM project_cache
        WHERE install_scheduled >= ? AND install_scheduled <= ?`
@@ -315,7 +282,7 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
       }
     }
     res.json({
-      preset, from: fmtDate(from), to: fmtDate(to),
+      preset, from: fromDate, to: toDate,
       records, fields: F,
       cancelledTaskRids: Object.keys(cancelledTaskInfo),
       cancelledTaskInfo,
@@ -804,11 +771,9 @@ router.get('/performance', (req: Request, res: Response): void => {
     : 'sales_office'
   const dayUnit = (String(req.query['day_unit'] || 'biz') === 'cal') ? 'cal' : 'biz'
 
-  // Default window: last 90 days
-  const today = new Date()
-  const todayStr = today.toISOString().slice(0, 10)
-  const defaultFrom = new Date(today); defaultFrom.setDate(defaultFrom.getDate() - 90)
-  const fromStr = String(req.query['from'] || defaultFrom.toISOString().slice(0, 10))
+  // Default window: last 90 days on the office calendar
+  const todayStr = officeTodayIso()
+  const fromStr = String(req.query['from'] || addDaysIso(todayStr, -90))
   const toStr = String(req.query['to'] || todayStr)
 
   const dateCol = dateBasis === 'scheduled' ? 'install_scheduled' : 'install_completed'

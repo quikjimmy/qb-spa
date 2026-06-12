@@ -57,24 +57,45 @@ export function fmtDateLong(d: string): string {
   } catch { return '—' }
 }
 
+// Canonical business timezone — must match the server's OFFICE_TZ
+// (server/src/lib/officeTime.ts). Day-boundary classification (overdue /
+// due today / ages) happens on this calendar so chips agree with server
+// KPI counts no matter where the viewer is (issue #29). Rendering of
+// individual timestamps stays viewer-local.
+export const OFFICE_TZ = 'America/Denver'
+
+// "Today" on the office calendar.
+export function officeTodayIso(): string {
+  return localDateInTz(new Date(), OFFICE_TZ)
+}
+
+// Office-calendar date key for a QB value: date-only strings pass through,
+// timestamps project into the office timezone.
+export function officeDateKey(d: string): string {
+  if (!d || d === '0' || d === '-') return ''
+  if (d.length === 10 && !d.includes('T')) return d
+  const parsed = new Date(d)
+  if (isNaN(parsed.getTime())) return ''
+  return localDateInTz(parsed, OFFICE_TZ)
+}
+
 export function isPast(d: string): boolean {
   if (!d || d === '0' || d === '-') return false
-  return localDateKey(d) < localTodayIso()
+  return officeDateKey(d) < officeTodayIso()
 }
 
 export function isToday(d: string): boolean {
   if (!d || d === '0' || d === '-') return false
-  return localDateKey(d) === localTodayIso()
+  return officeDateKey(d) === officeTodayIso()
 }
 
 export function daysBetween(d: string): number {
   if (!d || d === '0') return 0
-  const dateKey = localDateKey(d)
+  const dateKey = officeDateKey(d)
   if (!dateKey) return 0
   const date = parseLocal(dateKey)
-  const now = new Date()
-  now.setHours(12, 0, 0, 0)
-  return Math.floor((now.getTime() - date.getTime()) / 86400000)
+  const today = parseLocal(officeTodayIso())
+  return Math.floor((today.getTime() - date.getTime()) / 86400000)
 }
 
 export function timeAgo(d: string): string {

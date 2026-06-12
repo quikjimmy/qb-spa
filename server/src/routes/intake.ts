@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeTodayIso } from '../lib/officeTime'
 
 const router = Router()
 
@@ -1130,7 +1131,7 @@ function sampleList(rows: FailedRun[], limit = 250): FailedRun[] {
 // Live QB-backed analytics for the Sale Intake Failed Runs table.
 router.get('/failed-runs', async (req: Request, res: Response): Promise<void> => {
   try {
-    const today = String(req.query['today'] || new Date().toISOString().slice(0, 10))
+    const today = officeTodayIso()
     const from = String(req.query['date_from'] || '')
     const to = String(req.query['date_to'] || '')
     const force = req.query['fresh'] === '1'

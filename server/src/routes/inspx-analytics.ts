@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import db from '../db'
+import { officeTodayIso } from '../lib/officeTime'
 import { computeDeciles } from '../lib/deciles'
 
 const router = Router()
@@ -128,8 +129,7 @@ router.get('/', (req: Request, res: Response): void => {
   const lender = req.query['lender'] as string | undefined
   const ahj = req.query['ahj'] as string | undefined
   const utility = req.query['utility'] as string | undefined
-  const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : new Date().toISOString().split('T')[0]!
+  const today = officeTodayIso()
   const dateFrom = req.query['date_from'] as string | undefined
   const dateTo = req.query['date_to'] as string | undefined
   const useBizDays = req.query['biz_days'] === '1'
@@ -425,9 +425,7 @@ router.get('/drill', (req: Request, res: Response): void => {
     }
     const r = ranges[bucket]
     if (!r) { res.status(400).json({ error: 'unknown aging bucket' }); return }
-    const todayClient = req.query['today'] as string | undefined
-    const today = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
-      ? todayClient : new Date().toISOString().slice(0, 10)
+    const today = officeTodayIso()
     const where = [
       `install_completed IS NOT NULL AND install_completed != ''`,
       `(inspection_passed IS NULL OR inspection_passed = '')`,
@@ -518,9 +516,7 @@ router.get('/drill', (req: Request, res: Response): void => {
   ]
   const params: unknown[] = [from, to, ...dashParams]
 
-  const todayClient = req.query['today'] as string | undefined
-  const todayStr = (todayClient && /^\d{4}-\d{2}-\d{2}$/.test(todayClient))
-    ? todayClient : new Date().toISOString().slice(0, 10)
+  const todayStr = officeTodayIso()
 
   // Optional segment filter for the new scheduled-for chart's stacked
   // bar (passed / failed / past_pending / future_pending). Mirrors the

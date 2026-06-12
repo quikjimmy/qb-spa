@@ -8,6 +8,8 @@
 //   cancelled = rose   (#e11d48) with ✗  — Arrivy task cancelled
 //   not       = grey   (#e2e8f0)         — not started
 
+import { isPast as datesIsPast } from './dates'
+
 export type StepState = 'done' | 'active' | 'scheduled' | 'rejected' | 'overdue' | 'cancelled' | 'not'
 
 export interface MilestoneStep {
@@ -45,30 +47,13 @@ export interface ProjectMilestoneFields {
   arrivy_inspection_cancelled?: boolean
 }
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-function localTodayIso(): string {
-  const now = new Date()
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-}
-
-function localDateKey(dateStr: string): string {
-  if (!dateStr) return ''
-  if (dateStr.length === 10 && !dateStr.includes('T')) return dateStr
-  const d = new Date(dateStr)
-  if (isNaN(d.getTime())) return ''
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
 function has(v: string): boolean {
   return !!v && v !== '' && v !== '0' && v !== '-'
 }
 
 function isPast(dateStr: string): boolean {
   if (!dateStr || dateStr.length < 10) return false
-  return localDateKey(dateStr) < localTodayIso()
+  return datesIsPast(dateStr)
 }
 
 export function computeMilestones(p: ProjectMilestoneFields): MilestoneStep[] {

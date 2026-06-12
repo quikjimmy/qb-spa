@@ -46,11 +46,10 @@ const useBizDays = ref(false)
 const drillLabel = ref(''); const drillProjects = ref<any[]>([]); const drillLoading = ref(false)
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
-function lt() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}` }
 
 async function loadData() {
   loading.value = true
-  const p = new URLSearchParams({ today: lt() })
+  const p = new URLSearchParams()
   if (fState.value)   p.set('state', fState.value)
   if (fLender.value)  p.set('lender', fLender.value)
   if (fEpc.value)     p.set('epc', fEpc.value)
@@ -167,7 +166,7 @@ const selectedProject = ref<(Record<string, unknown> & { record_id: number; cust
 
 async function drill(label: string, pipeline: string) {
   drillLabel.value = label; drillLoading.value = true; drillProjects.value = []
-  const p = new URLSearchParams({ limit: '200', today: lt() })
+  const p = new URLSearchParams({ limit: '200' })
   if (fEpc.value)    p.set('epc', fEpc.value)
   if (fState.value)  p.set('state', fState.value)
   if (fLender.value) p.set('lender', fLender.value)
@@ -229,7 +228,7 @@ async function fetchSchedDrill(period: string, label: string, segment?: string) 
   drillLabel.value = label
   drillLoading.value = true
   drillProjects.value = []
-  const q = new URLSearchParams({ metric: 'scheduled_for', period, today: lt(), limit: '500' })
+  const q = new URLSearchParams({ metric: 'scheduled_for', period, limit: '500' })
   if (segment) q.set('segment', segment)
   if (fEpc.value)     q.set('epc', fEpc.value)
   if (fLender.value)  q.set('lender', fLender.value)
@@ -281,7 +280,7 @@ async function onAgingBarClick(p: { dataIndex: number; name: string }) {
   drillLabel.value = `Need INSPX · Age ${bucket}d`
   drillLoading.value = true
   drillProjects.value = []
-  const q = new URLSearchParams({ metric: 'aging', bucket, today: lt(), limit: '500' })
+  const q = new URLSearchParams({ metric: 'aging', bucket, limit: '500' })
   if (fEpc.value)     q.set('epc', fEpc.value)
   if (fLender.value)  q.set('lender', fLender.value)
   if (fState.value)   q.set('state', fState.value)
@@ -460,7 +459,7 @@ const decileLoading   = ref(false)
 async function loadDeciles() {
   decileLoading.value = true
   try {
-    const p = new URLSearchParams({ today: lt() })
+    const p = new URLSearchParams()
     p.set('metric', decileMetric.value)
     p.set('dimension', decileDimension.value)
     if (dateFrom.value) p.set('from', dateFrom.value)

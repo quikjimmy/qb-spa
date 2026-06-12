@@ -74,7 +74,6 @@ async function loadPtoCache(filter?: string) {
 }
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
-function lt() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}` }
 
 const presets = [
   { key: 'last_30', label: '30d' }, { key: 'last_60', label: '60d' }, { key: 'last_90', label: '90d' },
@@ -102,7 +101,7 @@ function applyPreset(key: string) {
 
 async function loadData() {
   loading.value = true
-  const p = new URLSearchParams({ today: lt() })
+  const p = new URLSearchParams()
   if (fState.value) p.set('state', fState.value); if (fLender.value) p.set('lender', fLender.value)
   if (fEpc.value) p.set('epc', fEpc.value); if (fNemUser.value) p.set('nem_user', fNemUser.value)
   if (dateFrom.value) p.set('date_from', dateFrom.value); if (dateTo.value) p.set('date_to', dateTo.value)
@@ -139,7 +138,7 @@ function resetAll() { fState.value = ''; fLender.value = ''; fEpc.value = 'Kin H
 
 async function drill(label: string, pipeline: string) {
   drillLabel.value = label; drillLoading.value = true; drillProjects.value = []
-  const p = new URLSearchParams({ limit: '200', today: lt() })
+  const p = new URLSearchParams({ limit: '200' })
   if (fEpc.value) p.set('epc', fEpc.value); if (fState.value) p.set('state', fState.value); if (fLender.value) p.set('lender', fLender.value); p.set('pipeline', pipeline)
   try { drillProjects.value = (await (await fetch(`/api/projects?${p}`, { headers: hdrs() })).json()).projects } finally { drillLoading.value = false }
   await nextTick(); document.getElementById('milestone-projects-table')?.scrollIntoView({ behavior: 'smooth' })
