@@ -202,6 +202,18 @@ try {
   // (fids 164/207/537) is out to match the live mint path's "major +
   // scheduled" curation. Idempotent.
   db.exec(`DELETE FROM feed_items WHERE event_type IN ('note_added', 'ticket_created', 'task_event')`)
+
+  // Strip the FID 5 "likely doer" hints minted before 2026-06-12: the
+  // milestone webhooks all fire from CHILD tables, where the project
+  // record's [Last Modified By] is unrelated to the milestone (the
+  // "Mindi approved the permit" misattribution). Going forward the hint
+  // is only stored when the change provably hit the project record.
+  db.exec(`
+    UPDATE feed_items
+    SET metadata = json_remove(metadata, '$.qb_last_modified_by', '$.qb_last_modified_by_email')
+    WHERE metadata IS NOT NULL AND json_valid(metadata)
+      AND json_extract(metadata, '$.qb_last_modified_by') IS NOT NULL
+  `)
   db.exec(`
     DELETE FROM feed_items
     WHERE event_type = 'milestone' AND (

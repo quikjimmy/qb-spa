@@ -170,13 +170,14 @@ function pickActor(body: unknown): PayloadActor | null {
 // bounded by arrivals. The latest arrival's actor wins for the rerun
 // pass; if two doers coalesce into one pass, FID 5 at least reflects
 // the most recent QB modifier.
-const inFlightRefreshes = new Map<number, { rerun: boolean; actor: PayloadActor | null }>()
+const inFlightRefreshes = new Map<number, { rerun: boolean; actor: PayloadActor | null; sourceTable: string | null }>()
 
-function enqueueProjectRefresh(projectRecordId: number, eventId: number, actor: PayloadActor | null): 'queued' | 'coalesced' {
+function enqueueProjectRefresh(projectRecordId: number, eventId: number, actor: PayloadActor | null, sourceTable: string | null): 'queued' | 'coalesced' {
   const inFlight = inFlightRefreshes.get(projectRecordId)
   if (inFlight) {
     inFlight.rerun = true
     inFlight.actor = actor ?? inFlight.actor
+    inFlight.sourceTable = sourceTable ?? inFlight.sourceTable
     db.prepare(`
       UPDATE qb_webhook_events
       SET status = 'coalesced', processed_at = datetime('now')
@@ -184,7 +185,7 @@ function enqueueProjectRefresh(projectRecordId: number, eventId: number, actor: 
     `).run(eventId)
     return 'coalesced'
   }
-  inFlightRefreshes.set(projectRecordId, { rerun: false, actor })
+  inFlightRefreshes.set(projectRecordId, { rerun: false, actor, sourceTable })
   setImmediate(() => { void runProjectRefresh(projectRecordId, eventId) })
   return 'queued'
 }
@@ -213,7 +214,7 @@ async function runProjectRefresh(projectRecordId: number, eventId: number): Prom
       // Best-effort: a mint failure must never mark the cache refresh
       // (the primary job) as failed.
       try {
-        const { minted } = mintFromProjectDiff(oldRow, fresh, passActor, { eventId })
+        const { minted } = mintFromProjectDiff(oldRow, fresh, passActor, { eventId, sourceTable: state?.sourceTable ?? null })
         if (minted > 0) console.log(`[qb-webhook] minted ${minted} feed post(s) for project ${projectRecordId}`)
       } catch (e) {
         console.error(`[qb-webhook] feed mint failed for project ${projectRecordId}:`, e instanceof Error ? e.message : e)
@@ -271,7 +272,7 @@ function acceptProjectRefresh(kind: string, req: Request, res: Response): void {
     return
   }
 
-  const queueStatus = enqueueProjectRefresh(projectRecordId, eventId, actor)
+  const queueStatus = enqueueProjectRefresh(projectRecordId, eventId, actor, sourceTable)
   res.json({ ok: true, eventId, projectRecordId, sourceRecordId, queued: queueStatus === 'queued', status: queueStatus })
 }
 

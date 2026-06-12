@@ -242,14 +242,17 @@ function insertAndPublish(
   eventId: number | undefined,
   source: 'webhook' | 'scheduler',
   actorWasAutomation: boolean,
+  trustLmb: boolean,
 ): number {
   const projectName = str(fresh, 'customer_name') || null
   // "Likely doer" hint from the live fetch (FID 5) — rendered as an
-  // explicitly-uncertain "likely" credit, never the headline actor
-  // (see resolveActor for why it can't be trusted as fact). Suppressed
-  // entirely when it names an automation identity.
-  let lmbHint = str(fresh, 'last_modified_by').trim() || null
-  let lmbEmailHint = str(fresh, 'last_modified_by_email').trim() || null
+  // explicitly-uncertain "likely" credit, never the headline actor.
+  // Included ONLY when trustLmb (webhook from the projects table itself,
+  // within the 1-2s fetch window); child-table webhooks and scheduler
+  // mints carry no hint at all. Also suppressed when it names an
+  // automation identity.
+  let lmbHint = trustLmb ? (str(fresh, 'last_modified_by').trim() || null) : null
+  let lmbEmailHint = trustLmb ? (str(fresh, 'last_modified_by_email').trim() || null) : null
   const lmbIsAutomation = isAutomationActor(lmbHint, lmbEmailHint)
   if (lmbIsAutomation) { lmbHint = null; lmbEmailHint = null }
   const batchStart = Date.now()
@@ -294,11 +297,19 @@ function insertAndPublish(
 // Entry point — called from qb-webhooks after fetchOneLive. Wrapped in
 // try/catch by the caller: minting is best-effort and must never fail
 // the cache refresh.
+// The projects table. The FID 5 "likely doer" hint is ONLY meaningful
+// when the triggering change was a direct edit to the project record —
+// milestone webhooks fire from CHILD tables (permits, NEM, ...) whose
+// rollups don't touch the parent's [Last Modified By], so for those the
+// project's FID 5 is just whoever last edited the project for any
+// unrelated reason (the "Mindi approved the permit" bug, 2026-06-12).
+const PROJECTS_TABLE_ID = 'br9kwm8na'
+
 export function mintFromProjectDiff(
   oldRow: CacheRow | undefined,
   fresh: CacheRow,
   payloadActor: PayloadActor | null,
-  opts: { eventId?: number; source?: 'webhook' | 'scheduler' } = {},
+  opts: { eventId?: number; source?: 'webhook' | 'scheduler'; sourceTable?: string | null } = {},
 ): { minted: number } {
   // First-ever cache of this project: no baseline — minting would post
   // the project's entire milestone history at once.
@@ -313,6 +324,7 @@ export function mintFromProjectDiff(
   const payloadIsAutomation = isAutomationActor(payloadActor?.name ?? null, payloadActor?.email ?? null)
   const actor = payloadIsAutomation ? null : resolveActor(payloadActor)
   const mentions = resolveMentions(fresh)
+  const trustLmb = (opts.source ?? 'webhook') === 'webhook' && opts.sourceTable === PROJECTS_TABLE_ID
 
   const posts: PendingPost[] = []
 
@@ -374,8 +386,8 @@ export function mintFromProjectDiff(
       dedupKey: `projects:${rid}:bulk:${cols.join('+')}`,
       meta: { tone: 'scheduled', updates: posts.map(p => p.title) },
     }
-    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation) }
+    return { minted: insertAndPublish([summary], rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation, trustLmb) }
   }
 
-  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation) }
+  return { minted: insertAndPublish(posts, rid, fresh, actor, mentions, opts.eventId, opts.source ?? 'webhook', payloadIsAutomation, trustLmb) }
 }
