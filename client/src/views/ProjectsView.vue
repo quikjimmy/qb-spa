@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, inject, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,6 +14,7 @@ import DataFreshness from '@/components/DataFreshness.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 interface Project {
   record_id: number
@@ -72,8 +73,59 @@ const newIds = ref<Set<number>>(new Set())
 let newIdsClearTimeout: ReturnType<typeof setTimeout> | null = null
 function isNewRow(rid: number): boolean { return newIds.value.has(rid) }
 
-const f = ref({ status: '', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' })
+const f = ref({
+  statuses: [] as string[],
+  statusMode: 'include' as 'include' | 'exclude',
+  coordinator: '', state: '', closer: '', office: '', lender: '',
+  epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '',
+})
 const activeKpi = ref('')
+
+// ─── URL persistence ─────────────────────────────────────
+// Hydrate filter state from the query string once on setup (before the
+// first load), then mirror state back with router.replace. Write-only:
+// we never watch route.query, so there's no feedback loop. Defaults
+// (epc=Kin Home, dateField=sales_date) are omitted from the URL.
+function hydrateFromUrl() {
+  const qy = route.query
+  const s = (k: string): string => typeof qy[k] === 'string' ? qy[k] as string : ''
+  const csv = (k: string): string[] => s(k).split(',').map(x => x.trim()).filter(Boolean)
+  f.value.statuses = csv('status')
+  f.value.statusMode = s('mode') === 'exclude' ? 'exclude' : 'include'
+  f.value.coordinator = s('pc')
+  f.value.state = s('st')
+  f.value.closer = s('closer')
+  f.value.office = s('office')
+  f.value.lender = s('lender')
+  if (s('epc')) f.value.epc = s('epc') === '__all__' ? '' : s('epc')
+  if (s('dfield')) f.value.dateField = s('dfield')
+  f.value.dateFrom = s('dfrom')
+  f.value.dateTo = s('dto')
+  f.value.sort = s('sort')
+  search.value = s('q')
+  activeKpi.value = s('kpi')
+  showFavorites.value = s('fav') === '1'
+}
+
+function syncUrl() {
+  const qy: Record<string, string> = {}
+  if (f.value.statuses.length) qy['status'] = f.value.statuses.join(',')
+  if (f.value.statuses.length && f.value.statusMode === 'exclude') qy['mode'] = 'exclude'
+  if (f.value.coordinator) qy['pc'] = f.value.coordinator
+  if (f.value.state) qy['st'] = f.value.state
+  if (f.value.closer) qy['closer'] = f.value.closer
+  if (f.value.office) qy['office'] = f.value.office
+  if (f.value.lender) qy['lender'] = f.value.lender
+  if (f.value.epc !== 'Kin Home') qy['epc'] = f.value.epc || '__all__'
+  if (f.value.dateField !== 'sales_date') qy['dfield'] = f.value.dateField
+  if (f.value.dateFrom) qy['dfrom'] = f.value.dateFrom
+  if (f.value.dateTo) qy['dto'] = f.value.dateTo
+  if (f.value.sort) qy['sort'] = f.value.sort
+  if (search.value.trim()) qy['q'] = search.value.trim()
+  if (activeKpi.value) qy['kpi'] = activeKpi.value
+  if (showFavorites.value) qy['fav'] = '1'
+  router.replace({ query: qy })
+}
 const filters = ref<Filters>({ statuses: [], offices: [], coordinators: [], states: [], closers: [], lenders: [], epcs: [] })
 const cacheInfo = ref<{ total: number; last_refresh: string } | null>(null)
 
@@ -93,8 +145,6 @@ const kpi = ref<{
   futureInstall: { count: 0, kw: 0 }, wip: { count: 0, kw: 0 },
   needInspx: { count: 0, kw: 0 }, needPto: { count: 0, kw: 0 },
 })
-let searchTimeout: ReturnType<typeof setTimeout> | null = null
-
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
 const dateFieldOptions = [
@@ -110,14 +160,15 @@ const datePresets = [
 ]
 
 function setDatePreset(preset: string) {
-  // Use the user's local calendar — toISOString() returns UTC date, which
-  // after ~6pm Denver flips "today" to the wrong day.
-  const today = new Date()
-  const y = today.getFullYear(), m = today.getMonth(), d = today.getDate()
+  // Anchor presets to the office calendar (issue #29) so "Today" matches
+  // the server's day-boundary classification regardless of viewer tz.
+  const [ty, tm, td] = officeTodayIso().split('-').map(n => parseInt(n, 10))
+  const anchor = new Date(ty!, tm! - 1, td!)
+  const y = anchor.getFullYear(), m = anchor.getMonth(), d = anchor.getDate()
   const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
-  const sow = new Date(y, m, d - today.getDay())
+  const sow = new Date(y, m, d - anchor.getDay())
   switch (preset) {
-    case 'today': f.value.dateFrom = f.value.dateTo = fmt(today); break
+    case 'today': f.value.dateFrom = f.value.dateTo = fmt(anchor); break
     case 'yesterday': f.value.dateFrom = f.value.dateTo = fmt(new Date(y, m, d - 1)); break
     case 'tomorrow': f.value.dateFrom = f.value.dateTo = fmt(new Date(y, m, d + 1)); break
     case 'this_week': f.value.dateFrom = fmt(sow); f.value.dateTo = fmt(new Date(sow.getFullYear(), sow.getMonth(), sow.getDate() + 6)); break
@@ -125,7 +176,6 @@ function setDatePreset(preset: string) {
     case 'this_month': f.value.dateFrom = fmt(new Date(y, m, 1)); f.value.dateTo = fmt(new Date(y, m + 1, 0)); break
     case 'last_month': f.value.dateFrom = fmt(new Date(y, m - 1, 1)); f.value.dateTo = fmt(new Date(y, m, 0)); break
   }
-  loadProjects()
 }
 
 // Project-rid → kind cancellation map from /api/field/cancellations.
@@ -149,12 +199,13 @@ async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
   // changes would otherwise paint everything as "new".
   if (!opts?.silent) loading.value = true
   const previousIds = opts?.markNew ? new Set(projects.value.map(p => p.record_id)) : null
-  const now = new Date()
-  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  const params = new URLSearchParams({ limit: '100', today: localToday })
+  const params = new URLSearchParams({ limit: '100' })
   if (search.value.trim()) params.set('q', search.value.trim())
   if (showFavorites.value) params.set('favorites', '1')
-  if (f.value.status) params.set('status', f.value.status)
+  if (f.value.statuses.length) {
+    params.set('status', f.value.statuses.join(','))
+    if (f.value.statusMode === 'exclude') params.set('status_mode', 'exclude')
+  }
   if (f.value.coordinator) params.set('coordinator', f.value.coordinator)
   if (f.value.state) params.set('state', f.value.state)
   if (f.value.closer) params.set('closer', f.value.closer)
@@ -256,12 +307,16 @@ async function runHoldClassifier() {
     await loadHoldClassifications()
   } finally { classifierRunning.value = false }
 }
-function onSearch() { if (searchTimeout) clearTimeout(searchTimeout); searchTimeout = setTimeout(() => loadProjects(), 200) }
-function clearFilters() { search.value = ''; showFavorites.value = false; activeKpi.value = ''; f.value = { status: '', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' }; loadProjects() }
+function clearFilters() { search.value = ''; showFavorites.value = false; activeKpi.value = ''; f.value = { statuses: [], statusMode: 'include', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' } }
 
 function setKpiFilter(key: string) {
   activeKpi.value = activeKpi.value === key ? '' : key
-  loadProjects()
+}
+
+function toggleStatus(s: string) {
+  const i = f.value.statuses.indexOf(s)
+  if (i >= 0) f.value.statuses.splice(i, 1)
+  else f.value.statuses.push(s)
 }
 
 function projectHref(rid: number): string {
@@ -278,18 +333,130 @@ function onCardClick(e: MouseEvent, rid: number) {
 function openProjectInQb(rid: number) {
   window.open(`https://kin.quickbase.com/nav/app/br9kwm8bk/table/br9kwm8na/action/dr?rid=${rid}&rl=bzuz`, '_blank')
 }
-function setFilter(key: keyof typeof f.value, val: string) { f.value[key] = val === '__all__' ? '' : val; loadProjects() }
+type StringFilterKey = 'coordinator' | 'state' | 'closer' | 'office' | 'lender' | 'epc' | 'sort' | 'dateField'
+function setFilter(key: StringFilterKey, val: string) { f.value[key] = val === '__all__' ? '' : val }
 
-const drawerFilterCount = computed(() => { let c = 0; if (f.value.status) c++; if (f.value.coordinator) c++; if (f.value.state) c++; if (f.value.epc && f.value.epc !== 'Kin Home') c++; if (f.value.closer) c++; if (f.value.office) c++; if (f.value.lender) c++; if (f.value.dateFrom || f.value.dateTo) c++; return c })
-const hasFilters = computed(() => search.value || showFavorites.value || activeKpi.value || f.value.status || f.value.coordinator || f.value.state || drawerFilterCount.value > 0)
+const drawerFilterCount = computed(() => { let c = 0; if (f.value.statuses.length) c++; if (f.value.coordinator) c++; if (f.value.state) c++; if (f.value.epc && f.value.epc !== 'Kin Home') c++; if (f.value.closer) c++; if (f.value.office) c++; if (f.value.lender) c++; if (f.value.dateFrom || f.value.dateTo) c++; return c })
+const hasFilters = computed(() => search.value || showFavorites.value || activeKpi.value || drawerFilterCount.value > 0)
 
-const statusOrder = ['Active', 'Hold', 'On Hold', 'Pending Cancel', 'Cancelled', 'Completed', 'Complete', 'Completed | Paid', 'Rejected', 'Lost', 'ROR', 'Surrendered']
-const sortedStatuses = computed(() => {
-  const all = filters.value.statuses.map((s: { value: string }) => s.value)
-  const ordered = statusOrder.filter(s => all.includes(s))
-  const rest = all.filter((s: string) => !statusOrder.includes(s)).sort()
-  return [...ordered, ...rest]
+// ─── Active-filter chips ─────────────────────────────────
+// One chip per filter value, each individually removable. Spec:
+// dimension chip strip (docs/ui-component-specs.md).
+interface FilterChip { key: string; label: string; exclude?: boolean; remove: () => void }
+const activeChips = computed<FilterChip[]>(() => {
+  const chips: FilterChip[] = []
+  const excl = f.value.statusMode === 'exclude'
+  // Fully-selected combo pills (Cancelled, Complete) collapse into one
+  // chip each, mirroring the drawer.
+  const covered = new Set<string>()
+  for (const p of comboPills.value) {
+    if (!pillSelected(p)) continue
+    for (const v of p.values) covered.add(v)
+    chips.push({
+      key: `status:combo:${p.label}`,
+      label: excl ? `Not: ${p.label}` : p.label,
+      exclude: excl,
+      remove: () => togglePill(p),
+    })
+  }
+  for (const s of f.value.statuses) {
+    if (covered.has(s)) continue
+    chips.push({
+      key: `status:${s}`,
+      label: excl ? `Not: ${s}` : s,
+      exclude: excl,
+      remove: () => toggleStatus(s),
+    })
+  }
+  const dims: Array<{ key: StringFilterKey; label: string }> = [
+    { key: 'coordinator', label: 'PC' }, { key: 'state', label: 'State' },
+    { key: 'closer', label: 'Closer' }, { key: 'office', label: 'Office' },
+    { key: 'lender', label: 'Lender' },
+  ]
+  for (const d of dims) {
+    if (f.value[d.key]) chips.push({ key: d.key, label: `${d.label}: ${f.value[d.key]}`, remove: () => { f.value[d.key] = '' } })
+  }
+  if (f.value.epc !== 'Kin Home') {
+    chips.push({ key: 'epc', label: f.value.epc ? `EPC: ${f.value.epc}` : 'EPC: All', remove: () => { f.value.epc = 'Kin Home' } })
+  }
+  if (f.value.dateFrom || f.value.dateTo) {
+    const fieldLabel = dateFieldOptions.find(o => o.value === f.value.dateField)?.label || 'Date'
+    const range = [f.value.dateFrom || '…', f.value.dateTo || '…'].join(' – ')
+    chips.push({ key: 'dates', label: `${fieldLabel}: ${range}`, remove: () => { f.value.dateFrom = ''; f.value.dateTo = '' } })
+  }
+  if (activeKpi.value) {
+    const kpiLabels: Record<string, string> = { preInstall: 'Pre-Install', hold: 'Hold', futureInstall: 'Future Install', wip: 'WIP', needInspx: 'Need INSPX', needPto: 'Need PTO' }
+    chips.push({ key: 'kpi', label: kpiLabels[activeKpi.value] || activeKpi.value, remove: () => { activeKpi.value = '' } })
+  }
+  if (showFavorites.value) chips.push({ key: 'fav', label: 'Favorites', remove: () => { showFavorites.value = false } })
+  return chips
 })
+
+// Status pills render in semantic groups (pipe-separated in the UI) so
+// common selections don't require scanning a flat list:
+//   Active | All Holds + each hold | Pending Cancel · Cancelled(combo:
+//   Cancelled/Lost/ROR) | Pending KCA · Rejected | Complete(combo of all
+//   complete derivatives) | everything else.
+// A pill with multiple `values` is a combo: one tap selects/deselects the
+// whole set — users don't care about QB's variant distinctions when
+// filtering. `accelerator` pills (All Holds) sit alongside their
+// individual pills instead of replacing them.
+interface StatusPill { label: string; values: string[]; accelerator?: boolean }
+interface StatusGroup { kind: string; pills: StatusPill[] }
+const statusGroups = computed<StatusGroup[]>(() => {
+  const all = filters.value.statuses.map((s: { value: string }) => s.value)
+  const used = new Set<string>()
+  const pick = (names: string[]): string[] => {
+    const out: string[] = []
+    for (const n of names) if (all.includes(n) && !used.has(n)) { used.add(n); out.push(n) }
+    return out
+  }
+  const pickBy = (pred: (s: string) => boolean): string[] => {
+    const out: string[] = []
+    for (const s of all) if (!used.has(s) && pred(s)) { used.add(s); out.push(s) }
+    return out.sort()
+  }
+  const single = (s: string): StatusPill => ({ label: s, values: [s] })
+
+  const holdItems = [...pick(['On Hold', 'Finance Hold', 'HOA Hold']), ...pickBy(s => /hold/i.test(s))]
+  const holdPills = holdItems.length > 1
+    ? [{ label: 'All Holds', values: holdItems, accelerator: true }, ...holdItems.map(single)]
+    : holdItems.map(single)
+
+  const pendingCancel = pick(['Pending Cancel'])
+  const cancelledItems = [...pick(['Cancelled', 'Lost', 'ROR']), ...pickBy(s => /cancel/i.test(s))]
+  const cancelPills = [
+    ...pendingCancel.map(single),
+    ...(cancelledItems.length ? [{ label: 'Cancelled', values: cancelledItems }] : []),
+  ]
+
+  const completeItems = [...pick(['Complete', 'Completed', 'Completed | Paid']), ...pickBy(s => /complete/i.test(s))]
+
+  const groups: StatusGroup[] = [
+    { kind: 'active', pills: pick(['Active']).map(single) },
+    { kind: 'holds', pills: holdPills },
+    { kind: 'cancels', pills: cancelPills },
+    { kind: 'kca', pills: [...pick(['Pending KCA', 'Rejected']), ...pickBy(s => /kca|reject/i.test(s))].map(single) },
+    { kind: 'completes', pills: completeItems.length ? [{ label: 'Complete', values: completeItems }] : [] },
+    { kind: 'rest', pills: pickBy(() => true).map(single) },
+  ]
+  return groups.filter(g => g.pills.length > 0)
+})
+
+function pillSelected(p: StatusPill): boolean {
+  return p.values.length > 0 && p.values.every(v => f.value.statuses.includes(v))
+}
+function togglePill(p: StatusPill) {
+  if (pillSelected(p)) {
+    f.value.statuses = f.value.statuses.filter(s => !p.values.includes(s))
+  } else {
+    const set = new Set(f.value.statuses)
+    for (const v of p.values) set.add(v)
+    f.value.statuses = [...set]
+  }
+}
+// Combo pills (multi-value, non-accelerator) collapse to a single chip.
+const comboPills = computed(() => statusGroups.value.flatMap(g => g.pills).filter(p => p.values.length > 1 && !p.accelerator))
 
 async function toggleFavorite(e: Event, projectId: number) {
   e.stopPropagation()
@@ -313,7 +480,7 @@ function getMilestones(p: Project): MilestoneStep[] {
 
 function has(val: string): boolean { return !!val && val !== '' && val !== '0' && val !== '-' }
 
-import { fmtDate, fmtDateFull, isPast, localDayBoundsToUtc } from '@/lib/dates'
+import { fmtDate, fmtDateFull, isPast, localDayBoundsToUtc, officeTodayIso } from '@/lib/dates'
 
 // Next upcoming task: prefer Arrivy task, fall back to project milestone dates
 function nextTask(p: Project): string {
@@ -346,6 +513,21 @@ function shortTaskType(t: string): string {
   return t.length > 12 ? t.slice(0, 12) : t
 }
 
+// ─── Filter → reload pipeline ────────────────────────────
+// Hydrate from the URL during setup, BEFORE the watcher exists, so
+// restoring a shared link doesn't trigger a second fetch on mount.
+hydrateFromUrl()
+
+// Single debounced trigger for every filter/search/KPI change: sync the
+// URL, then refetch. Rapid pill clicks coalesce into one request. The
+// silent freshness poll and explicit refresh bypass this (they call
+// loadProjects directly and never rewrite the URL).
+let reloadTimeout: ReturnType<typeof setTimeout> | null = null
+watch([f, activeKpi, showFavorites, search], () => {
+  if (reloadTimeout) clearTimeout(reloadTimeout)
+  reloadTimeout = setTimeout(() => { syncUrl(); loadProjects() }, 250)
+}, { deep: true })
+
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
 onMounted(() => {
   loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() })
@@ -360,6 +542,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (freshnessTimer) clearInterval(freshnessTimer)
   if (newIdsClearTimeout) clearTimeout(newIdsClearTimeout)
+  if (reloadTimeout) clearTimeout(reloadTimeout)
 })
 </script>
 
@@ -406,12 +589,12 @@ onBeforeUnmount(() => {
     <div class="flex gap-2 items-center">
       <div class="relative flex-1">
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <Input v-model="search" @input="onSearch" placeholder="Search name, address, email, phone..." class="pl-8 pr-8 h-8 text-xs" />
-        <button v-if="search" @click="search = ''; loadProjects()" class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" title="Clear search">
+        <Input v-model="search" placeholder="Search name, address, email, phone..." class="pl-8 pr-8 h-8 text-xs" />
+        <button v-if="search" @click="search = ''" class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" title="Clear search">
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
-      <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites; loadProjects()" title="Favorites">
+      <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites" title="Favorites">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="showFavorites ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
       </button>
       <button v-if="!auth.isReferralAgent" class="relative inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer" title="Filters">
@@ -423,29 +606,82 @@ onBeforeUnmount(() => {
 
     <!-- Filter drawer -->
     <div v-if="showDrawer" class="rounded-xl border bg-card overflow-hidden">
+      <!-- Status: multi-select pills + include/exclude mode -->
+      <div class="p-4 pb-0 space-y-1.5">
+        <div class="flex items-center gap-2">
+          <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Status</Label>
+          <div class="inline-flex rounded-md border overflow-hidden">
+            <button
+              class="px-2 py-0.5 text-[10px] font-semibold transition-colors"
+              :class="f.statusMode === 'include' ? 'bg-foreground text-background' : 'bg-card text-muted-foreground hover:bg-muted'"
+              @click="f.statusMode = 'include'"
+            >Include</button>
+            <button
+              class="px-2 py-0.5 text-[10px] font-semibold transition-colors"
+              :class="f.statusMode === 'exclude' ? 'bg-foreground text-background' : 'bg-card text-muted-foreground hover:bg-muted'"
+              @click="f.statusMode = 'exclude'"
+            >Exclude</button>
+          </div>
+          <span v-if="f.statuses.length" class="text-[10px] text-muted-foreground">
+            {{ f.statusMode === 'exclude' ? 'hiding' : 'showing' }} {{ f.statuses.length }}
+          </span>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <template v-for="(group, gi) in statusGroups" :key="group.kind">
+            <span v-if="gi > 0" class="text-muted-foreground/30 text-sm font-light select-none px-0.5">|</span>
+            <button
+              v-for="p in group.pills" :key="p.label"
+              class="px-2.5 py-1 rounded-full border text-[11px] transition-colors"
+              :class="[
+                p.accelerator ? 'font-semibold' : 'font-medium',
+                pillSelected(p)
+                  ? (f.statusMode === 'exclude'
+                      ? 'border-destructive/40 bg-destructive/10 text-destructive line-through'
+                      : 'bg-foreground text-background border-foreground')
+                  : (p.accelerator ? 'border-dashed bg-card hover:bg-muted text-muted-foreground' : 'bg-card hover:bg-muted'),
+              ]"
+              @click="togglePill(p)"
+            >{{ p.label }}</button>
+          </template>
+        </div>
+      </div>
       <div class="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Status</Label><Select :model-value="f.status || '__all__'" @update:model-value="(v: string) => setFilter('status', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All statuses" /></SelectTrigger><SelectContent><SelectItem value="__all__">All statuses</SelectItem><SelectItem v-for="s in sortedStatuses" :key="s" :value="s">{{ s }}</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">PC</Label><Select :model-value="f.coordinator || '__all__'" @update:model-value="(v: string) => setFilter('coordinator', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All PCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All PCs</SelectItem><SelectItem v-for="c in filters.coordinators" :key="c.value" :value="c.value">{{ c.value }}</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label><Select :model-value="f.state || '__all__'" @update:model-value="(v: string) => setFilter('state', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All states" /></SelectTrigger><SelectContent><SelectItem value="__all__">All states</SelectItem><SelectItem v-for="s in filters.states" :key="s.value" :value="s.value">{{ s.value }}</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">EPC</Label><Select :model-value="f.epc || '__all__'" @update:model-value="(v: string) => setFilter('epc', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All EPCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All EPCs</SelectItem><SelectItem v-for="e in filters.epcs" :key="e.value" :value="e.value">{{ e.value }}</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Closer</Label><Select :model-value="f.closer || '__all__'" @update:model-value="(v: string) => setFilter('closer', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All closers</SelectItem><SelectItem v-for="c in filters.closers" :key="c.value" :value="c.value">{{ c.value }} ({{ c.count }})</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Sales Office</Label><Select :model-value="f.office || '__all__'" @update:model-value="(v: string) => setFilter('office', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All offices</SelectItem><SelectItem v-for="o in filters.offices" :key="o.value" :value="o.value">{{ o.value }} ({{ o.count }})</SelectItem></SelectContent></Select></div>
         <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Lender</Label><Select :model-value="f.lender || '__all__'" @update:model-value="(v: string) => setFilter('lender', v)"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all__">All lenders</SelectItem><SelectItem v-for="l in filters.lenders" :key="l.value" :value="l.value">{{ l.value }} ({{ l.count }})</SelectItem></SelectContent></Select></div>
-        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Sort</Label><Select :model-value="f.sort || '__default__'" @update:model-value="(v: string) => { f.sort = v === '__default__' ? '' : v; loadProjects() }"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__default__">Default</SelectItem><SelectItem value="sales_desc">Sale Date (newest)</SelectItem><SelectItem value="sales_asc">Sale Date (oldest)</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1.5"><Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Sort</Label><Select :model-value="f.sort || '__default__'" @update:model-value="(v: string) => { f.sort = v === '__default__' ? '' : v }"><SelectTrigger class="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__default__">Default</SelectItem><SelectItem value="sales_desc">Sale Date (newest)</SelectItem><SelectItem value="sales_asc">Sale Date (oldest)</SelectItem></SelectContent></Select></div>
       </div>
       <div class="px-4 pb-4 pt-0 border-t">
         <div class="flex items-center gap-2 pt-3 flex-wrap">
           <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold shrink-0">Date</Label>
-          <Select :model-value="f.dateField" @update:model-value="(v: string) => { f.dateField = v; if (f.dateFrom || f.dateTo) loadProjects() }"><SelectTrigger class="h-7 w-auto min-w-[110px] text-[11px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem v-for="d in dateFieldOptions" :key="d.value" :value="d.value">{{ d.label }}</SelectItem></SelectContent></Select>
-          <Input v-model="f.dateFrom" type="date" class="h-7 w-[125px] text-[11px]" @change="loadProjects()" />
+          <Select :model-value="f.dateField" @update:model-value="(v: string) => { f.dateField = v }"><SelectTrigger class="h-7 w-auto min-w-[110px] text-[11px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem v-for="d in dateFieldOptions" :key="d.value" :value="d.value">{{ d.label }}</SelectItem></SelectContent></Select>
+          <Input v-model="f.dateFrom" type="date" class="h-7 w-[125px] text-[11px]" />
           <span class="text-[11px] text-muted-foreground">—</span>
-          <Input v-model="f.dateTo" type="date" class="h-7 w-[125px] text-[11px]" @change="loadProjects()" />
-          <button v-if="f.dateFrom || f.dateTo" class="text-[11px] text-muted-foreground hover:text-foreground" @click="f.dateFrom = ''; f.dateTo = ''; loadProjects()">Clear</button>
+          <Input v-model="f.dateTo" type="date" class="h-7 w-[125px] text-[11px]" />
+          <button v-if="f.dateFrom || f.dateTo" class="text-[11px] text-muted-foreground hover:text-foreground" @click="f.dateFrom = ''; f.dateTo = ''">Clear</button>
         </div>
         <div class="flex gap-1.5 flex-wrap mt-2">
           <button v-for="p in datePresets" :key="p.key" class="px-2 py-0.5 rounded border text-[10px] font-medium hover:bg-muted transition-colors" @click="setDatePreset(p.key)">{{ p.label }}</button>
         </div>
       </div>
+    </div>
+
+    <!-- Active filter chips: one per value, individually clearable -->
+    <div v-if="activeChips.length" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
+      <span
+        v-for="chip in activeChips" :key="chip.key"
+        class="flex-none inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-[11px] font-medium"
+        :class="chip.exclude ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'bg-foreground text-background border-foreground'"
+      >
+        {{ chip.label }}
+        <button class="rounded-full p-0.5 opacity-70 hover:opacity-100 transition-opacity" :title="`Remove ${chip.label}`" @click="chip.remove()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </span>
+      <button class="flex-none text-[11px] text-muted-foreground hover:text-foreground" @click="clearFilters">Clear all</button>
     </div>
 
     <!-- Loading -->

@@ -952,7 +952,12 @@ router.get('/', (req: Request, res: Response): void => {
   // is ANDed on below (it can only narrow the result set).
   const referral = isReferralAgent(req)
   const q = (req.query['q'] as string || '').trim().toLowerCase()
-  const status = req.query['status'] as string | undefined
+  // status accepts a CSV for multi-select ("Active,Hold") — a single value
+  // without commas behaves exactly as before. status_mode=exclude inverts
+  // the match ("all except these"). No real status contains a comma
+  // ("Completed | Paid" uses a pipe).
+  const statusList = (req.query['status'] as string || '').split(',').map(s => s.trim()).filter(Boolean)
+  const statusMode = req.query['status_mode'] === 'exclude' ? 'exclude' : 'include'
   const office = req.query['office'] as string | undefined
   const coordinator = req.query['coordinator'] as string | undefined
   const state = req.query['state'] as string | undefined
@@ -1024,7 +1029,11 @@ router.get('/', (req: Request, res: Response): void => {
     params.push(like, like, like, phoneLike, like)
   }
 
-  if (status && !referral) { where += ' AND status = ?'; params.push(status) }
+  if (statusList.length > 0 && !referral) {
+    const ph = statusList.map(() => '?').join(',')
+    where += statusMode === 'exclude' ? ` AND status NOT IN (${ph})` : ` AND status IN (${ph})`
+    params.push(...statusList)
+  }
   if (office) { where += ' AND sales_office = ?'; params.push(office) }
   if (coordinator) { where += ' AND coordinator = ?'; params.push(coordinator) }
   if (state) { where += ' AND state = ?'; params.push(state) }
@@ -1053,12 +1062,9 @@ router.get('/', (req: Request, res: Response): void => {
   // since this user never sees those controls.
   if (referral) { where += ` AND ${activationWhere()}` }
 
-  // Pipeline KPI filter — use client's local date if provided, fall back to
-  // server-computed Denver date. Server fallback used to be UTC, which
-  // flipped to "tomorrow" after ~6pm Denver and made today's installs
-  // disappear from Future Install for the rest of the night.
-  const clientToday = req.query['today'] as string | undefined
-  const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday)) ? clientToday : todayIso()
+  // Pipeline KPI filter — day boundaries on the office calendar (issue #29),
+  // server-authoritative so every viewer sees the same buckets.
+  const today = todayIso()
   const hasV = (col: string) => `(${col} IS NOT NULL AND ${col} != '' AND ${col} != '0')`
   const noV = (col: string) => `(${col} IS NULL OR ${col} = '' OR ${col} = '0')`
   if (pipeline === 'preInstall') {
