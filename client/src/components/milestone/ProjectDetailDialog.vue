@@ -10,11 +10,15 @@
 // projects list / pivot — no extra fetch needed for the lite view.
 
 import { computed, ref, watch } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { RouterLink } from 'vue-router'
 import { fmtDate } from '@/lib/dates'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
+import EventsView from '@/components/project-detail/EventsView.vue'
+import Tickets from '@/components/project-detail/Tickets.vue'
 import FundingChips, { type FundingProject } from '@/components/project-detail/FundingChips.vue'
+import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
 
 interface ProjectRow {
@@ -61,10 +65,52 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 
+const auth = useAuthStore()
+
 const isOpen = ref(false)
 watch(() => props.project, (p) => {
   isOpen.value = p != null
 }, { immediate: true })
+
+// ── Chat about this project ──
+const chatOpen = ref(false)
+
+// ── Open tickets + at-a-glance overdue/today/future counts ──
+// /api/tickets returns the project's open tickets plus a `kpi` block already
+// bucketed against the Denver office calendar — no client-side date math needed.
+interface TicketRow {
+  record_id: number
+  title: string
+  status: string
+  priority?: string | null
+  due_date?: string | null
+  category?: string | null
+  assigned_to?: string | null
+}
+interface TicketKpi { allOpen: number; overdue: number; dueToday: number; futureDue: number }
+const openTickets = ref<TicketRow[]>([])
+const ticketKpi = ref<TicketKpi | null>(null)
+
+async function loadTickets(rid: number) {
+  openTickets.value = []
+  ticketKpi.value = null
+  try {
+    const res = await fetch(`/api/tickets?project_id=${rid}&open=1&limit=50`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    if (res.ok) {
+      const data = await res.json()
+      openTickets.value = (data.tickets as TicketRow[]) ?? []
+      ticketKpi.value = (data.kpi as TicketKpi) ?? null
+    }
+  } catch { /* non-fatal — drawer still renders without tickets */ }
+}
+watch(() => props.project?.record_id, (rid) => { if (rid) loadTickets(rid) }, { immediate: true })
+
+const hasOpenTickets = computed(() => {
+  const k = ticketKpi.value
+  return !!k && (k.overdue > 0 || k.dueToday > 0 || k.futureDue > 0)
+})
 
 function onOpenChange(v: boolean) {
   isOpen.value = v
@@ -126,6 +172,20 @@ const hasFunding = computed(() => {
           <span v-if="project.state" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ project.state }}</span>
           <span v-if="project.status" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ project.status }}</span>
           <span v-if="project.system_size_kw" class="text-[10px] text-muted-foreground tabular-nums">{{ Number(project.system_size_kw).toFixed(2) }} kW</span>
+
+          <!-- Open-ticket glance: ticket icon + overdue (red) / today (amber) /
+               future (green) counts. Read it in under a second; only nonzero
+               buckets show a bubble. -->
+          <div v-if="ticketKpi" class="inline-flex items-center gap-1" title="Open tickets — overdue / due today / upcoming">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="size-3.5 text-muted-foreground" aria-hidden="true">
+              <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 11v2"/><path d="M13 17v2"/>
+            </svg>
+            <span v-if="ticketKpi.overdue" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-red-600 text-white">{{ ticketKpi.overdue }}</span>
+            <span v-if="ticketKpi.dueToday" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-amber-500 text-white">{{ ticketKpi.dueToday }}</span>
+            <span v-if="ticketKpi.futureDue" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-emerald-600 text-white">{{ ticketKpi.futureDue }}</span>
+            <span v-if="!hasOpenTickets" class="text-[10px] text-muted-foreground">No open tickets</span>
+          </div>
+
           <RouterLink
             :to="{ name: 'project-detail', params: { id: project.record_id } }"
             class="ml-auto text-[11px] text-teal-700 hover:text-teal-800 hover:underline cursor-pointer inline-flex items-center gap-1"
@@ -153,6 +213,16 @@ const hasFunding = computed(() => {
 
         <!-- Quick actions -->
         <div class="px-4 pb-3 flex flex-wrap gap-1.5">
+          <button
+            v-if="!auth.isReferralAgent"
+            type="button"
+            class="inline-flex items-center gap-1.5 text-[11px] font-medium pl-1.5 pr-2.5 py-1 rounded-md bg-slate-900 text-white hover:bg-slate-800 active:scale-95 transition-all cursor-pointer"
+            title="Chat about this project"
+            @click="chatOpen = true"
+          >
+            <img src="/img/ai-chat-icon.png" alt="" class="w-4 h-4" aria-hidden="true" />
+            Ask AI
+          </button>
           <a v-if="phoneHref" :href="phoneHref" class="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-md bg-muted hover:bg-muted/70 cursor-pointer">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-3"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
             Call
@@ -203,7 +273,33 @@ const hasFunding = computed(() => {
             <div v-if="project.pto_approved" class="flex justify-between"><span class="text-muted-foreground">PTO appr</span><span class="tabular-nums">{{ fmtDate(project.pto_approved) }}</span></div>
           </div>
         </div>
+
+        <!-- Open tickets — scrollable so a long list never dominates the
+             drawer. Only rendered when there are open tickets; the empty case
+             is already conveyed by the header glance. Tickets.vue renders its
+             own "Tickets" header + count. -->
+        <div v-if="openTickets.length" class="px-4 pb-4">
+          <div class="max-h-72 overflow-y-auto">
+            <Tickets :items="openTickets" flat />
+          </div>
+        </div>
+
+        <!-- Arrivy events — full event tiles in a single newest-first list so
+             upcoming and recently-completed events read off the top. Same
+             component as the full project view, in flat (descending) mode.
+             EventsView renders its own "Events" header + count chip. -->
+        <div class="px-4 pb-4">
+          <EventsView :project-rid="project.record_id" flat />
+        </div>
       </div>
     </SheetContent>
   </Sheet>
+
+  <!-- Chat about this project — self-contained sheet; opens above the bump-out. -->
+  <ProjectChatSheet
+    v-if="project"
+    v-model:open="chatOpen"
+    :project-id="project.record_id"
+    :project-name="project.customer_name"
+  />
 </template>

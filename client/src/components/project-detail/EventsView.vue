@@ -13,6 +13,10 @@ interface Props {
   /** Hide the calendar tab even on desktop (list-only) — useful when this
    *  component sits in a narrow rail. */
   listOnly?: boolean
+  /** Render a single flat list sorted newest-first (descending by scheduled
+   *  date) instead of the Today / Upcoming / Past buckets. Upcoming and
+   *  recently-completed events float to the top. Implies list-only. */
+  flat?: boolean
 }
 const props = defineProps<Props>()
 
@@ -222,8 +226,19 @@ const tasks = computed<TaskItem[]>(() => {
 })
 
 // Bucketed list: Today / Upcoming / Past — chronological within each.
-interface Bucket { key: 'today' | 'upcoming' | 'past'; label: string; items: TaskItem[] }
+// In `flat` mode we instead emit a single label-less bucket sorted strictly
+// newest-first so the rich row markup below can be reused verbatim.
+interface Bucket { key: 'today' | 'upcoming' | 'past' | 'all'; label: string; items: TaskItem[] }
 const buckets = computed<Bucket[]>(() => {
+  if (props.flat) {
+    const items = [...tasks.value].sort((a, b) => {
+      // null/unscheduled dates sink to the bottom of the descending list.
+      const av = a.scheduled ? +a.scheduled : -Infinity
+      const bv = b.scheduled ? +b.scheduled : -Infinity
+      return bv - av
+    })
+    return items.length ? [{ key: 'all', label: '', items }] : []
+  }
   const today: TaskItem[] = []
   const upcoming: TaskItem[] = []
   const past: TaskItem[] = []
@@ -303,7 +318,7 @@ function goToday() {
   calCursor.value = d
 }
 
-const showCalendar = computed(() => isDesktop.value && !props.listOnly && view.value === 'calendar')
+const showCalendar = computed(() => isDesktop.value && !props.listOnly && !props.flat && view.value === 'calendar')
 const dotColor: Record<StatusKey, string> = {
   submitted: 'bg-emerald-500',
   notsubmitted: 'bg-rose-500',
@@ -529,7 +544,7 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
       <div class="text-[11px] font-medium text-slate-500 tracking-[0.08em] uppercase">Events</div>
       <span v-if="tasks.length" class="bg-slate-100 text-slate-700 font-medium text-[11px] px-1.5 rounded-full min-w-[18px] text-center">{{ tasks.length }}</span>
       <div class="flex-1" />
-      <div v-if="isDesktop && !listOnly" class="inline-flex items-center bg-slate-100 rounded-md p-0.5 text-[11px]">
+      <div v-if="isDesktop && !listOnly && !flat" class="inline-flex items-center bg-slate-100 rounded-md p-0.5 text-[11px]">
         <button
           type="button"
           class="px-2 py-0.5 rounded transition-colors cursor-pointer"
@@ -553,14 +568,16 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
     <!-- LIST -->
     <div v-else-if="!showCalendar" class="px-4 pb-3.5">
       <div v-for="b in buckets" :key="b.key" class="py-2 border-b last:border-b-0" style="border-color: #e6dfd6;">
-        <div class="text-[10px] uppercase tracking-wider mb-1.5" :class="bucketTone[b.key]">{{ b.label }}</div>
+        <div v-if="b.label" class="text-[10px] uppercase tracking-wider mb-1.5" :class="bucketTone[b.key]">{{ b.label }}</div>
         <ul class="space-y-1.5">
           <template v-for="t in b.items" :key="t.rid">
             <li
               class="rounded-md border-l-[4px]"
               :class="[
                 t.status.borderCls,
-                isExpandable(t) ? 'bg-rose-50/60 ring-1 ring-rose-200' : 'bg-white',
+                isExpandable(t)
+                  ? 'bg-rose-50/60 ring-1 ring-rose-200'
+                  : flat ? 'bg-white ring-1 ring-slate-200/90 shadow-sm' : 'bg-white',
                 isExpandable(t) ? 'cursor-pointer hover:bg-rose-50 transition-colors' : '',
               ]"
               @click="isExpandable(t) ? toggleExpand(t) : null"
