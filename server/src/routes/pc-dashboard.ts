@@ -892,21 +892,21 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   const deadPlaceholders = DEAD_STATUSES.map(() => '?').join(',')
   const rows = coordinator
     ? db.prepare(
-        `SELECT record_id, customer_name, coordinator
+        `SELECT record_id, customer_name, coordinator, system_size_kw
            FROM project_cache
           WHERE coordinator = ?
             AND (status IS NULL OR status NOT IN (${deadPlaceholders}))`
-      ).all(coordinator, ...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string }>
+      ).all(coordinator, ...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null }>
     : db.prepare(
-        `SELECT record_id, customer_name, coordinator
+        `SELECT record_id, customer_name, coordinator, system_size_kw
            FROM project_cache
           WHERE status IS NULL OR status NOT IN (${deadPlaceholders})`
-      ).all(...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string }>
+      ).all(...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null }>
 
   if (rows.length === 0) { res.json({ tasks: [], window: { fromIso, toIso } }); return }
 
-  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string }>()
-  for (const r of rows) projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator })
+  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number }>()
+  for (const r of rows) projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0 })
 
   // ONE QB call: date window only, then filter in-memory against the PC
   // project rid set. Looping QB per 50-rid batch was the previous shape
@@ -1049,6 +1049,7 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
       task_title: template,
       task_type_key: tt.key,
       task_type_label: tt.label,
+      system_size_kw: meta?.system_size_kw || 0,
       scheduled_at: String(fieldValue(rec, F.scheduledDateTime) || ''),
       crew_names: crewNames(rec),
       status: c.status,

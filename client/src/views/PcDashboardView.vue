@@ -208,6 +208,7 @@ interface UpcomingTask {
   task_title: string
   task_type_key: string
   task_type_label: string
+  system_size_kw: number
   scheduled_at: string
   crew_names: string
   status: 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
@@ -628,8 +629,8 @@ const TASK_TYPE_ORDER: Array<{ key: string; label: string }> = [
   { key: 'install', label: 'Solar Install' },
   { key: 'battery', label: 'Battery' },
   { key: 'survey', label: 'Survey' },
-  { key: 'final-inspection', label: 'Final Inspection' },
-  { key: 'inspection', label: 'Inspection' },
+  { key: 'final-inspection', label: 'Final INSPX' },
+  { key: 'inspection', label: 'INSPX' },
   { key: 'service', label: 'Service' },
   { key: 'rework', label: 'Rework' },
   { key: 'other', label: 'Other' },
@@ -781,7 +782,7 @@ const lateCount = computed(() => upcomingTasks.value.filter(isTaskLate).length)
 // visual so they read as siblings.
 interface ActivitySummary {
   total: number
-  byType: Array<{ key: string; label: string; count: number }>
+  byType: Array<{ key: string; label: string; count: number; kw: number }>
   statuses: StatusTile[]
 }
 
@@ -802,16 +803,20 @@ const tasksForStatusCounts = computed<UpcomingTask[]>(() => {
 
 const activitySummary = computed<ActivitySummary>(() => {
   // TYPE counts — population narrows when a status filter is active.
-  const typeMap = new Map<string, { label: string; count: number }>()
+  // kW is summed per type (each task carries its project's system size) so
+  // the Solar Install tile can read "count · kW", matching the other reports.
+  const typeMap = new Map<string, { count: number; kw: number }>()
   for (const t of tasksForTypeCounts.value) {
     const ex = typeMap.get(t.task_type_key)
-    if (ex) ex.count += 1
-    else typeMap.set(t.task_type_key, { label: t.task_type_label, count: 1 })
+    if (ex) { ex.count += 1; ex.kw += t.system_size_kw || 0 }
+    else typeMap.set(t.task_type_key, { count: 1, kw: t.system_size_kw || 0 })
   }
-  const byType: Array<{ key: string; label: string; count: number }> = []
-  for (const { key } of TASK_TYPE_ORDER) {
+  // Tile labels are the canonical TASK_TYPE_ORDER labels (INSPX etc.) — the
+  // per-task server label is left untouched for card group headers.
+  const byType: Array<{ key: string; label: string; count: number; kw: number }> = []
+  for (const { key, label } of TASK_TYPE_ORDER) {
     const entry = typeMap.get(key)
-    if (entry) byType.push({ key, label: entry.label, count: entry.count })
+    if (entry) byType.push({ key, label, count: entry.count, kw: entry.kw })
   }
 
   // STATUS counts — population narrows when a type filter is active.
@@ -1689,7 +1694,10 @@ watch([viewMode, fCoordinator], () => {
             >
               <div class="absolute top-0 left-0 right-0" :class="[tileAccent(typeAccentColor(bt.key)).strip, filterType === bt.key ? 'h-[6px]' : 'h-[3px]']" />
               <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">{{ bt.label }}</p>
-              <p class="mt-1 text-2xl font-extrabold tabular-nums leading-none" :class="tileAccent(typeAccentColor(bt.key)).text">{{ bt.count }}</p>
+              <p class="mt-1 flex items-baseline gap-1 min-w-0">
+                <span class="text-2xl font-extrabold tabular-nums leading-none" :class="tileAccent(typeAccentColor(bt.key)).text">{{ bt.count }}</span>
+                <span v-if="bt.key === 'install' && bt.kw > 0" class="text-[10px] font-bold tabular-nums truncate" :class="tileAccent(typeAccentColor(bt.key)).text">/ {{ Math.round(bt.kw).toLocaleString() }} kW</span>
+              </p>
             </button>
           </div>
         </div>

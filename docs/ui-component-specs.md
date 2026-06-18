@@ -43,7 +43,7 @@ across the app — Comms Hub, Field Performance, PTO, etc.
     <span class="text-2xl font-extrabold tabular-nums text-{accent}-600 leading-none">
       {primary value}
     </span>
-    <span class="text-[11px] font-semibold tabular-nums text-muted-foreground truncate">
+    <span class="text-[11px] font-bold tabular-nums text-{accent}-600 truncate">
       / {secondary value}
     </span>
   </p>
@@ -54,7 +54,17 @@ across the app — Comms Hub, Field Performance, PTO, etc.
 - **Accent strip**: 3px tall, full width, top of tile, `bg-{accent}-500`
 - **Label**: `text-[10px]` uppercase, tracking-wider, muted-foreground
 - **Primary value**: `text-2xl font-extrabold tabular-nums text-{accent}-600 leading-none`
-- **Secondary value (after `/`)**: `text-[11px] font-semibold tabular-nums text-muted-foreground`
+- **Secondary value (after `/`)**: when it is a magnitude paired with the
+  count (sum of kW, $, etc.), it takes the **same accent color as the
+  primary** — `text-[11px] font-bold tabular-nums text-{accent}-600`. The
+  pairing reads as one unit: "**count** / **how much that count is worth**".
+  Round the magnitude (`Math.round(kw).toLocaleString()`, no decimals) so
+  the slash stays scannable. Canonical implementation:
+  `ProjectsView.vue` top KPI strip; mirrored on the PC Dashboard → Field
+  Activity Solar Install tile.
+- **Secondary value as a *hint*** (not a magnitude — e.g. "/ business days",
+  a unit label, a context note): keep it muted —
+  `text-[11px] font-semibold tabular-nums text-muted-foreground`.
 
 Two-up grid on mobile: `grid grid-cols-2 gap-2`. Three or four-up on
 sm+ if needed: `sm:grid-cols-3` / `sm:grid-cols-4`.
