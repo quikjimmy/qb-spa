@@ -25,6 +25,7 @@ import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
 import db from '../db'
 import { notifyPcOfSurveyCancel } from '../lib/notify'
+import { fireArrivyLateFlag } from '../lib/predictedLatePoller'
 
 const router = Router()
 
@@ -162,6 +163,20 @@ router.post('/arrivy', (req: Request, res: Response): void => {
         // /api/field/project-tasks log walk fills phase in on the next
         // page load. Webhook fires the alert; UI fills the detail.
         phase: null,
+      })
+    }
+    // Late fast-path: Arrivy's own PREDICTED_LATE / LATE / NO_SHOW flags
+    // fire the in-app alert instantly instead of waiting up to 5 min for
+    // the predicted-late sweep. Dedup inside fireArrivyLateFlag (same
+    // (user, type, link) key the sweep uses) guarantees no double-send.
+    if ((eventType === 'PREDICTED_LATE' || eventType === 'LATE' || eventType === 'NO_SHOW') && projectRid) {
+      fireArrivyLateFlag({
+        projectRid,
+        taskRid: taskId || String(eventId),
+        stage: eventType,
+        customerName: customer || null,
+        crew: payload.reporter?.name || payload.reporter_name || null,
+        scheduledIso: typeof payload.timestamp === 'string' ? payload.timestamp : null,
       })
     }
   } catch (e) {

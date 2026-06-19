@@ -41,6 +41,7 @@ import { authenticate, requireRole, requireViewPermission } from './middleware/a
 import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
 import { startUnreadSmsNotifier } from './lib/unreadSmsNotifier'
+import { startPredictedLatePoller } from './lib/predictedLatePoller'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
@@ -184,6 +185,7 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startTicketCacheScheduler() } catch (e) { console.error('[startup] ticket cache scheduler failed:', e) }
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
   try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
+  try { startPredictedLatePoller() } catch (e) { console.error('[startup] predicted-late poller failed:', e) }
   try { startArrivyUsersScheduler() } catch (e) { console.error('[startup] arrivy users scheduler failed:', e) }
   try { startFeedbackTriageScheduler() } catch (e) { console.error('[startup] feedback triage scheduler failed:', e) }
 })

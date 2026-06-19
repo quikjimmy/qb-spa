@@ -146,6 +146,10 @@ const typeIcon: Record<string, string> = {
   agent: 'text-purple-500',
   chat_complete: 'text-indigo-500',
   feed_mention: 'text-[#b6004f]',
+  // Late field job — actionable + time-sensitive (a customer is waiting).
+  // Deeper amber than generic `warning` so it reads "act now" while staying
+  // in the warm/actionable family, short of the alarm-red reserved for errors.
+  field_late_alert: 'text-amber-600',
 }
 
 onMounted(() => {
