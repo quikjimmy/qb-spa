@@ -14,6 +14,8 @@ import DataFreshness from '@/components/DataFreshness.vue'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays, userTz, localDayBoundsToUtc } from '@/lib/dates'
 import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import { useTicketBuckets } from '@/composables/useTicketBuckets'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { BarChart } from 'echarts/charts'
@@ -423,6 +425,9 @@ const STAGE_CHIPS: Record<string, { bar: string; color: string; label: string }>
 }
 
 function chipFor(stage: string) { return STAGE_CHIPS[stage] || { bar: 'bg-muted-foreground', color: 'text-muted-foreground', label: stage } }
+
+// Per-project open-ticket buckets for the at-a-glance urgency badge.
+const { ticketsFor, loadTicketBuckets } = useTicketBuckets()
 
 async function loadData() {
   loading.value = true
@@ -1175,9 +1180,10 @@ onMounted(() => {
     if (projectId) openComms(projectId)
   })
   loadAdders()
+  loadTicketBuckets()
   if (activeTab.value === 'field-activity') loadUpcomingTasks()
   registerRefresh?.(async () => {
-    await loadData(); await loadAdders()
+    await loadData(); await loadAdders(); await loadTicketBuckets()
     if (activeTab.value === 'field-activity') await loadUpcomingTasks()
   })
 })
@@ -1575,7 +1581,15 @@ watch([viewMode, fCoordinator], () => {
               <span v-if="r.state" class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">{{ r.state }}</span>
               <span v-if="r.pto_submitted" class="text-[10px] text-muted-foreground shrink-0">PTO {{ fmtDate(r.pto_submitted) }}</span>
               <span v-else-if="r.inspection_passed" class="text-[10px] text-muted-foreground shrink-0">Insp {{ fmtDate(r.inspection_passed) }}</span>
-              <span v-if="r.open_tickets > 0" class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold bg-rose-100 text-rose-700 shrink-0">{{ r.open_tickets }} open</span>
+              <TicketGlance
+                v-if="ticketsFor(r.project_rid)"
+                class="shrink-0"
+                :overdue="ticketsFor(r.project_rid)!.overdue"
+                :today="ticketsFor(r.project_rid)!.dueToday"
+                :future="ticketsFor(r.project_rid)!.futureDue"
+                show-icon
+              />
+              <span v-else-if="r.open_tickets > 0" class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-semibold bg-rose-100 text-rose-700 shrink-0">{{ r.open_tickets }} open</span>
               <button v-if="commsCount(r) > 0" class="text-[10px] font-semibold rounded px-2 py-1 bg-muted text-muted-foreground hover:bg-primary hover:text-primary-foreground" @click="openComms(r.project_rid, r.customer_name)">Comms {{ commsCount(r) }}</button>
               <span v-if="r.status" class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold shrink-0" :class="[getStatusConfig(r.status).bg, getStatusConfig(r.status).text]">{{ r.status }}</span>
             </div>
@@ -1773,6 +1787,16 @@ watch([viewMode, fCoordinator], () => {
               <p class="font-semibold text-[13px] flex-1 min-w-0 truncate text-foreground/90">
                 {{ t.customer_name || 'Unknown' }}
               </p>
+              <!-- Open-ticket glance — flag overdue/today tickets so on-site crews
+                   can be told to check in on the project. -->
+              <TicketGlance
+                v-if="ticketsFor(t.project_rid)"
+                class="shrink-0"
+                :overdue="ticketsFor(t.project_rid)!.overdue"
+                :today="ticketsFor(t.project_rid)!.dueToday"
+                :future="ticketsFor(t.project_rid)!.futureDue"
+                show-icon
+              />
               <span v-if="isTaskLate(t)" class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-bold tracking-wide bg-rose-100/80 text-rose-800 ring-1 ring-rose-200/60">
                 <span class="size-1 rounded-full bg-rose-500" />LATE
               </span>

@@ -17,6 +17,7 @@ import { fmtDate } from '@/lib/dates'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
 import EventsView from '@/components/project-detail/EventsView.vue'
 import Tickets from '@/components/project-detail/Tickets.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import FundingChips, { type FundingProject } from '@/components/project-detail/FundingChips.vue'
 import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
@@ -107,11 +108,6 @@ async function loadTickets(rid: number) {
 }
 watch(() => props.project?.record_id, (rid) => { if (rid) loadTickets(rid) }, { immediate: true })
 
-const hasOpenTickets = computed(() => {
-  const k = ticketKpi.value
-  return !!k && (k.overdue > 0 || k.dueToday > 0 || k.futureDue > 0)
-})
-
 function onOpenChange(v: boolean) {
   isOpen.value = v
   emit('update:open', v)
@@ -174,17 +170,15 @@ const hasFunding = computed(() => {
           <span v-if="project.system_size_kw" class="text-[10px] text-muted-foreground tabular-nums">{{ Number(project.system_size_kw).toFixed(2) }} kW</span>
 
           <!-- Open-ticket glance: ticket icon + overdue (red) / today (amber) /
-               future (green) counts. Read it in under a second; only nonzero
-               buckets show a bubble. -->
-          <div v-if="ticketKpi" class="inline-flex items-center gap-1" title="Open tickets — overdue / due today / upcoming">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="size-3.5 text-muted-foreground" aria-hidden="true">
-              <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 11v2"/><path d="M13 17v2"/>
-            </svg>
-            <span v-if="ticketKpi.overdue" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-red-600 text-white">{{ ticketKpi.overdue }}</span>
-            <span v-if="ticketKpi.dueToday" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-amber-500 text-white">{{ ticketKpi.dueToday }}</span>
-            <span v-if="ticketKpi.futureDue" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums bg-emerald-600 text-white">{{ ticketKpi.futureDue }}</span>
-            <span v-if="!hasOpenTickets" class="text-[10px] text-muted-foreground">No open tickets</span>
-          </div>
+               future (green) counts. Read it in under a second. -->
+          <TicketGlance
+            v-if="ticketKpi"
+            :overdue="ticketKpi.overdue"
+            :today="ticketKpi.dueToday"
+            :future="ticketKpi.futureDue"
+            show-icon
+            empty-text="No open tickets"
+          />
 
           <RouterLink
             :to="{ name: 'project-detail', params: { id: project.record_id } }"

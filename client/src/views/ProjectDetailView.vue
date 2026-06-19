@@ -9,11 +9,7 @@ import CustomerCard from '@/components/project-detail/CustomerCard.vue'
 import CancelBanner from '@/components/project-detail/CancelBanner.vue'
 import UrgentBanner from '@/components/project-detail/UrgentBanner.vue'
 // AttentionCard removed for now — surfaced again once we have dynamic rules.
-import ChatPanel from '@/components/chat/ChatPanel.vue'
-import ProjectHome from '@/components/chat/ProjectHome.vue'
-import ChatHeaderMeta from '@/components/chat/ChatHeaderMeta.vue'
-import ContextPreview from '@/components/chat/ContextPreview.vue'
-import { Sheet, SheetContent } from '@/components/ui/sheet'
+import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
 import DealBreakdown from '@/components/project-detail/DealBreakdown.vue'
 import Documents from '@/components/project-detail/Documents.vue'
 import EventsView from '@/components/project-detail/EventsView.vue'
@@ -21,6 +17,7 @@ import ProjectStatusBadge from '@/components/project-detail/ProjectStatusBadge.v
 import NextUpBanner from '@/components/project-detail/NextUpBanner.vue'
 import Communications from '@/components/project-detail/Communications.vue'
 import Tickets from '@/components/project-detail/Tickets.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import DealFeed, { type FeedRow } from '@/components/project-detail/DealFeed.vue'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
 import MilestoneDetail from '@/components/project-detail/MilestoneDetail.vue'
@@ -161,6 +158,7 @@ interface Ticket {
   due_date?: string | null
   category?: string | null
   assigned_to?: string | null
+  description?: string | null
 }
 
 const route = useRoute()
@@ -182,6 +180,9 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const comms = ref<CommItem[]>([])
 const tickets = ref<Ticket[]>([])
+// Open-ticket counts (overdue / today / future) for the at-a-glance bubbles,
+// straight from the tickets API kpi block (Denver-anchored server-side).
+const ticketKpi = ref<{ overdue: number; dueToday: number; futureDue: number } | null>(null)
 const rawFeed = ref<FeedRow[]>([])
 interface NoteRow {
   record_id: number
@@ -215,8 +216,8 @@ const isDesktop = ref(false)
 // hash mirrors the active tab so deep links + browser back/forward
 // land on the same view. On desktop the deal sidebar + activity feed
 // stay visible alongside; on mobile they become tabs themselves.
-type WorkTab = 'all' | 'notes' | 'schedule' | 'docs' | 'comms' | 'breakdown'
-const VALID_TABS: WorkTab[] = ['all', 'notes', 'schedule', 'docs', 'comms', 'breakdown']
+type WorkTab = 'all' | 'notes' | 'schedule' | 'tickets' | 'docs' | 'comms' | 'breakdown'
+const VALID_TABS: WorkTab[] = ['all', 'notes', 'schedule', 'tickets', 'docs', 'comms', 'breakdown']
 function readTabFromHash(): WorkTab {
   if (typeof window === 'undefined') return 'all'
   const h = (window.location.hash || '').replace('#', '') as WorkTab
@@ -238,20 +239,10 @@ const stickyHeader = ref(false)
 const headerEl = ref<HTMLElement | null>(null)
 
 // ─── Chat Bot side panel ──────────────
-// Mirrors the /chat full-page UX: open the panel → land on the project's
-// "home" view (threads list + new chat CTA) → pick or create → chat.
-interface ChatThread { id: number; title: string; project_id: number | null; project_name: string | null; space_id: number | null; space_name: string | null; preferred_provider: string | null; preferred_model: string | null; archived: boolean; created_at: string; updated_at: string; last_message_at: string | null }
-interface ChatSpace { id: number; project_id: number; name: string; thread_count: number; created_at: string; last_used_at: string | null }
-interface RateSnapshot { tokens_remaining: number | null; tokens_limit: number | null; requests_remaining: number | null; requests_limit: number | null; reset_at: string | null; used_own_key: boolean; updated_at: string }
-interface ChatQuota { cap_cents: number | null; spent_cents: number; cap_pct_used: number | null; byok_bypasses_cap: boolean; providers: Record<string, RateSnapshot> }
-
+// The chat sheet itself lives in the reusable ProjectChatSheet component
+// (space/thread/quota wiring, ProjectHome + ChatPanel). This view just owns
+// the floating launcher FAB and the open/minimize state.
 const chatOpen = ref(false)
-const chatSpace = ref<ChatSpace | null>(null)
-const chatThreads = ref<ChatThread[]>([])
-const chatActiveThreadId = ref<number | null>(null)
-const chatQuota = ref<ChatQuota | null>(null)
-const chatPanelRef = ref<InstanceType<typeof ChatPanel> | null>(null)
-const chatContextPreviewOpen = ref(false)
 
 // Floating-FAB minimize toggle, mirrors FeedbackLauncher's pattern. When
 // minimized the FAB tucks to a small left-edge tab the user can re-open.
@@ -262,70 +253,6 @@ watch(chatMinimized, (v) => {
 })
 function minimizeChatFab() { chatMinimized.value = true }
 function restoreChatFab() { chatMinimized.value = false }
-
-function chatHdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
-
-async function refreshChatQuota() {
-  const r = await fetch('/api/chat/quota', { headers: chatHdrs() })
-  if (r.ok) chatQuota.value = await r.json()
-}
-
-function openChatModelPicker() { chatPanelRef.value?.openModelPicker?.() }
-
-async function openChatBot() {
-  if (!project.value) return
-  chatOpen.value = true
-  // Always land on the project's home (no thread selected) — user picks
-  // an existing one to continue or hits "Start a new chat".
-  chatActiveThreadId.value = null
-  refreshChatQuota()
-  try {
-    const sRes = await fetch(`/api/chat/spaces/from-project/${project.value.record_id}`, { method: 'POST', headers: chatHdrs() })
-    if (sRes.ok) chatSpace.value = await sRes.json()
-    if (chatSpace.value) {
-      const tRes = await fetch(`/api/chat/threads?space_id=${chatSpace.value.id}`, { headers: chatHdrs() })
-      if (tRes.ok) {
-        const data = await tRes.json()
-        chatThreads.value = data.threads || []
-      }
-    }
-  } catch { /* swallow */ }
-}
-
-async function chatNewThread() {
-  if (!chatSpace.value) return
-  const res = await fetch('/api/chat/threads', {
-    method: 'POST', headers: chatHdrs(),
-    body: JSON.stringify({ space_id: chatSpace.value.id }),
-  })
-  if (res.ok) {
-    const t = await res.json() as ChatThread
-    chatThreads.value = [t, ...chatThreads.value]
-    chatActiveThreadId.value = t.id
-  }
-}
-
-function chatPickThread(t: { id: number }) {
-  chatActiveThreadId.value = t.id
-}
-
-function chatBackToHome() {
-  chatActiveThreadId.value = null
-}
-
-function onChatThreadCreated(t: ChatThread) {
-  chatThreads.value = [t, ...chatThreads.value.filter(x => x.id !== t.id)]
-  chatActiveThreadId.value = t.id
-}
-
-function onChatThreadUpdated(t: ChatThread) {
-  const idx = chatThreads.value.findIndex(x => x.id === t.id)
-  if (idx >= 0) chatThreads.value[idx] = t
-  chatThreads.value.sort((a, b) => (b.last_message_at || b.created_at).localeCompare(a.last_message_at || a.created_at))
-  refreshChatQuota()
-}
-
-const chatActiveThread = computed(() => chatThreads.value.find(t => t.id === chatActiveThreadId.value) || null)
 
 function syncBp() {
   isDesktop.value = typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
@@ -391,10 +318,11 @@ async function loadComms() {
 
 async function loadTickets() {
   try {
-    const res = await fetch(`/api/tickets?project_id=${recordId.value}&open=0&limit=100`, { headers: hdrs() })
+    const res = await fetch(`/api/tickets?project_id=${recordId.value}&open=1&limit=100`, { headers: hdrs() })
     if (!res.ok) return
     const data = await res.json()
     tickets.value = (data.tickets as Ticket[]) ?? []
+    ticketKpi.value = data.kpi ?? null
   } catch { /* ignore */ }
 }
 
@@ -809,7 +737,27 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
           :starred="starred"
           @toggle-star="toggleStar"
           @text="smsOpen = true"
-        />
+        >
+          <!-- Open-ticket glance, anchored right of the address row. Tap to
+               jump to the Tickets tab. -->
+          <template #meta>
+            <button
+              v-if="ticketKpi"
+              type="button"
+              class="inline-flex items-center cursor-pointer"
+              title="Open tickets — overdue / due today / upcoming"
+              @click="setTab('tickets')"
+            >
+              <TicketGlance
+                :overdue="ticketKpi.overdue"
+                :today="ticketKpi.dueToday"
+                :future="ticketKpi.futureDue"
+                show-icon
+                empty-text="No open tickets"
+              />
+            </button>
+          </template>
+        </CustomerCard>
       </section>
 
       <!-- MILESTONE STRIP -->
@@ -896,12 +844,17 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="all" class="flex-1">All</TabsTrigger>
                 <TabsTrigger value="notes" class="flex-1">Notes</TabsTrigger>
                 <TabsTrigger value="schedule" class="flex-1">Schedule</TabsTrigger>
+                <TabsTrigger value="tickets" class="flex-1">
+                  Tickets
+                  <TicketGlance v-if="ticketKpi" class="ml-1.5" :overdue="ticketKpi.overdue" :today="ticketKpi.dueToday" :future="ticketKpi.futureDue" />
+                </TabsTrigger>
                 <TabsTrigger value="docs" class="flex-1">Docs</TabsTrigger>
                 <TabsTrigger value="comms" class="flex-1">Comms</TabsTrigger>
               </TabsList>
               <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
               <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
               <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
+              <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
               <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
               <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
             </Tabs>
@@ -920,6 +873,10 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="all" class="shrink-0">All</TabsTrigger>
                 <TabsTrigger value="notes" class="shrink-0">Notes</TabsTrigger>
                 <TabsTrigger value="schedule" class="shrink-0">Schedule</TabsTrigger>
+                <TabsTrigger value="tickets" class="shrink-0">
+                  Tickets
+                  <TicketGlance v-if="ticketKpi" class="ml-1.5" :overdue="ticketKpi.overdue" :today="ticketKpi.dueToday" :future="ticketKpi.futureDue" />
+                </TabsTrigger>
                 <TabsTrigger value="docs" class="shrink-0">Docs</TabsTrigger>
                 <TabsTrigger value="comms" class="shrink-0">Comms</TabsTrigger>
                 <TabsTrigger value="breakdown" class="shrink-0">Deal</TabsTrigger>
@@ -928,6 +885,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
             <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
             <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
+            <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
             <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
             <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
             <TabsContent value="breakdown" class="mt-3"><DealBreakdown :p="project" /></TabsContent>
@@ -979,7 +937,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
           class="inline-flex items-center justify-center pl-3 pr-2 h-11 active:scale-95 transition-transform cursor-pointer"
           title="Chat about this project"
           aria-label="Open project chat"
-          @click="openChatBot"
+          @click="chatOpen = true"
         >
           <img src="/img/ai-chat-icon.png" alt="" class="w-7 h-7" aria-hidden="true" />
         </button>
@@ -1017,70 +975,10 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
         @close="smsOpen = false"
       />
 
-      <Sheet v-model:open="chatOpen">
-        <SheetContent side="right" class="w-full sm:max-w-md md:max-w-lg p-0 flex flex-col gap-0">
-          <!-- Slim header — when on a thread, "← Back" returns to project home -->
-          <div class="flex items-center gap-2 px-4 py-3 bg-card/40 backdrop-blur-sm shrink-0">
-            <button v-if="chatActiveThreadId"
-              @click="chatBackToHome"
-              class="inline-flex items-center justify-center size-8 rounded-lg hover:bg-foreground/[0.06] text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              title="Back to project home"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-            </button>
-            <img src="/img/ai-chat-icon.png" alt="" class="size-8 shrink-0" aria-hidden="true" />
-            <div class="flex-1 min-w-0">
-              <div class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Chat Bot</div>
-              <div class="text-sm font-medium truncate">
-                {{ chatActiveThreadId ? (chatActiveThread?.title || 'New chat') : (chatSpace?.name || project.customer_name) }}
-              </div>
-            </div>
-            <ChatHeaderMeta
-              v-if="chatActiveThreadId"
-              :preferred-provider="chatActiveThread?.preferred_provider ?? null"
-              :preferred-model="chatActiveThread?.preferred_model ?? null"
-              :quota="chatQuota"
-              :compact="true"
-              @open-picker="openChatModelPicker"
-            />
-            <button v-if="chatActiveThreadId && auth.isAdmin"
-              @click="chatContextPreviewOpen = true"
-              class="inline-flex items-center justify-center size-8 rounded-lg hover:bg-foreground/[0.06] text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              title="Show context sent to model (debug)"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-            </button>
-          </div>
-
-          <!-- Body: ProjectHome when no thread, ChatPanel when in a thread -->
-          <div v-if="!chatActiveThreadId && chatSpace" class="flex-1 min-h-0">
-            <ProjectHome
-              :space="chatSpace"
-              :threads="chatThreads"
-              @pick-thread="chatPickThread"
-              @new-chat="chatNewThread"
-            />
-          </div>
-          <div v-else class="flex-1 min-h-0">
-            <ChatPanel
-              ref="chatPanelRef"
-              :thread-id="chatActiveThreadId"
-              :default-space-id="chatSpace?.id ?? null"
-              :allow-project-picker="false"
-              :compact="true"
-              @thread-created="onChatThreadCreated"
-              @thread-updated="onChatThreadUpdated"
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <!-- Admin-only debug: shows the exact system prompt the model received -->
-      <ContextPreview
-        v-if="auth.isAdmin"
-        :open="chatContextPreviewOpen"
-        :thread-id="chatActiveThreadId"
-        @close="chatContextPreviewOpen = false"
+      <ProjectChatSheet
+        v-model:open="chatOpen"
+        :project-id="project.record_id"
+        :project-name="project.customer_name"
       />
     </template>
   </div>

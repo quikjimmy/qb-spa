@@ -15,6 +15,8 @@ import MilestoneDecileTable, { type DecileRow } from '@/components/milestone/Mil
 import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
 import MilestoneProjectsTable, { type ColumnDef } from '@/components/milestone/MilestoneProjectsTable.vue'
 import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
 use([CanvasRenderer, BarChart, BoxplotChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -55,6 +57,9 @@ async function refreshCaches() {
 const ptoRecords = ref<any[]>([])
 const ptoStats = ref<{ blocked: number; slaMissed: number; rejected: number; withOpenTickets: number }>({ blocked: 0, slaMissed: 0, rejected: 0, withOpenTickets: 0 })
 const ptoLoading = ref(false)
+
+// Per-project open-ticket buckets for the at-a-glance urgency badge.
+const { ticketsFor, loadTicketBuckets } = useTicketBuckets()
 
 async function loadPtoCache(filter?: string) {
   ptoLoading.value = true
@@ -320,7 +325,7 @@ async function loadDeciles() {
 }
 watch([decileMetric, decileDimension, dateFrom, dateTo, useBizDays], loadDeciles)
 
-onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
+onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles(); loadTicketBuckets() })
 </script>
 
 <template>
@@ -511,7 +516,14 @@ onMounted(() => { applyPreset('last_30'); loadPtoCache(); loadDeciles() })
           <div class="flex gap-3 mt-1 text-[11px] text-muted-foreground flex-wrap">
             <span v-if="r.assigned_user">{{ r.assigned_user }}</span>
             <span v-if="r.state">{{ r.state }}</span>
-            <span v-if="r.open_tickets > 0" class="text-blue-600 font-semibold">{{ r.open_tickets }} open ticket{{ r.open_tickets > 1 ? 's' : '' }}</span>
+            <TicketGlance
+              v-if="ticketsFor(r.project_rid || r.record_id)"
+              :overdue="ticketsFor(r.project_rid || r.record_id)!.overdue"
+              :today="ticketsFor(r.project_rid || r.record_id)!.dueToday"
+              :future="ticketsFor(r.project_rid || r.record_id)!.futureDue"
+              show-icon
+            />
+            <span v-else-if="r.open_tickets > 0" class="text-blue-600 font-semibold">{{ r.open_tickets }} open ticket{{ r.open_tickets > 1 ? 's' : '' }}</span>
             <span v-if="r.rejection_count > 0" class="text-violet-600 font-semibold">{{ r.rejection_count }} rejection{{ r.rejection_count > 1 ? 's' : '' }}</span>
             <span v-if="r.sla_met === 0 && r.pto_submitted" class="text-amber-600 font-semibold">SLA missed</span>
           </div>

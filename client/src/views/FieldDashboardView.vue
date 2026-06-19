@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import FieldPerformance from '@/components/FieldPerformance.vue'
 import DataFreshness from '@/components/DataFreshness.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
 // Field Ops dashboard — Vue rebuild of context-files/Field/example view.
 // Pulls Arrivy task data from /api/field/tasks (which proxies QuickBase),
@@ -511,6 +513,15 @@ function projectUrl(t: QbRecord): string {
   return rid ? `/projects/${rid}` : ''
 }
 
+// Per-project open-ticket buckets for the at-a-glance urgency badge on tiles.
+const { ticketsFor, loadTicketBuckets } = useTicketBuckets()
+function ticketsForTask(t: QbRecord) {
+  const F = fieldIds.value
+  if (!F) return null
+  const rid = qbv(t, F.relatedProject)
+  return rid != null && rid !== '' ? ticketsFor(String(rid)) : null
+}
+
 // ─── Loading ──
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
 
@@ -557,7 +568,8 @@ async function loadLateData() {
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
 onMounted(() => {
   load()
-  registerRefresh?.(async () => { await load() })
+  loadTicketBuckets()
+  registerRefresh?.(async () => { await load(); await loadTicketBuckets() })
   window.addEventListener('keydown', onKeydown)
 })
 onBeforeUnmount(() => {
@@ -699,7 +711,17 @@ watch(preset, load)
             <div v-for="t in activityByPeriod[p.key]" :key="String(qbv(t, 3))" class="rounded-xl border bg-card p-3 flex items-start gap-2.5">
               <span class="size-2.5 rounded-full mt-1 shrink-0" :class="activityDot(t)" />
               <div class="flex-1 min-w-0">
-                <p class="text-[13px] font-medium truncate">{{ getCrewName(t) || 'Unassigned' }} — {{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') }}</p>
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <p class="text-[13px] font-medium truncate">{{ getCrewName(t) || 'Unassigned' }} — {{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') }}</p>
+                  <TicketGlance
+                    v-if="ticketsForTask(t)"
+                    class="shrink-0"
+                    :overdue="ticketsForTask(t)!.overdue"
+                    :today="ticketsForTask(t)!.dueToday"
+                    :future="ticketsForTask(t)!.futureDue"
+                    show-icon
+                  />
+                </div>
                 <p class="text-[11px] text-muted-foreground truncate">
                   {{ fmtTime(qbv(t, fieldIds!.scheduledDateTime)) }} · {{ String(qbv(t, fieldIds!.templateName) || 'Task') }}
                   <span class="ml-1 px-1.5 py-0.5 rounded text-[9px] font-semibold" :class="getTaskStatus(t).pillCls">{{ getTaskStatus(t).label }}</span>
@@ -751,9 +773,22 @@ watch(preset, load)
                 </span>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-start justify-between gap-2 min-w-0">
-                    <p class="font-semibold text-sm flex-1 min-w-0 truncate" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-900' : ''">
-                      {{ getTaskStatus(t).key === 'cancelled' ? '' : statusEmoji(t) + ' ' }}{{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') || 'Unknown' }}
-                    </p>
+                    <!-- Name + open-ticket glance grouped so the glance hugs the
+                         name (crews/PCs can flag a project needing attention
+                         while someone is on site). -->
+                    <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                      <p class="font-semibold text-sm min-w-0 truncate" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-900' : ''">
+                        {{ getTaskStatus(t).key === 'cancelled' ? '' : statusEmoji(t) + ' ' }}{{ String(qbv(t, fieldIds!.customerFirstName) || '') }} {{ String(qbv(t, fieldIds!.customerLastName) || '') || 'Unknown' }}
+                      </p>
+                      <TicketGlance
+                        v-if="ticketsForTask(t)"
+                        class="shrink-0"
+                        :overdue="ticketsForTask(t)!.overdue"
+                        :today="ticketsForTask(t)!.dueToday"
+                        :future="ticketsForTask(t)!.futureDue"
+                        show-icon
+                      />
+                    </div>
                     <span
                       class="rounded-full font-semibold shrink-0 whitespace-nowrap inline-flex items-center gap-1"
                       :class="[

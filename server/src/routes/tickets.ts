@@ -310,6 +310,32 @@ router.get('/badges', (req: Request, res: Response): void => {
   res.json({ overdue, dueToday })
 })
 
+// Per-project open-ticket buckets for the at-a-glance badge on project lists.
+// One GROUP BY over the local cache (no QB round-trip), bucketed on the office
+// calendar exactly like the single-project KPI above. Returns only projects
+// with at least one dated open ticket; rows without urgency are omitted so the
+// client map stays small.
+router.get('/by-project', (_req: Request, res: Response): void => {
+  const today = officeTodayIso()
+  const rows = db.prepare(`
+    SELECT project_rid,
+      SUM(CASE WHEN due_date < ? AND due_date != '' AND due_date != '0' THEN 1 ELSE 0 END) as overdue,
+      SUM(CASE WHEN due_date >= ? AND due_date < ? THEN 1 ELSE 0 END) as dueToday,
+      SUM(CASE WHEN due_date > ? THEN 1 ELSE 0 END) as futureDue
+    FROM ticket_cache
+    WHERE status NOT IN ('Completed','Closed','Complete') AND project_rid IS NOT NULL AND project_rid != 0
+    GROUP BY project_rid
+  `).all(today, today, today + 'T23:59:59', today + 'T23:59:59') as Array<{ project_rid: number; overdue: number; dueToday: number; futureDue: number }>
+
+  const byProject: Record<string, { overdue: number; dueToday: number; futureDue: number }> = {}
+  for (const r of rows) {
+    if (r.overdue || r.dueToday || r.futureDue) {
+      byProject[String(r.project_rid)] = { overdue: r.overdue, dueToday: r.dueToday, futureDue: r.futureDue }
+    }
+  }
+  res.json({ byProject })
+})
+
 // Refresh — defaults to incremental (cheap; only modified tickets). Pass
 // ?full=1 to force a full rebuild (used by admin diagnostics page).
 // Specific paths registered BEFORE the /:id wildcard so Express doesn't

@@ -11,6 +11,8 @@ import {
 import { getStatusConfig } from '@/lib/status'
 import { computeMilestones, dotStyle, labelStyle, connectorStyle, type MilestoneStep } from '@/lib/milestones'
 import DataFreshness from '@/components/DataFreshness.vue'
+import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -182,6 +184,9 @@ function setDatePreset(preset: string) {
 // Loaded once on mount; refreshed alongside loadProjects so newly-cancelled
 // surveys turn red on the next refresh tick.
 const cancellationsByProject = ref<Record<string, { survey?: boolean; install?: boolean; inspection?: boolean }>>({})
+
+// Per-project open-ticket buckets for the at-a-glance urgency badge on rows.
+const { ticketsFor, loadTicketBuckets } = useTicketBuckets()
 
 async function loadCancellations() {
   try {
@@ -533,7 +538,8 @@ onMounted(() => {
   loadProjects().then(() => { if (cacheInfo.value && cacheInfo.value.total === 0 && auth.isAdmin) refreshCache() })
   loadHoldClassifications()
   loadCancellations()
-  registerRefresh?.(async () => { await Promise.all([loadProjects(), loadCancellations()]) })
+  loadTicketBuckets()
+  registerRefresh?.(async () => { await Promise.all([loadProjects(), loadCancellations(), loadTicketBuckets()]) })
   // Initial freshness read (no list refetch — just establishes the baseline),
   // then poll every 30s. Same cadence as the DataFreshness badge.
   pollFreshness()
@@ -710,7 +716,23 @@ onBeforeUnmount(() => {
             <button class="shrink-0" @click="toggleFavorite($event, p.record_id)">
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2.5" :class="p.is_favorite ? '' : 'text-muted-foreground/70'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             </button>
-            <p class="text-[12px] font-semibold flex-1 min-w-0 truncate">{{ p.customer_name || 'Unnamed' }}</p>
+            <div class="flex items-center gap-1.5 flex-1 min-w-0">
+              <p class="text-[12px] font-semibold min-w-0 truncate">{{ p.customer_name || 'Unnamed' }}</p>
+              <!-- Open-ticket glance, right after the name; falls back to a plain
+                   count when the project's open tickets have no due date. -->
+              <TicketGlance
+                v-if="ticketsFor(p.record_id)"
+                class="shrink-0"
+                :overdue="ticketsFor(p.record_id)!.overdue"
+                :today="ticketsFor(p.record_id)!.dueToday"
+                :future="ticketsFor(p.record_id)!.futureDue"
+                show-icon
+              />
+              <span v-else-if="p.open_tickets && p.open_tickets > 0" class="shrink-0 inline-flex items-center gap-0.5 text-muted-foreground" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
+                <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
+              </span>
+            </div>
             <div class="flex gap-1 shrink-0 items-center">
               <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
               <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
@@ -757,10 +779,6 @@ onBeforeUnmount(() => {
                 </div>
               </template>
             </div>
-            <div v-if="p.open_tickets && p.open_tickets > 0" class="flex items-center gap-1 text-muted-foreground shrink-0" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
-              <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
-            </div>
           </div>
 
           <!-- AI: hold classifier (collapsible) -->
@@ -796,6 +814,20 @@ onBeforeUnmount(() => {
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="p.is_favorite ? '#f59e0b' : 'none'" :stroke="p.is_favorite ? '#f59e0b' : 'currentColor'" stroke-width="2.5" :class="p.is_favorite ? '' : 'text-muted-foreground/70 group-hover:text-muted-foreground'"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
                 </button>
                 <p class="text-[12px] font-semibold truncate group-hover:text-primary transition-colors">{{ p.customer_name || 'Unnamed' }}</p>
+                <!-- Open-ticket glance, right after the name; falls back to a plain
+                     count when the project's open tickets have no due date. -->
+                <TicketGlance
+                  v-if="ticketsFor(p.record_id)"
+                  class="shrink-0"
+                  :overdue="ticketsFor(p.record_id)!.overdue"
+                  :today="ticketsFor(p.record_id)!.dueToday"
+                  :future="ticketsFor(p.record_id)!.futureDue"
+                  show-icon
+                />
+                <span v-else-if="p.open_tickets && p.open_tickets > 0" class="shrink-0 inline-flex items-center gap-0.5 text-muted-foreground" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
+                  <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
+                </span>
                 <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
               </div>
@@ -830,15 +862,11 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
               </div>
-              <!-- Next task + tickets -->
+              <!-- Next task -->
               <div class="flex items-center justify-end gap-2 text-[10px] text-muted-foreground">
                 <div class="text-right">
                   <p v-if="nextTask(p)"><span class="text-muted-foreground">Next</span> <span class="font-medium text-foreground">{{ nextTask(p) }}</span></p>
                   <p v-else-if="has(p.pto_approved)">PTO: <span class="font-medium text-foreground">{{ fmtDate(p.pto_approved) }}</span></p>
-                </div>
-                <div v-if="p.open_tickets && p.open_tickets > 0" class="flex items-center gap-1" :title="`${p.open_tickets} open ticket${p.open_tickets === 1 ? '' : 's'}`">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
-                  <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
                 </div>
               </div>
               <!-- AI: hold classifier (collapsible) -->

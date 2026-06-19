@@ -12,6 +12,7 @@ interface TicketRow {
   due_date?: string | null
   category?: string | null
   assigned_to?: string | null
+  description?: string | null
 }
 
 const props = defineProps<{
@@ -20,14 +21,23 @@ const props = defineProps<{
    *  status pill) to match EventsView's flat list. Used in the project
    *  bump-out so Tickets and Events read as the same UI. */
   flat?: boolean
+  /** Show the ticket request (description) as a right-hand column on wide
+   *  screens. Only used where the tile has room (full project view); the
+   *  narrow bump-out leaves it off. */
+  showRequest?: boolean
 }>()
 
 type DueBucket = 'overdue' | 'today' | 'future' | 'none'
+// Subset of StatusPill's tones we use here.
+type PillTone = 'ok' | 'warn' | 'bad' | 'complete' | 'pending' | 'blue'
 
 interface Decorated extends TicketRow {
-  // Default-mode chrome — status-driven (full project view shows open + closed).
+  // Default-mode chrome. Open tickets show their due state (Past Due / Due
+  // Today / On Track) since the QB status never flips when a due date passes;
+  // closed/resolved tickets keep their real status.
   tone: 'open' | 'pending' | 'resolved'
-  pillTone: 'pending' | 'blue' | 'complete'
+  statusTone: PillTone
+  statusLabel: string
   dueLabel: string
   // Flat/tile-mode chrome — due-date-driven so the tile colour matches the
   // header's overdue/today/future bubbles (all tickets here are open). Anchored
@@ -74,7 +84,7 @@ const decorated = computed<Decorated[]>(() =>
   props.items.map(t => {
     const status = (t.status || '').toLowerCase()
     let tone: Decorated['tone'] = 'open'
-    let pillTone: Decorated['pillTone'] = 'pending'
+    let pillTone: PillTone = 'pending'
     if (status.includes('complete') || status.includes('resolved') || status.includes('closed')) { tone = 'resolved'; pillTone = 'complete' }
     else if (status.includes('pending') || status.includes('progress')) { tone = 'pending'; pillTone = 'blue' }
 
@@ -100,9 +110,18 @@ const decorated = computed<Decorated[]>(() =>
       due === 'future' ? `Due ${fmtDate(t.due_date!)}` :
       ''
 
+    // Default-mode StatusPill: due state wins for open tickets; resolved keeps
+    // its status; an open ticket with no due date falls back to its status.
+    let statusTone: PillTone = pillTone
+    let statusLabel = t.status
+    if (tone === 'resolved') { statusTone = 'complete'; statusLabel = t.status }
+    else if (due === 'overdue') { statusTone = 'bad'; statusLabel = 'Past Due' }
+    else if (due === 'today') { statusTone = 'warn'; statusLabel = 'Due Today' }
+    else if (due === 'future') { statusTone = 'ok'; statusLabel = 'On Track' }
+
     const subParts = [t.category, t.assigned_to].filter(Boolean) as string[]
     return {
-      ...t, tone, pillTone, dueLabel, subLine: subParts.join(' · '),
+      ...t, tone, statusTone, statusLabel, dueLabel, subLine: subParts.join(' · '),
       due, borderCls: DUE_BORDER[due], pillCls: DUE_PILL[due], pillLabel, dueText, dueTextCls: DUE_TEXT_CLS[due],
     }
   })
@@ -138,6 +157,11 @@ const accent: Record<Decorated['tone'], string> = {
               <div v-if="t.subLine" class="text-[11px] text-slate-500 truncate">{{ t.subLine }}</div>
               <div v-if="t.dueText" class="text-[11px] truncate" :class="t.dueTextCls">{{ t.dueText }}</div>
             </div>
+            <!-- Request text — fills the spare width on wide screens; hidden on
+                 mobile and in narrow contexts (showRequest off). -->
+            <div v-if="showRequest && t.description" class="hidden sm:flex flex-1 min-w-0 items-center border-l border-slate-100 pl-3">
+              <p class="text-[12px] text-slate-600 leading-snug line-clamp-2" :title="t.description!">{{ t.description }}</p>
+            </div>
           </div>
         </li>
       </ul>
@@ -162,7 +186,7 @@ const accent: Record<Decorated['tone'], string> = {
               {{ [t.subLine, t.dueLabel].filter(Boolean).join(' · ') }}
             </div>
           </div>
-          <StatusPill :tone="t.pillTone">{{ t.status }}</StatusPill>
+          <StatusPill :tone="t.statusTone">{{ t.statusLabel }}</StatusPill>
         </div>
       </div>
       <div v-if="!decorated.length" class="py-5 text-center text-xs text-slate-500">

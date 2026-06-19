@@ -172,6 +172,9 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
+        <!-- Right-anchored meta slot (open-ticket glance) — desktop sits up here
+             beside the status; mobile renders it in the integration row below. -->
+        <span class="hidden sm:inline-flex items-center"><slot name="meta" /></span>
         <ProjectStatusBadge :status="p.status" dot />
         <span v-if="p.daysInStatus != null && p.daysInStatus > 0" class="text-[10.5px] text-slate-400 tabular-nums">({{ p.daysInStatus }}d)</span>
       </div>
@@ -229,6 +232,8 @@ const isTPO = computed(() => /lightreach|goodleap \(tpo\)/i.test(props.p.lender 
       >
         <img src="/integrations/arrivy.png" alt="" class="size-[18px] object-contain" loading="lazy" />
       </a>
+      <!-- Open-ticket glance, anchored to the right of the integration row. -->
+      <div class="ml-auto flex items-center"><slot name="meta" /></div>
     </div>
 
     <!-- Row 2: Address + contact pill row (always visible, high contrast) -->
