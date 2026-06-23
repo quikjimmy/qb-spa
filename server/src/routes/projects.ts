@@ -120,6 +120,13 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'm1_last_funding_check_date',
     'm2_last_funding_check_date',
     'm3_last_funding_check_date',
+    // Per-milestone funding notes (QB "Max M_n_ Event" rollups). Two flavours:
+    //  • *_not_ready_note  — "Not Ready for Funding Note" (text). The plain-
+    //    English reason a milestone can't be requested ("Install not complete").
+    //  • *_funding_note    — "Most Recent Funding Note" (multitext). Often carries
+    //    a `[DATE TIME Actor]` stamp → shows whether/when the team last looked.
+    'm1_not_ready_note', 'm2_not_ready_note', 'm3_not_ready_note',
+    'm1_funding_note', 'm2_funding_note', 'm3_funding_note',
   ]
   for (const c of FUNDING_TEXT) addIfMissing(c, 'TEXT')
   const FUNDING_REAL = [
@@ -312,6 +319,8 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 1913, col: 'm1_deposit_date' },
   { fid: 1888, col: 'm1_net_received' },      // negative = clawback
   { fid: 2591, col: 'm1_last_funding_check_date' },
+  { fid: 2590, col: 'm1_not_ready_note' },    // Max M1 Event · Not Ready for Funding Note (text)
+  { fid: 2670, col: 'm1_funding_note' },      // Max M1 Event · Most Recent Funding Note (multitext)
 
   { fid: 2050, col: 'm2_status' },
   { fid: 1993, col: 'm2_ready' },
@@ -324,6 +333,8 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   // Stale Follow-Up signal (mirrors QB report 1025 `{'2589'.OBF.'3 days ago'}`).
   // Drives the M2 follow-up KPI; analogous fields exist for M1/M3.
   { fid: 2589, col: 'm2_last_funding_check_date' },
+  { fid: 2588, col: 'm2_not_ready_note' },    // Max M2 Event · Not Ready for Funding Note (text)
+  { fid: 2671, col: 'm2_funding_note' },      // Max M2 Event · Most Recent Funding Note (multitext)
 
   { fid: 2051, col: 'm3_status' },
   { fid: 1994, col: 'm3_ready' },
@@ -334,6 +345,8 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   { fid: 1915, col: 'm3_deposit_date' },
   { fid: 1890, col: 'm3_net_received' },
   { fid: 2593, col: 'm3_last_funding_check_date' },
+  { fid: 2592, col: 'm3_not_ready_note' },    // Max M3 Event · Not Ready for Funding Note (text)
+  { fid: 2672, col: 'm3_funding_note' },      // Max M3 Event · Most Recent Funding Note (multitext)
 
   { fid: 2774, col: 'dca_status' },
   { fid: 2775, col: 'dca_timer_start' },
@@ -413,6 +426,13 @@ const MULTI_SELECT_COLS = new Set([
   'cancel_reasons',
 ])
 
+// "Most Recent Funding Note" rollups are QB multitext (array of note lines).
+// Unlike the multi-select cols above these are sentences, not tags — join
+// with a newline so the client can render each note on its own line.
+const NOTE_MULTI_COLS = new Set([
+  'm1_funding_note', 'm2_funding_note', 'm3_funding_note',
+])
+
 function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[] {
   return fieldMap.map(f => {
     if (f.col === 'system_size_kw') return parseFloat(val(record, f.fid)) || null
@@ -425,6 +445,11 @@ function mapRecordToValues(record: Record<string, { value: unknown }>): unknown[
       const v = record[String(f.fid)]?.value
       if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean).join(';')
       return val(record, f.fid)  // already a string (likely `;`-joined)
+    }
+    if (NOTE_MULTI_COLS.has(f.col)) {
+      const v = record[String(f.fid)]?.value
+      if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean).join('\n')
+      return val(record, f.fid)
     }
     if (f.col === 'inspx_count' || f.col === 'inspx_passed_count') return parseInt(val(record, f.fid)) || 0
     if (f.col === 'inspx_pass_fail') {

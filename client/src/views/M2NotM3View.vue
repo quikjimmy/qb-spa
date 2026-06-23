@@ -22,6 +22,7 @@ interface Row {
   state: string; status: string; lender: string; closer: string
   salesDate: string
   m3Status: string
+  m3NotReadyNote: string; m3FundingNote: string
   m3ExpectedAmount: number; m3NetReceived: number
   m3RequestedDate: string; m3ApprovedDate: string
   m3RejectedDate: string;  m3DepositDate: string
@@ -416,7 +417,10 @@ const totals = computed(() => {
                 <td class="px-2 py-1.5 font-mono text-muted-foreground">{{ fmtDate(r.salesDate) }}</td>
                 <td class="px-2 py-1.5 font-mono font-semibold" :class="m2Cell(r).tone">{{ m2Cell(r).text }}</td>
                 <td class="px-2 py-1.5 font-mono font-semibold" :class="m3Cell(r).tone">{{ m3Cell(r).text }}</td>
-                <td class="px-2 py-1.5 truncate max-w-[140px]" :title="r.m3Status">{{ r.m3Status || '—' }}</td>
+                <td class="px-2 py-1.5 max-w-[200px]" :title="r.m3NotReadyNote || r.m3Status">
+                  <div class="truncate">{{ r.m3Status || '—' }}</div>
+                  <div v-if="r.m3NotReadyNote" class="truncate text-[10px] text-amber-700/90 leading-tight">{{ r.m3NotReadyNote }}</div>
+                </td>
                 <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSinceM2(r) }}</td>
                 <td class="text-right px-3 py-1.5">{{ fmtMoney(r.m3ExpectedAmount) }}</td>
                 <td class="text-right px-2 py-1.5 text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
@@ -430,6 +434,7 @@ const totals = computed(() => {
 
   <ProjectDetailDialog
     :project="selectedProject"
+    context="funding"
     @update:open="(v) => { if (!v) selectedProject = null }"
   />
 </template>

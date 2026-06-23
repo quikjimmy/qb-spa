@@ -22,6 +22,7 @@ interface AuditRow {
   m1RequestedDate: string; m2RequestedDate: string
   m2RejectedDate: string; m2ApprovedDate: string; m2NetReceived: number
   m2Status: string; m2ExpectedAmount: number
+  m2NotReadyNote: string; m2FundingNote: string
   systemPrice: number; systemSizeKw: number
 }
 interface Response {
@@ -490,7 +491,10 @@ const totals = computed(() => {
                 <td class="p-1.5 truncate max-w-[80px]">{{ r.lender || '—' }}</td>
                 <td class="p-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.salesDate) }}</td>
                 <td class="p-1.5 font-mono font-semibold" :class="installCell(r).tone">{{ installCell(r).text }}</td>
-                <td class="p-1.5 font-mono font-semibold" :class="m2Cell(r).tone">{{ m2Cell(r).text }}</td>
+                <td class="p-1.5 max-w-[200px]" :title="r.m2NotReadyNote || r.m2Status">
+                  <div class="font-mono font-semibold" :class="m2Cell(r).tone">{{ m2Cell(r).text }}</div>
+                  <div v-if="r.m2NotReadyNote" class="truncate text-[9px] font-sans text-amber-700/90 leading-tight">{{ r.m2NotReadyNote }}</div>
+                </td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m1RequestedDate) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m2RequestedDate) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.installScheduled) }}</td>
@@ -505,6 +509,7 @@ const totals = computed(() => {
 
   <ProjectDetailDialog
     :project="selectedProject"
+    context="funding"
     @update:open="(v) => { if (!v) selectedProject = null }"
   />
 </template>

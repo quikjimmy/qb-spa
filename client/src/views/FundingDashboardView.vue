@@ -38,6 +38,7 @@ interface AuditRow {
   state: string; status: string; lender: string
   salesDate: string; installScheduled: string; installCompleted: string
   milestoneStatus: string
+  milestoneNotReadyNote: string; milestoneFundingNote: string
   milestoneRequestedDate: string; milestoneApprovedDate: string
   milestoneRejectedDate: string;  milestoneDepositDate: string
   milestoneExpectedAmount: number; milestoneNetReceived: number
@@ -634,7 +635,10 @@ function milestoneForBucket(bucketKey: string): Milestone {
                       <td class="px-2 py-1.5 truncate max-w-[120px]">{{ r.lender || '—' }}</td>
                       <td class="px-2 py-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.salesDate) }}</td>
                       <td class="px-2 py-1.5 font-mono font-semibold" :class="installCell(r).tone">{{ installCell(r).text }}</td>
-                      <td class="px-2 py-1.5 font-mono font-semibold" :class="milestoneCell(r).tone">{{ milestoneCell(r).text }}</td>
+                      <td class="px-2 py-1.5 max-w-[200px]" :title="r.milestoneNotReadyNote || r.milestoneStatus">
+                        <div class="font-mono font-semibold" :class="milestoneCell(r).tone">{{ milestoneCell(r).text }}</div>
+                        <div v-if="r.milestoneNotReadyNote" class="truncate text-[10px] text-amber-700/90 leading-tight">{{ r.milestoneNotReadyNote }}</div>
+                      </td>
                       <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.milestoneRequestedDate) }}</td>
                       <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.installScheduled) }}</td>
                       <td class="text-right px-3 py-1.5">{{ fmtMoney(r.milestoneExpectedAmount) }}</td>
@@ -670,6 +674,10 @@ function milestoneForBucket(bucketKey: string): Milestone {
                       <p class="font-semibold">{{ daysSince(r.milestoneRequestedDate) }}</p>
                     </div>
                   </div>
+                  <!-- What's holding it up — the "Not Ready for Funding" reason -->
+                  <p v-if="r.milestoneNotReadyNote" class="mt-1.5 text-[11px] leading-snug rounded bg-amber-50 text-amber-900 px-2 py-1">
+                    {{ r.milestoneNotReadyNote }}
+                  </p>
                 </div>
               </div>
             </template>
@@ -769,6 +777,7 @@ function milestoneForBucket(bucketKey: string): Milestone {
        to null on close keeps the dashboard's bucket/audit state intact. -->
   <ProjectDetailDialog
     :project="selectedProject"
+    context="funding"
     @update:open="(v) => { if (!v) selectedProject = null }"
   />
 </template>

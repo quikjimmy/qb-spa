@@ -1224,6 +1224,8 @@ export function buildM1NotM2(filters: Filters) {
       COALESCE(m2_approved_date, '') AS m2ApprovedDate,
       COALESCE(m2_net_received, 0) AS m2NetReceived,
       COALESCE(m2_status, '') AS m2Status,
+      COALESCE(m2_not_ready_note, '') AS m2NotReadyNote,
+      COALESCE(m2_funding_note, '') AS m2FundingNote,
       COALESCE(m2_expected_amount, 0) AS m2ExpectedAmount,
       COALESCE(system_price, 0) AS systemPrice,
       COALESCE(system_size_kw, 0) AS systemSizeKw
