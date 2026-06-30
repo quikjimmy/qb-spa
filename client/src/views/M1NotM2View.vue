@@ -10,6 +10,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { openProjectWithEvent } from '@/lib/openProject'
+import { isBlockerLive } from '@/lib/fundingNotes'
 import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { localTodayIso } from '@/lib/dates'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -493,7 +494,7 @@ const totals = computed(() => {
                 <td class="p-1.5 font-mono font-semibold" :class="installCell(r).tone">{{ installCell(r).text }}</td>
                 <td class="p-1.5 max-w-[200px]" :title="r.m2NotReadyNote || r.m2Status">
                   <div class="font-mono font-semibold" :class="m2Cell(r).tone">{{ m2Cell(r).text }}</div>
-                  <div v-if="r.m2NotReadyNote" class="truncate text-[9px] font-sans text-amber-700/90 leading-tight">{{ r.m2NotReadyNote }}</div>
+                  <div v-if="r.m2NotReadyNote && isBlockerLive(r.m2Status)" class="truncate text-[9px] font-sans text-amber-700/90 leading-tight">{{ r.m2NotReadyNote }}</div>
                 </td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m1RequestedDate) }}</td>
                 <td class="p-1.5 text-right font-mono tabular-nums text-muted-foreground">{{ daysSince(r.m2RequestedDate) }}</td>

@@ -75,9 +75,25 @@ const MILESTONES: Array<{ key: MilestoneKey; label: 'M1' | 'M2' | 'M3' }> = [
 ]
 
 /**
- * Collect the milestones that carry a funding note (reason and/or recent note).
- * `only` narrows to a single milestone (used by the list views, which focus on
- * one milestone per report).
+ * Is a milestone's "not ready" blocker still live (worth showing)?
+ *
+ * QB's "Not Ready for Funding Note" is captured at the funding event and persists
+ * after the milestone completes — so it hangs around on Received/Approved projects
+ * as stale text. The note is only meaningful while the milestone is *currently*
+ * "Not Ready". Once status moves to Ready-to-Request / Pending / Approved /
+ * Received / Rejected, the milestone has been submitted (or is past it) and the
+ * blocker should be suppressed. Status is the system's truth here, so gate on it
+ * directly (a stray requested-date on a still-"Not Ready" row should still show).
+ */
+export function isBlockerLive(status: string | null | undefined): boolean {
+  return /not\s*ready/i.test(String(status ?? ''))
+}
+
+/**
+ * Collect the milestones whose "not ready" blocker is still live (reason and/or
+ * recent note). Milestones that have been submitted/approved/received/rejected are
+ * dropped so stale comments don't hang in the section. `only` narrows to a single
+ * milestone (used by the list views, which focus on one milestone per report).
  */
 export function collectMilestoneNotes(row: Row, only?: MilestoneKey): MilestoneNotes[] {
   const out: MilestoneNotes[] = []
@@ -86,10 +102,12 @@ export function collectMilestoneNotes(row: Row, only?: MilestoneKey): MilestoneN
     const reason = pick(row, `${m.key}_not_ready_note`, `${m.label}NotReadyNote`, 'milestoneNotReadyNote')
     const recentRaw = pick(row, `${m.key}_funding_note`, `${m.label}FundingNote`, 'milestoneFundingNote')
     if (!reason && !recentRaw) continue
+    const status = pick(row, `${m.key}_status`, `${m.label}Status`, 'milestoneStatus')
+    if (!isBlockerLive(status)) continue
     out.push({
       key: m.key,
       label: m.label,
-      status: pick(row, `${m.key}_status`, `${m.label}Status`, 'milestoneStatus'),
+      status,
       reason,
       recent: parseFundingNotes(recentRaw),
     })

@@ -10,6 +10,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { openProjectWithEvent } from '@/lib/openProject'
+import { isBlockerLive } from '@/lib/fundingNotes'
 import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { localTodayIso } from '@/lib/dates'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -419,7 +420,7 @@ const totals = computed(() => {
                 <td class="px-2 py-1.5 font-mono font-semibold" :class="m3Cell(r).tone">{{ m3Cell(r).text }}</td>
                 <td class="px-2 py-1.5 max-w-[200px]" :title="r.m3NotReadyNote || r.m3Status">
                   <div class="truncate">{{ r.m3Status || '—' }}</div>
-                  <div v-if="r.m3NotReadyNote" class="truncate text-[10px] text-amber-700/90 leading-tight">{{ r.m3NotReadyNote }}</div>
+                  <div v-if="r.m3NotReadyNote && isBlockerLive(r.m3Status)" class="truncate text-[10px] text-amber-700/90 leading-tight">{{ r.m3NotReadyNote }}</div>
                 </td>
                 <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSinceM2(r) }}</td>
                 <td class="text-right px-3 py-1.5">{{ fmtMoney(r.m3ExpectedAmount) }}</td>
