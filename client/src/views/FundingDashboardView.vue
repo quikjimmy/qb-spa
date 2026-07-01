@@ -48,6 +48,7 @@ const auth = useAuthStore()
 const router = useRouter()
 const overview = ref<Overview | null>(null)
 const loading = ref(true)
+const liveRefreshing = ref(false)
 const err = ref('')
 
 // Selected milestone — persists in localStorage so a coordinator
@@ -160,6 +161,18 @@ function sortedRows(bucketKey: string): AuditRow[] {
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
 
+// Pull M1/M2/M3 dates live from QB into the cache before the first read
+// so the dashboard opens on current data, not the lagging tier cache.
+// Server-side guard/coalescing means this is cheap on rapid reloads; on
+// failure we fall through and render whatever the cache holds.
+async function refreshLive() {
+  liveRefreshing.value = true
+  try {
+    await fetch('/api/funding/refresh', { method: 'POST', headers: hdrs() })
+  } catch { /* fall back to cache */ }
+  finally { liveRefreshing.value = false }
+}
+
 async function loadOverview() {
   loading.value = true
   err.value = ''
@@ -209,7 +222,12 @@ function setMilestone(m: MilestoneMode) {
   loadOverview()
 }
 
-onMounted(() => { loadOverview(); loadFilterOptions() })
+onMounted(async () => {
+  loadFilterOptions()
+  // Block on the live pull so the first numbers shown are current.
+  await refreshLive()
+  loadOverview()
+})
 watch(milestone, () => {
   // Re-fetch when milestone changes via toggle.
   auditRows.value = {}
@@ -512,7 +530,7 @@ function milestoneForBucket(bucketKey: string): Milestone {
       </div>
     </div>
 
-    <p v-if="loading" class="text-sm text-muted-foreground italic">Loading…</p>
+    <p v-if="loading" class="text-sm text-muted-foreground italic">{{ liveRefreshing ? 'Fetching live funding data from QuickBase…' : 'Loading…' }}</p>
     <div v-else-if="err" class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
       Failed to load: {{ err }}
     </div>
