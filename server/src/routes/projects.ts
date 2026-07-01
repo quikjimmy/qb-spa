@@ -827,6 +827,119 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
   }
 }
 
+// ─── On-demand live funding refresh ──────────────────────
+// The Funding Dashboard can't live with tier-cadence lag (or its
+// off-hours gating): finance needs M1/M2/M3 dates as they stand in QB
+// *right now*. On page load we run a delta pull (records modified since
+// the funding watermark) and upsert into project_cache exactly like a
+// tier refresh; the /api/funding/* endpoints then read the fresh cache.
+// A short min-interval guard + a single-flight promise keep concurrent
+// loads and rapid reloads from hammering QB. We reuse the tier_runs
+// table with a dedicated 'funding' row purely for watermark + status
+// bookkeeping — it is NOT registered with the cron scheduler.
+const FUNDING_REFRESH_MIN_INTERVAL_MS = 15_000
+let fundingRefreshInFlight: Promise<{ rows: number; skipped: boolean }> | null = null
+
+export async function refreshFundingLive(): Promise<{ rows: number; skipped: boolean }> {
+  // Coalesce concurrent callers onto one in-flight pull.
+  if (fundingRefreshInFlight) return fundingRefreshInFlight
+
+  const runRow = db.prepare(`
+    SELECT last_watermark AS wm,
+           (julianday('now') - julianday(last_finished_at)) * 86400000.0 AS ageMs
+      FROM project_cache_tier_runs WHERE tier = 'funding'
+  `).get() as { wm: string | null; ageMs: number | null } | undefined
+
+  // Min-interval guard: a funding pull just finished → the cache is
+  // already fresh, so skip QB and let the caller read it.
+  if (runRow && runRow.ageMs != null && runRow.ageMs >= 0 && runRow.ageMs < FUNDING_REFRESH_MIN_INTERVAL_MS) {
+    return { rows: 0, skipped: true }
+  }
+
+  // Bootstrap the funding watermark from the furthest-along cron tier so
+  // the first funding pull is a delta, not a full-table scan.
+  let watermark = runRow?.wm || null
+  if (!watermark) {
+    const seed = db.prepare(
+      `SELECT MAX(last_watermark) AS wm FROM project_cache_tier_runs WHERE tier IN ('hot', 'warm', 'cool', 'cold')`
+    ).get() as { wm: string | null } | undefined
+    watermark = seed?.wm || null
+  }
+
+  fundingRefreshInFlight = (async () => {
+    db.prepare(`INSERT INTO project_cache_tier_runs (tier, last_started_at, last_status) VALUES ('funding', datetime('now'), 'running')
+                ON CONFLICT(tier) DO UPDATE SET last_started_at = excluded.last_started_at, last_status = excluded.last_status`).run()
+    try {
+      const { realm, token } = getQbConfig()
+      // Same delta shape as refreshTier: "modified after the watermark
+      // floor" (2-min overlap for tied Date Modified values), else all
+      // non-test rows. Tier classification happens in JS after pulling.
+      const queryWatermark = watermarkFloor(watermark)
+      const where = queryWatermark
+        ? `{622.EX.'false'}AND{2.AF.'${queryWatermark}'}`
+        : `{622.EX.'false'}`
+
+      let allRecords: Array<Record<string, { value: unknown }>> = []
+      let skip = 0
+      const batch = 1000
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ from: 'br9kwm8na', select: selectFids, where, options: { skip, top: batch } }),
+        })
+        if (!res.ok) throw new Error(`QB funding refresh query failed: ${res.status}`)
+        const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+        const records = data.data || []
+        allRecords = allRecords.concat(records)
+        if (records.length < batch) break
+        skip += batch
+      }
+
+      const cols = fieldMap.map(f => f.col).join(', ')
+      const placeholders = fieldMap.map(() => '?').join(', ')
+      const upsert = db.prepare(`
+        INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
+        VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
+      `)
+      let changed = 0
+      db.transaction(() => {
+        for (const rec of allRecords) {
+          const computedTier = classifyTier({
+            status: val(rec, 255) || null,
+            install_scheduled: val(rec, 178) || null,
+            install_completed: val(rec, 534) || null,
+            inspection_passed: val(rec, 491) || null,
+            pto_approved: val(rec, 538) || null,
+            qb_modified_at: val(rec, 2) || null,
+            permit_rejected: val(rec, 706) || null,
+            nem_rejected: val(rec, 1878) || null,
+          })
+          upsert.run(...mapRecordToValues(rec), computedTier)
+          changed++
+        }
+      })()
+
+      const nextWatermark = maxQbModified(watermark, allRecords)
+      db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_watermark = COALESCE(?, last_watermark), last_error = NULL WHERE tier = 'funding'`)
+        .run(changed, nextWatermark)
+      return { rows: changed, skipped: false }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'failed', last_error = ? WHERE tier = 'funding'`).run(msg)
+      throw e
+    } finally {
+      fundingRefreshInFlight = null
+    }
+  })()
+
+  return fundingRefreshInFlight
+}
+
 // ─── Refresh cache ───────────────────────────────────────
 
 async function refreshCache(): Promise<{ total: number; duration: number }> {

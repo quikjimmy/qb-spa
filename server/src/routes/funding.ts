@@ -2,8 +2,24 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { officeTodayIso } from '../lib/officeTime'
 import { buildM1NotM2, type Filters } from './reports'
+import { refreshFundingLive } from './projects'
 
 const router = Router()
+
+// ───────────────────────────────────────────────────────────────────
+// Live refresh — the dashboard calls this on load so M1/M2/M3 dates
+// reflect QB *now*, not the tier-cadence cache (which lags and is gated
+// off-hours). Delta pull, coalesced + rate-limited server-side; on QB
+// failure we still 200 so the page falls back to the (stale) cache.
+// ───────────────────────────────────────────────────────────────────
+router.post('/refresh', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await refreshFundingLive()
+    res.json({ refreshed: !result.skipped, ...result })
+  } catch (err) {
+    res.status(200).json({ refreshed: false, rows: 0, skipped: false, error: err instanceof Error ? err.message : String(err) })
+  }
+})
 
 // ───────────────────────────────────────────────────────────────────
 // Common baseline: Kin Home, not a test row, not yet fully funded,
