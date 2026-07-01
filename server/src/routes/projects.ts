@@ -176,6 +176,26 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
   } catch { /* ignore — purge runs again next boot */ }
 }
 
+// ─── Battery-adder cache ─────────────────────────────────
+// "Battery only" = system_size_kw < 1 AND ≥1 battery adder. Battery
+// presence lives on the adder table (bsaycczmf), not the project row:
+// QB's product_category is under-maintained (only ~50 of ~3,700+ adder
+// rows are tagged 'Battery'; most real batteries land in the generic
+// "Adder" bucket), so we detect via category='Battery' OR a battery
+// keyword on the product name. This small set (~a few hundred rids) is
+// refreshed independently of the tiered project sync — battery_only is
+// then a cheap join against project_cache.
+const BATTERY_ADDER_TABLE = 'bsaycczmf'
+// Category='Battery' is authoritative but under-tagged, so we union in a
+// product-name keyword match. QB's `.CT.` (contains) is case-insensitive.
+const BATTERY_NAME_KEYWORDS = ['Encharge', 'Franklin', 'Powerwall', 'SolarEdge Battery', 'Tesla', 'battery', 'Back-Up', 'Backup']
+db.exec(`
+  CREATE TABLE IF NOT EXISTS battery_project (
+    project_rid INTEGER PRIMARY KEY,
+    refreshed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
 // Tiered cache strategy migrations — wrapped in try/catch so a SQLite
 // quirk on a deploy can't take down the whole server import. If the
 // migration fails the cache is read-only-ish (no tier classification,
@@ -852,6 +872,56 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
   }
 }
 
+// ─── Refresh battery-adder set ───────────────────────────
+// One filtered query over the adder table → the set of project_rids that
+// carry a battery adder (category OR name keyword). Fully replaces the
+// battery_project table each run so removed adders drop out.
+async function refreshBatteryProjects(): Promise<{ total: number; duration: number }> {
+  const start = Date.now()
+  const { realm, token } = getQbConfig()
+  if (!token) throw new Error('QB_USER_TOKEN not configured')
+
+  const where = [
+    `{'17'.EX.'Battery'}`,
+    ...BATTERY_NAME_KEYWORDS.map(k => `{'56'.CT.'${k}'}`),
+  ].join('OR')
+
+  const rids = new Set<number>()
+  let skip = 0
+  const batch = 1000
+  while (true) {
+    const res = await fetch('https://api.quickbase.com/v1/records/query', {
+      method: 'POST',
+      headers: {
+        'QB-Realm-Hostname': realm,
+        'Authorization': `QB-USER-TOKEN ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ from: BATTERY_ADDER_TABLE, select: [10], where, options: { skip, top: batch } }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`QB battery-adder query failed (${res.status}): ${text.slice(0, 200)}`)
+    }
+    const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+    const records = data.data || []
+    for (const r of records) {
+      const rid = parseInt(String(r['10']?.value ?? ''), 10)
+      if (rid) rids.add(rid)
+    }
+    if (records.length < batch) break
+    skip += batch
+  }
+
+  db.transaction(() => {
+    db.prepare(`DELETE FROM battery_project`).run()
+    const ins = db.prepare(`INSERT OR REPLACE INTO battery_project (project_rid) VALUES (?)`)
+    for (const rid of rids) ins.run(rid)
+  })()
+
+  return { total: rids.size, duration: Date.now() - start }
+}
+
 // ─── Refresh cache ───────────────────────────────────────
 
 async function refreshCache(): Promise<{ total: number; duration: number }> {
@@ -1012,6 +1082,9 @@ router.get('/', (req: Request, res: Response): void => {
   const pipeline = req.query['pipeline'] as string | undefined
   const sort = req.query['sort'] as string | undefined
   const favoritesOnly = req.query['favorites'] === '1'
+  // "Battery only" = placeholder system size (< 1 kW) AND a battery adder
+  // (battery_project set, refreshed from the adder table).
+  const batteryOnly = req.query['battery_only'] === '1'
   const limit = Math.min(parseInt(req.query['limit'] as string) || 100, 500)
   const offset = parseInt(req.query['offset'] as string) || 0
 
@@ -1065,6 +1138,7 @@ router.get('/', (req: Request, res: Response): void => {
   if (closer) { where += ' AND closer = ?'; params.push(closer) }
   if (lender) { where += ' AND lender = ?'; params.push(lender) }
   if (epc) { where += ' AND epc = ?'; params.push(epc) }
+  if (batteryOnly) { where += ' AND system_size_kw < 1 AND record_id IN (SELECT project_rid FROM battery_project)' }
   if (salesFrom) { where += " AND sales_date >= ?"; params.push(salesFrom) }
   if (salesTo) { where += " AND sales_date <= ?"; params.push(salesTo) }
   if (surveyFrom) { where += " AND survey_scheduled >= ?"; params.push(surveyFrom) }
@@ -1114,7 +1188,9 @@ router.get('/', (req: Request, res: Response): void => {
   else if (sort === 'sales_desc') orderBy = 'sales_date DESC, record_id DESC'
 
   const items = db.prepare(`
-    SELECT * FROM project_cache
+    SELECT *,
+      (system_size_kw < 1 AND record_id IN (SELECT project_rid FROM battery_project)) AS battery_only
+    FROM project_cache
     ${where}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
@@ -1172,6 +1248,7 @@ router.get('/', (req: Request, res: Response): void => {
   if (closer) { kpiWhere += ' AND closer = ?'; kpiParams.push(closer) }
   if (lender) { kpiWhere += ' AND lender = ?'; kpiParams.push(lender) }
   if (epc) { kpiWhere += ' AND epc = ?'; kpiParams.push(epc) }
+  if (batteryOnly) { kpiWhere += ' AND system_size_kw < 1 AND record_id IN (SELECT project_rid FROM battery_project)' }
 
   // today already declared above for pipeline filter
 
@@ -1274,6 +1351,18 @@ router.post('/refresh', async (_req: Request, res: Response): Promise<void> => {
   }
 })
 
+// Manual battery-adder refresh — rebuilds the battery_project set that
+// backs the "battery only" filter/badge. Admin-only; also runs on a cron.
+router.post('/refresh-battery', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user?.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  try {
+    const result = await refreshBatteryProjects()
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // Manual tier refresh — primarily for the admin "Refresh now" buttons
 // and for the agent platform when it wants to force a tier sweep.
 router.post('/refresh-tier/:tier', async (req: Request, res: Response): Promise<void> => {
@@ -1311,6 +1400,14 @@ router.get('/freshness', (_req: Request, res: Response): void => {
 // Single-project read. With ?live=1, fetches QB inline and updates
 // the cache; without it, returns from cache. Default to live for
 // project-detail to keep that screen always-fresh.
+// battery_only isn't a stored column — derive it from the placeholder
+// system size + membership in the battery_project set so the detail page
+// can show the same badge the list does.
+function batteryOnlyFlag(recordId: number, sizeKw: unknown): 0 | 1 {
+  const size = typeof sizeKw === 'number' ? sizeKw : parseFloat(String(sizeKw ?? ''))
+  if (!(size < 1)) return 0
+  return db.prepare('SELECT 1 FROM battery_project WHERE project_rid = ?').get(recordId) ? 1 : 0
+}
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   const recordId = parseInt(String(req.params['id'] || ''), 10)
   if (!Number.isFinite(recordId) || recordId <= 0) { res.status(400).json({ error: 'invalid id' }); return }
@@ -1323,12 +1420,12 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     if (live) {
       const fresh = await fetchOneLive(recordId)
       if (!fresh) { res.status(404).json({ error: 'not found' }); return }
-      res.json({ project: fresh, source: 'live' })
+      res.json({ project: { ...fresh, battery_only: batteryOnlyFlag(recordId, fresh['system_size_kw']) }, source: 'live' })
       return
     }
     const cached = db.prepare(`SELECT * FROM project_cache WHERE record_id = ?`).get(recordId) as Record<string, unknown> | undefined
     if (!cached) { res.status(404).json({ error: 'not in cache' }); return }
-    res.json({ project: cached, source: 'cache' })
+    res.json({ project: { ...cached, battery_only: batteryOnlyFlag(recordId, cached['system_size_kw']) }, source: 'cache' })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
@@ -1551,6 +1648,24 @@ export function startProjectCacheScheduler(): void {
       }
     })
   }
+  // Battery-adder set — adders change infrequently, so a 6-hour sweep is
+  // plenty. Also runs once shortly after boot so the filter/badge work on
+  // a fresh deploy without waiting for the first cron tick.
+  cron.schedule('17 */6 * * *', async () => {
+    try {
+      if (!getQbConfig().token) return
+      const result = await refreshBatteryProjects()
+      console.log(`[project-cache] battery set refreshed: ${result.total} projects in ${result.duration}ms`)
+    } catch (e) {
+      console.error('[project-cache] battery refresh failed:', e instanceof Error ? e.message : e)
+    }
+  })
+  if (getQbConfig().token) {
+    refreshBatteryProjects()
+      .then(r => console.log(`[project-cache] battery set seeded: ${r.total} projects`))
+      .catch(e => console.error('[project-cache] battery seed failed:', e instanceof Error ? e.message : e))
+  }
+
   console.log('[project-cache] scheduler started: hot=5m warm=30m cool=6h cold=24h (hot/warm/cool gated on user activity)')
 }
 
