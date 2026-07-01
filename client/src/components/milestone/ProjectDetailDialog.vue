@@ -19,6 +19,7 @@ import EventsView from '@/components/project-detail/EventsView.vue'
 import Tickets from '@/components/project-detail/Tickets.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import FundingChips, { type FundingProject } from '@/components/project-detail/FundingChips.vue'
+import FundingNotes from '@/components/project-detail/FundingNotes.vue'
 import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
 
@@ -62,6 +63,8 @@ interface ProjectRow {
 const props = defineProps<{
   /** When non-null, dialog is open and rendering this project. */
   project: ProjectRow | null
+  /** Where the drawer was opened from. 'funding' emphasizes the funding-notes section. */
+  context?: 'funding' | 'default'
 }>()
 
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
@@ -240,6 +243,11 @@ const hasFunding = computed(() => {
           <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Funding</p>
           <FundingChips :p="project as unknown as FundingProject" />
         </div>
+
+        <!-- Funding notes — why a milestone isn't ready + when the team last
+             looked. Self-gating (renders nothing without notes); emphasized
+             when the drawer was opened from a funding report. -->
+        <FundingNotes :p="project" :emphasis="context === 'funding'" />
 
         <!-- Milestone strip -->
         <div class="px-4 pb-3">

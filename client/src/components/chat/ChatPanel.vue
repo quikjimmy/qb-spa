@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import ProjectStatusBadge from '@/components/project-detail/ProjectStatusBadge.vue'
 import ModelPicker from '@/components/chat/ModelPicker.vue'
+import MarkdownMessage from '@/components/chat/MarkdownMessage.vue'
 import { playChime, unlockChime, chimeEnabled, setChimeEnabled } from '@/lib/chime'
 
 interface Thread {
@@ -505,13 +506,18 @@ defineExpose({ openModelPicker: () => { modelPickerOpen.value = true } })
               </div>
               <!-- Final (or error) content -->
               <div v-else
-                class="px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words"
+                class="px-4 py-3 rounded-2xl text-sm leading-relaxed break-words"
                 :class="m.role === 'user'
                   ? 'bg-foreground text-background rounded-br-md'
                   : m.error
                     ? 'bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-200 rounded-bl-md'
                     : 'bg-gradient-to-br from-card to-muted/40 rounded-bl-md'"
-              >{{ m.content }}</div>
+              >
+                <!-- Assistant replies render markdown (sanitized); user messages
+                     and the error notice stay plain text. -->
+                <MarkdownMessage v-if="m.role === 'assistant' && !m.error" :content="m.content" />
+                <span v-else class="whitespace-pre-wrap">{{ m.content }}</span>
+              </div>
               <div v-if="m.role === 'assistant' && m.status !== 'pending' && (m.provider || m.cost_cents > 0)"
                 class="mt-1 px-1 text-[10px] text-muted-foreground/70 tabular-nums flex items-center gap-1.5"
               >

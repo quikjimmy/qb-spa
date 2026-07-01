@@ -41,6 +41,7 @@ interface Project extends Record<string, unknown> {
   utility_company: string | null
   state: string | null
   system_size_kw: number | null
+  battery_only?: number
   sales_date: string | null
   intake_completed: string | null
   survey_scheduled: string | null
@@ -590,6 +591,7 @@ const customerForCard = computed(() => {
     email: p.email,
     status: p.status,
     system_size_kw: p.system_size_kw,
+    battery_only: p.battery_only,
     utility_company: p.utility_company,
     ahj_name: p.ahj_name,
     coordinator: p.coordinator,
