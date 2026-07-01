@@ -905,8 +905,17 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
 
   if (rows.length === 0) { res.json({ tasks: [], window: { fromIso, toIso } }); return }
 
-  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number }>()
-  for (const r of rows) projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0 })
+  // Battery-only mirrors projects.ts: system_size_kw < 1 AND a battery
+  // adder (battery_project set). SQL's NULL < 1 is falsy there, so a
+  // missing system size must NOT count as battery-only here either.
+  const batteryRids = new Set(
+    (db.prepare('SELECT project_rid FROM battery_project').all() as Array<{ project_rid: number }>).map(r => r.project_rid)
+  )
+  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number; battery_only: boolean }>()
+  for (const r of rows) {
+    const batteryOnly = r.system_size_kw != null && Number(r.system_size_kw) < 1 && batteryRids.has(Number(r.record_id))
+    projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0, battery_only: batteryOnly })
+  }
 
   // ONE QB call: date window only, then filter in-memory against the PC
   // project rid set. Looping QB per 50-rid batch was the previous shape
@@ -1050,6 +1059,7 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
       task_type_key: tt.key,
       task_type_label: tt.label,
       system_size_kw: meta?.system_size_kw || 0,
+      battery_only: meta?.battery_only || false,
       scheduled_at: String(fieldValue(rec, F.scheduledDateTime) || ''),
       crew_names: crewNames(rec),
       status: c.status,

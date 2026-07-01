@@ -211,6 +211,7 @@ interface UpcomingTask {
   task_type_key: string
   task_type_label: string
   system_size_kw: number
+  battery_only: boolean
   scheduled_at: string
   crew_names: string
   status: 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
@@ -1214,7 +1215,10 @@ watch([viewMode, fCoordinator], () => {
 </script>
 
 <template>
-  <div class="grid gap-2 sm:gap-3">
+  <!-- grid-cols-1 matters: without it the implicit column track is
+       auto-sized, so one wide child (min-content) stretches every
+       section past the viewport on phones and the content clips. -->
+  <div class="grid grid-cols-1 gap-2 sm:gap-3">
     <!-- Header (sticky) -->
     <div class="sticky top-0 z-20 bg-background flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
       <div class="flex flex-col gap-0.5 min-w-0 w-full sm:w-auto">
@@ -1643,8 +1647,8 @@ watch([viewMode, fCoordinator], () => {
       <!-- Editorial chip strip: tonal background, no borders, active is
            solid foreground. Custom chip reveals an inline date-range
            picker below. Group toggle uses sliding-pill pattern. -->
-      <div class="flex items-center gap-2 flex-wrap">
-        <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 flex-1 min-w-0">
+      <div class="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+        <div class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 sm:flex-1 min-w-0">
           <button v-for="c in WINDOW_CHIPS" :key="c.k"
             class="shrink-0 px-3 py-1.5 rounded-full text-[11.5px] font-medium tracking-tight transition-all duration-200 cursor-pointer"
             :class="windowKey === c.k ? 'bg-foreground text-background shadow-sm' : 'bg-foreground/[0.04] text-foreground/70 hover:bg-foreground/[0.08] hover:text-foreground'"
@@ -1659,7 +1663,7 @@ watch([viewMode, fCoordinator], () => {
             Custom
           </button>
         </div>
-        <div class="flex rounded-full overflow-hidden shrink-0 bg-foreground/[0.04] p-0.5">
+        <div class="flex rounded-full overflow-hidden shrink-0 bg-foreground/[0.04] p-0.5 self-end sm:self-auto">
           <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'time' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'time'" title="Sort chronologically">Time</button>
           <button class="px-3 py-1 rounded-full text-[11px] font-medium tracking-tight transition-all duration-200 cursor-pointer" :class="groupBy === 'type' ? 'bg-card shadow-sm text-foreground' : 'text-foreground/60 hover:text-foreground'" @click="groupBy = 'type'" title="Group by task type">By Type</button>
         </div>
@@ -1708,9 +1712,9 @@ watch([viewMode, fCoordinator], () => {
             >
               <div class="absolute top-0 left-0 right-0" :class="[tileAccent(typeAccentColor(bt.key)).strip, filterType === bt.key ? 'h-[6px]' : 'h-[3px]']" />
               <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">{{ bt.label }}</p>
-              <p class="mt-1 flex items-baseline gap-1 min-w-0">
+              <p class="mt-1 flex items-baseline gap-0.5 min-w-0">
                 <span class="text-2xl font-extrabold tabular-nums leading-none" :class="tileAccent(typeAccentColor(bt.key)).text">{{ bt.count }}</span>
-                <span v-if="bt.key === 'install' && bt.kw > 0" class="text-[10px] font-bold tabular-nums truncate" :class="tileAccent(typeAccentColor(bt.key)).text">/ {{ Math.round(bt.kw).toLocaleString() }} kW</span>
+                <span v-if="bt.key === 'install' && bt.kw > 0" class="text-[9px] sm:text-[10px] font-bold tabular-nums truncate" :class="tileAccent(typeAccentColor(bt.key)).text">/ {{ Math.round(bt.kw).toLocaleString() }} kW</span>
               </p>
             </button>
           </div>
@@ -1784,6 +1788,18 @@ watch([viewMode, fCoordinator], () => {
             <div class="flex items-center gap-1.5 min-w-0">
               <span class="size-1.5 shrink-0 rounded-full" :class="statusDotCls(t.status)" aria-hidden="true" />
               <span class="shrink-0 px-1.5 py-0.5 rounded-md text-[9.5px] font-semibold tracking-tight" :class="taskTypeChipCls(t.task_type_key)">{{ t.task_type_label }}</span>
+              <!-- Battery-only deal marker — same calm teal + glyph as
+                   BatteryOnlyBadge, icon-only so phone rows stay tight. -->
+              <span
+                v-if="t.battery_only"
+                class="shrink-0 inline-flex items-center justify-center size-4 rounded bg-teal-50 text-teal-700"
+                title="Battery only — no meaningful system size, has a battery adder"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="16" height="10" x="2" y="7" rx="2" ry="2" />
+                  <line x1="22" x2="22" y1="11" y2="13" />
+                </svg>
+              </span>
               <p class="font-semibold text-[13px] flex-1 min-w-0 truncate text-foreground/90">
                 {{ t.customer_name || 'Unknown' }}
               </p>
@@ -1800,20 +1816,27 @@ watch([viewMode, fCoordinator], () => {
               <span v-if="isTaskLate(t)" class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-bold tracking-wide bg-rose-100/80 text-rose-800 ring-1 ring-rose-200/60">
                 <span class="size-1 rounded-full bg-rose-500" />LATE
               </span>
+              <!-- Below sm the label collapses to icon-only so the
+                   customer name keeps readable width on phones; the
+                   pill tint + status dot still carry the state. -->
               <span
-                class="inline-flex items-center gap-1 rounded-full font-medium shrink-0 whitespace-nowrap px-2 py-0.5 text-[10px] tracking-tight"
+                class="inline-flex items-center gap-1 rounded-full font-medium shrink-0 whitespace-nowrap px-1.5 sm:px-2 py-0.5 text-[10px] tracking-tight"
                 :class="statusPillCls(t.status)"
+                :title="t.status_label"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-2.5" aria-hidden="true" v-html="STATUS_ICON_PATHS[t.status]" />
-                {{ t.status_label }}
+                <span class="hidden sm:inline">{{ t.status_label }}</span>
               </span>
             </div>
-            <!-- Secondary row: 👷 contractor · time · coordinator +
-                 progress chips + Arrivy link. Hard-hat emoji marks
-                 the line as "who's doing the work". -->
+            <!-- Secondary row: time · 👷 contractor · coordinator +
+                 progress chips + Arrivy link. Time leads because it's
+                 short and fixed-width — when the line truncates on
+                 phones it's the crew list that loses characters, not
+                 the schedule time. Hard-hat emoji marks "who's doing
+                 the work". -->
             <div class="flex items-center justify-between gap-2 mt-1 min-w-0">
               <p class="text-[10.5px] truncate min-w-0 flex-1 text-muted-foreground" :class="t.status === 'cancelled' ? 'text-rose-800/70' : ''">
-                <span class="mr-0.5" aria-hidden="true">👷</span>{{ t.crew_names || 'Unassigned' }}<span class="text-foreground/30"> · </span><span class="tabular-nums">{{ fmtScheduled(t.scheduled_at) }}</span><template v-if="t.project_coordinator && viewMode === 'team'"><span class="text-foreground/30"> · </span>{{ t.project_coordinator }}</template>
+                <span class="tabular-nums">{{ fmtScheduled(t.scheduled_at) }}</span><span class="text-foreground/30"> · </span><span class="mr-0.5" aria-hidden="true">👷</span>{{ t.crew_names || 'Unassigned' }}<template v-if="t.project_coordinator && viewMode === 'team'"><span class="text-foreground/30"> · </span>{{ t.project_coordinator }}</template>
               </p>
               <div class="flex items-center gap-1 shrink-0">
                 <span v-for="(c, i) in progressChips(t)" :key="i" class="text-[9px] font-semibold px-1 py-px rounded whitespace-nowrap tracking-wider" :class="c.cls">{{ c.label }}</span>
