@@ -45,6 +45,7 @@ import { startPredictedLatePoller } from './lib/predictedLatePoller'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
+import { startOutreachCacheScheduler } from './routes/pc-dashboard'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 import { startFeedbackTriageScheduler } from './lib/feedbackTriageSchedule'
 import { reportsRouter } from './routes/reports'
@@ -183,6 +184,7 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
   try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
   try { startTicketCacheScheduler() } catch (e) { console.error('[startup] ticket cache scheduler failed:', e) }
+  try { startOutreachCacheScheduler() } catch (e) { console.error('[startup] outreach cache scheduler failed:', e) }
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
   try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
   try { startPredictedLatePoller() } catch (e) { console.error('[startup] predicted-late poller failed:', e) }
