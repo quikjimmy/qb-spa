@@ -32,6 +32,8 @@ interface FlashStage {
   lastMtd: Metric; ytd: Metric; lastYtd: Metric
   isTotal?: boolean
 }
+interface WeeklyWeek { start: string; end: string; isCurrent: boolean }
+interface WeeklyStage { key: string; label: string; isTotal?: boolean; weeks: Metric[] }
 interface GapMetric { count: number; kw: number; rev: number; avgAgeDays: number; p90AgeDays: number; oldestDays: number; daysSupply: number }
 interface AgingBucket { key: string; label: string; min: number; max: number | null; count: number; kw: number; rev: number }
 interface StuckDeal {
@@ -68,6 +70,8 @@ interface Report {
   timeframe: { from: string; to: string; key: string }
   sla: SLA
   flash: { stages: FlashStage[]; sellingDaysElapsed: number; sellingDaysTotal: number; operatingDaysElapsed: number; operatingDaysTotal: number }
+  // Optional so the client stays graceful against a not-yet-redeployed server.
+  weekly?: { weeks: WeeklyWeek[]; stages: WeeklyStage[] }
   gaps: {
     soldNotInstalled: GapMetric
     installedNotM2: GapMetric
@@ -82,6 +86,7 @@ interface Report {
   appliedFilters: { state?: string; closer?: string; lender?: string }
 }
 type Unit = '#' | 'kW' | '$'
+type TopView = 'daily' | 'weekly'
 type Timeframe = 'yesterday' | '7d' | 'mtd' | '30d' | '60d' | 'ytd' | 'custom'
 type GapKey = 'soldNotInstalled' | 'installedNotM2' | 'm2NotM3' | 'm3NotDca'
 type Dimension = 'state' | 'closer' | 'setter' | 'sales_office' | 'lender' | 'utility' | 'ahj' | 'area_director' | 'coordinator'
@@ -113,6 +118,9 @@ const asOf = ref((route.query['asOf'] as string) || localTodayIso())
 // $ view is for finance and # is for ops density). Stored value still
 // wins for repeat visitors.
 const unit = ref<Unit>((route.query['unit'] as Unit) || (stored['unit'] as Unit) || 'kW')
+// Top table view — 'daily' (existing flash) or 'weekly' (Mon–Sun buckets).
+// Defaults to daily so the report opens exactly as it always has.
+const topView = ref<TopView>((route.query['top'] as TopView) || (stored['top'] as TopView) || 'daily')
 const macdSubject = ref<MacdSubject>('booked')
 
 const data = ref<Report | null>(null)
@@ -154,6 +162,7 @@ function persist() {
     if (customTo.value)   payload['to']   = customTo.value
   }
   if (unit.value !== 'kW') payload['unit'] = unit.value
+  if (topView.value !== 'daily') payload['top'] = topView.value
   if (drillGap.value) payload['drill'] = drillGap.value
   if (drillGap.value && drillDim.value !== 'state') payload['drillDim'] = drillDim.value
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)) } catch { /* ignore */ }
@@ -216,6 +225,8 @@ function setCloser(s: unknown)    { const value = String(s ?? ''); fCloser.value
 function setLender(s: unknown)    { const value = String(s ?? ''); fLender.value = value === '__all__' ? '' : value; persist(); load() }
 function setTimeframe(t: Timeframe) { timeframe.value = t; persist(); load() }
 function setUnit(u: Unit)        { unit.value = u; persist() }
+// No reload — weekly buckets ship in the main payload alongside flash.
+function setTopView(v: TopView)  { topView.value = v; persist() }
 
 function clearFilters() {
   fState.value = ''; fCloser.value = ''; fLender.value = ''
@@ -573,6 +584,25 @@ function m2Cell(r: AuditRow): { text: string; tone: string } {
   return { text: '—', tone: 'text-muted-foreground' }
 }
 
+// Week column label — the Monday, e.g. "Jun 29" (per ui-component-specs:
+// weekly buckets are labeled by their Monday). Current week says "This wk".
+function fmtWeekLabel(w: WeeklyWeek): string {
+  if (w.isCurrent) return 'This wk'
+  const d = new Date(w.start + 'T12:00:00')
+  if (!Number.isFinite(d.getTime())) return w.start
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// Responsive collapse for week columns — weeks arrive newest-first, so
+// the leading columns stay visible and older ones appear as the viewport
+// widens (3 weeks on mobile, 4 on sm, all 8 on md+). Same column-hiding
+// pattern the Daily Flash table uses, so the top table never h-scrolls.
+function weekColClass(idx: number): string {
+  if (idx >= 4) return 'hidden md:table-cell'
+  if (idx === 3) return 'hidden sm:table-cell'
+  return ''
+}
+
 function daysSinceNum(s: string): number | null {
   if (!s) return null
   const then = new Date(s.slice(0, 10) + 'T00:00:00').getTime()
@@ -787,14 +817,66 @@ function sortedAuditRows(key: GapKey): AuditRow[] {
            clicking a quick-pill above visibly shifts which number is the
            "headline" — addresses the "filters didn't change much" feel. -->
       <section class="space-y-2">
-        <div class="flex items-baseline justify-between gap-2 flex-wrap">
-          <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Daily Flash</h2>
-          <p class="text-[10px] text-muted-foreground">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="flex items-center gap-2 min-w-0">
+            <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{{ topView === 'weekly' && data.weekly ? 'Weekly Flash' : 'Daily Flash' }}</h2>
+            <!-- Daily / Weekly toggle — same segmented style as the unit
+                 toggle above so it reads as one control family. -->
+            <div v-if="data.weekly" class="flex gap-0.5 p-0.5 bg-muted rounded-lg">
+              <button
+                v-for="v in (['daily','weekly'] as TopView[])" :key="v"
+                class="px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors capitalize"
+                :class="topView === v ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'"
+                :aria-pressed="topView === v"
+                @click="setTopView(v)"
+              >{{ v }}</button>
+            </div>
+          </div>
+          <p v-if="topView === 'weekly' && data.weekly" class="text-[10px] text-muted-foreground">
+            Mon–Sun weeks · latest is week-to-date
+          </p>
+          <p v-else class="text-[10px] text-muted-foreground">
             sales days <span class="font-semibold">{{ data.flash.sellingDaysElapsed }}/{{ data.flash.sellingDaysTotal }}</span> ·
             operating days <span class="font-semibold">{{ data.flash.operatingDaysElapsed }}/{{ data.flash.operatingDaysTotal }}</span>
           </p>
         </div>
-        <div class="rounded-xl bg-card overflow-hidden">
+
+        <!-- Weekly view — stages × trailing Mon–Sun weeks. Same unit toggle
+             (# / kW / $) drives every cell via metricValue(). Older weeks
+             collapse away on narrow screens instead of h-scrolling. -->
+        <div v-if="topView === 'weekly' && data.weekly" class="rounded-xl bg-card overflow-hidden">
+          <table class="w-full text-[11px]" style="table-layout:fixed">
+            <thead>
+              <tr class="text-muted-foreground bg-muted/30">
+                <th class="text-left font-semibold p-2" style="width:22%">Stage</th>
+                <th
+                  v-for="(w, i) in data.weekly.weeks" :key="w.start"
+                  class="text-right font-semibold p-1.5"
+                  :class="[weekColClass(i), w.isCurrent ? 'text-foreground' : '']"
+                  :title="`${w.start} — ${w.end}`"
+                >{{ fmtWeekLabel(w) }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in data.weekly.stages" :key="`wk-${s.key}`"
+                  class="border-t border-border/30"
+                  :class="s.isTotal ? 'border-t-2 border-foreground/40 bg-muted/30 font-semibold' : ''">
+                <td class="p-2 font-medium truncate">{{ s.label }}</td>
+                <td
+                  v-for="(m, i) in s.weeks" :key="`wk-${s.key}-${i}`"
+                  class="p-1.5 text-right font-mono tabular-nums"
+                  :class="[
+                    weekColClass(i),
+                    data.weekly.weeks[i]?.isCurrent ? 'bg-foreground/5 font-bold' : '',
+                    m.count ? '' : 'text-muted-foreground/60',
+                  ]"
+                >{{ metricValue(m) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-else class="rounded-xl bg-card overflow-hidden">
           <table class="w-full text-[11px]" style="table-layout:fixed">
             <thead>
               <tr class="text-muted-foreground bg-muted/30">

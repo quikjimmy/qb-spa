@@ -51,6 +51,8 @@ function fmtDate(d: Date): string { return d.toISOString().slice(0, 10) }
 function shiftDays(d: Date, days: number): Date { const o = new Date(d); o.setUTCDate(o.getUTCDate() + days); return o }
 function shiftYears(d: Date, years: number): Date { const o = new Date(d); o.setUTCFullYear(o.getUTCFullYear() + years); return o }
 function startOfMonth(d: Date): Date { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 12)) }
+// Weeks are Monday–Sunday app-wide (docs/ui-component-specs.md).
+function startOfWeekMonday(d: Date): Date { return shiftDays(d, -((d.getUTCDay() + 6) % 7)) }
 function endOfMonth(d: Date): Date { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 12)) }
 function startOfYear(d: Date): Date { return new Date(Date.UTC(d.getUTCFullYear(), 0, 1, 12)) }
 
@@ -276,6 +278,44 @@ function buildFlash(asOf: Date, f: Filters): {
   stages.push(totalRow)
 
   return { stages, sellingDaysElapsed, sellingDaysTotal, operatingDaysElapsed, operatingDaysTotal }
+}
+
+// ─── Weekly table ────────────────────────────────────────
+// Same stages as the flash table, bucketed into trailing Monday–Sunday
+// weeks (newest first, current partial week included). Reuses rangeMetric
+// so all three units (count / kW / $) come back per cell and the client's
+// existing unit toggle just works.
+
+const WEEKLY_WEEKS = 8
+
+interface WeeklyWeek { start: string; end: string; isCurrent: boolean }
+interface WeeklyStage { key: string; label: string; isTotal?: boolean; weeks: Metric[] }
+
+function buildWeekly(asOf: Date, f: Filters): { weeks: WeeklyWeek[]; stages: WeeklyStage[] } {
+  const thisMonday = startOfWeekMonday(asOf)
+  const weeks: WeeklyWeek[] = []
+  for (let i = 0; i < WEEKLY_WEEKS; i++) {
+    const start = shiftDays(thisMonday, -7 * i)
+    weeks.push({ start: fmtDate(start), end: fmtDate(shiftDays(start, 6)), isCurrent: i === 0 })
+  }
+
+  const stages: WeeklyStage[] = STAGES.map(s => ({
+    key: s.key, label: s.label,
+    weeks: weeks.map(w => rangeMetric(s.col, s.valueCol, w.start, w.end, f)),
+  }))
+
+  // Synthetic Total Funded row — same M2 + M3 + DCA synthesis as buildFlash.
+  const fundedRows = stages.filter(s => (TOTAL_FUNDED_KEYS as readonly string[]).includes(s.key))
+  stages.push({
+    key: 'totalFunded', label: 'Total Funded (M2+M3+DCA)', isTotal: true,
+    weeks: weeks.map((_, i) => ({
+      count: fundedRows.reduce((a, s) => a + (s.weeks[i]?.count ?? 0), 0),
+      kw: Math.round(fundedRows.reduce((a, s) => a + (s.weeks[i]?.kw ?? 0), 0) * 10) / 10,
+      rev: Math.round(fundedRows.reduce((a, s) => a + (s.weeks[i]?.rev ?? 0), 0)),
+    })),
+  })
+
+  return { weeks, stages }
 }
 
 // ─── KPIs ────────────────────────────────────────────────
@@ -1171,6 +1211,7 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
   try {
     const timeframe = resolveTimeframe(tf, asOf, customFrom, customTo)
     const flash = buildFlash(asOf, filters)
+    const weekly = buildWeekly(asOf, filters)
     const gaps = buildGaps(asOf, timeframe, filters)
     const aging = buildAging(asOf, filters)
     const cycleTime = buildCycleTime(asOf, filters)
@@ -1183,6 +1224,7 @@ router.get('/booked-and-boarded', (req: Request, res: Response): void => {
       timeframe,
       sla: SLA,
       flash,
+      weekly,
       gaps,
       aging,
       cycleTime,
