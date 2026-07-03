@@ -10,6 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { getStatusConfig } from '@/lib/status'
+import { TOA_INFO, toaTitle, type ToaState } from '@/lib/arrivyStatus'
 import DataFreshness from '@/components/DataFreshness.vue'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays, userTz, localDayBoundsToUtc } from '@/lib/dates'
@@ -225,6 +226,7 @@ interface UpcomingTask {
     rtr_ready: boolean
     rtr_status: string
   }
+  toa: ToaState | null
 }
 
 // Full project_cache row used by ProjectDetailDialog (the shared
@@ -586,14 +588,21 @@ function taskTypeAccentTextCls(key: string): string {
 // Progress chips — direct port of the field app's chipsFor(t) logic so a
 // PC can see at a glance whether the crew is en route, on site, has
 // submitted, and whether RTR is ready. "filled" → action complete.
-function progressChips(t: UpcomingTask): Array<{ label: string; cls: string }> {
+function progressChips(t: UpcomingTask): Array<{ label: string; cls: string; title?: string }> {
   const filled = 'bg-emerald-100 text-emerald-700'
   const empty = 'bg-slate-100 text-slate-400'
-  const chips = [
+  const chips: Array<{ label: string; cls: string; title?: string }> = [
     { label: 'ER', cls: t.progress.enroute ? filled : empty },
     { label: 'OS', cls: t.progress.onsite ? filled : empty },
     { label: 'SUB', cls: t.progress.submitted ? filled : empty },
   ]
+  if (t.task_type_key === 'install' || t.task_type_key === 'battery') {
+    // MD (TOA material state) leads the install rail — tone carries the
+    // Ordered / Confirmed / Delivered state, tooltip has PO + distributor.
+    chips.unshift(t.toa
+      ? { label: 'MD', cls: TOA_INFO[t.toa.status].pillCls, title: toaTitle(t.toa) }
+      : { label: 'MD', cls: empty, title: 'No TOA material order on file' })
+  }
   if (t.task_type_key === 'install') {
     chips.push({ label: 'COMP', cls: t.progress.install_complete ? filled : empty })
     chips.push({ label: 'RTR', cls: t.progress.rtr_ready ? filled : empty })
@@ -1839,7 +1848,7 @@ watch([viewMode, fCoordinator], () => {
                 <span class="tabular-nums">{{ fmtScheduled(t.scheduled_at) }}</span><span class="text-foreground/30"> · </span><span class="mr-0.5" aria-hidden="true">👷</span>{{ t.crew_names || 'Unassigned' }}<template v-if="t.project_coordinator && viewMode === 'team'"><span class="text-foreground/30"> · </span>{{ t.project_coordinator }}</template>
               </p>
               <div class="flex items-center gap-1 shrink-0">
-                <span v-for="(c, i) in progressChips(t)" :key="i" class="text-[9px] font-semibold px-1 py-px rounded whitespace-nowrap tracking-wider" :class="c.cls">{{ c.label }}</span>
+                <span v-for="(c, i) in progressChips(t)" :key="i" class="text-[9px] font-semibold px-1 py-px rounded whitespace-nowrap tracking-wider" :class="c.cls" :title="c.title">{{ c.label }}</span>
                 <a v-if="t.task_url" :href="t.task_url" target="_blank" rel="noopener" class="text-[10px] font-semibold ml-0.5 text-foreground/40 hover:text-foreground transition-colors" @click.stop title="Open in Arrivy">↗</a>
               </div>
             </div>

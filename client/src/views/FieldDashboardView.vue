@@ -7,6 +7,7 @@ import FieldPerformance from '@/components/FieldPerformance.vue'
 import DataFreshness from '@/components/DataFreshness.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
+import { TOA_INFO, toaTitle, type ToaState } from '@/lib/arrivyStatus'
 
 // Field Ops dashboard — Vue rebuild of context-files/Field/example view.
 // Pulls Arrivy task data from /api/field/tasks (which proxies QuickBase),
@@ -45,6 +46,7 @@ interface TasksResponse {
   records: QbRecord[]; fields: FieldIds;
   cancelledTaskRids?: string[]
   cancelledTaskInfo?: Record<string, CancelInfo>
+  toaByProject?: Record<string, ToaState>
 }
 
 const records = ref<QbRecord[]>([])
@@ -420,8 +422,17 @@ const drillGroups = computed(() => {
   return groups.filter(g => g.rows.length > 0)
 })
 
+// TOA material state per project (server-attached) — MD chip source.
+const toaByProject = ref<Record<string, ToaState>>({})
+function toaForTask(t: QbRecord): ToaState | null {
+  const F = fieldIds.value
+  if (!F) return null
+  const rid = String(qbv(t, F.relatedProject) || '')
+  return (rid && toaByProject.value[rid]) || null
+}
+
 // Per-card chips row — derived from event category
-function chipsFor(t: QbRecord): Array<{ label: string; cls: string }> {
+function chipsFor(t: QbRecord): Array<{ label: string; cls: string; title?: string }> {
   const F = fieldIds.value
   if (!F) return []
   const tmpl = String(qbv(t, F.templateName) || '').toLowerCase()
@@ -449,7 +460,14 @@ function chipsFor(t: QbRecord): Array<{ label: string; cls: string }> {
     else if (rtrStatus.includes('fail')) rtrChip = { label: '❌ RTR', cls: 'bg-red-100 text-red-700' }
     else if (rtrStatus) rtrChip = { label: '⚠️ RTR', cls: 'bg-amber-100 text-amber-700' }
     else if (installComp) rtrChip = { label: '!RTR', cls: 'bg-orange-500 text-white' }
+    // MD (TOA material state) leads the install rail — no material, no
+    // truck roll. Dim when the project has no TOA order on file.
+    const toa = toaForTask(t)
+    const mdChip = toa
+      ? { label: '📦 MD', cls: TOA_INFO[toa.status].pillCls, title: toaTitle(toa) }
+      : { label: 'MD', cls: 'bg-slate-100 text-slate-400', title: 'No TOA material order on file' }
     return [
+      mdChip,
       { label: '🚗 ER', cls: erOn },
       { label: '🚧 OS', cls: osOn },
       { label: (submittedDt ? '✅' : '❌') + ' SUB', cls: subCls },
@@ -539,6 +557,7 @@ async function load() {
     fieldIds.value = data.fields
     cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
     cancelledTaskInfo.value = data.cancelledTaskInfo || {}
+    toaByProject.value = data.toaByProject || {}
     lateLoaded.value = false
     lateByTask.value = {}
   } catch (e) {
@@ -825,7 +844,7 @@ watch(preset, load)
                        but the row flex-wraps so 5 install chips stack onto two
                        rows on 390px screens instead of forcing the card wider. -->
                   <div class="flex flex-wrap gap-1 min-w-0">
-                    <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap" :class="c.cls">{{ c.label }}</span>
+                    <span v-for="(c, i) in chipsFor(t)" :key="i" class="text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap" :class="c.cls" :title="c.title">{{ c.label }}</span>
                   </div>
                   <div class="flex items-center gap-3 mt-1">
                     <a v-if="qbv(t, fieldIds!.taskUrl)" :href="String(qbv(t, fieldIds!.taskUrl))" target="_blank" rel="noopener" class="text-[11px] font-semibold inline-block" :class="getTaskStatus(t).key === 'cancelled' ? 'text-rose-700 hover:text-rose-800 hover:underline' : 'text-sky-600'" @click.stop>Open in Arrivy ↗</a>

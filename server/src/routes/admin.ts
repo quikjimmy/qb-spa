@@ -903,6 +903,7 @@ const CACHE_REGISTRY: Array<Omit<CacheInfo, 'total' | 'last_refresh'>> = [
   { key: 'pc_outreach', label: 'PC Outreach', description: 'Open outreach touchpoints (PC Dashboard)', table: 'outreach_cache', refreshPath: '/api/pc-dashboard/refresh' },
   { key: 'pc_outreach_completed', label: 'PC Outreach – Completed', description: 'Completed outreach for performance analytics', table: 'outreach_completed_cache', refreshPath: '/api/pc-dashboard/refresh-analytics' },
   { key: 'pc_adders', label: 'Adders', description: 'Post-POS adders pending sales-rep notification (bsaycczmf)', table: 'adder_notify_cache', refreshPath: '/api/pc-dashboard/refresh-adders' },
+  { key: 'toa_orders', label: 'TOA Material Orders', description: 'Material order status per project (bvf3ydgnq webhooks) — MD chip on install tiles', table: 'toa_order_cache', refreshPath: '/api/toa/refresh' },
   { key: 'pto', label: 'PTO', description: 'PTO workflow records (PTO Dashboard)', table: 'pto_cache', refreshPath: '/api/pto/refresh' },
   { key: 'inspx', label: 'INSPX', description: 'Inspection workflow records', table: 'inspx_cache', refreshPath: '/api/analytics/inspx/refresh' },
   { key: 'tickets', label: 'Tickets', description: 'Ticket/blocker cache', table: 'ticket_cache', refreshPath: '/api/tickets/refresh' },

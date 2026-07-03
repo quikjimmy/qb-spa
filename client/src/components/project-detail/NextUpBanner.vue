@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import MdChip from '@/components/MdChip.vue'
+import type { ToaState } from '@/lib/arrivyStatus'
 
 // Surfaces the next upcoming Arrivy task for a project, styled like a single
 // row from the Field Ops list. Quiet by default — no banner background, just
@@ -31,6 +33,9 @@ const F = ref<FieldIds | null>(null)
 // tasks must NOT show in "Next Up" — that banner is meant to show the
 // next *active* upcoming work.
 const cancelledTaskRids = ref<Set<string>>(new Set())
+// TOA material state for this project — MD chip when the next-up task
+// is an install (material precedes the truck roll).
+const toa = ref<ToaState | null>(null)
 const loading = ref(true)
 
 async function load() {
@@ -44,6 +49,7 @@ async function load() {
     records.value = data.records ?? []
     F.value = data.fields ?? null
     cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
+    toa.value = (data.toaByProject?.[String(props.projectRid)] as ToaState | undefined) || null
   } finally {
     loading.value = false
   }
@@ -98,6 +104,7 @@ const todayIsoStr = (() => {
 
 interface NextEvent {
   template: string
+  isInstall: boolean
   scheduled: Date | null
   status: StatusInfo
   crew: string
@@ -130,8 +137,10 @@ const next = computed<NextEvent | null>(() => {
 
   const best = candidates[0]
   if (!best || !best.valid) return null
+  const template = qbStr(best.r, F.value.templateName) || 'Task'
   return {
-    template: qbStr(best.r, F.value.templateName) || 'Task',
+    template,
+    isInstall: /install|battery|ess/i.test(template) && !/inspect/i.test(template),
     scheduled: best.valid,
     status: best.status,
     crew: getCrew(best.r),
@@ -177,6 +186,8 @@ function fmtTime(d: Date): string {
             :title="next.template"
           >{{ next.template }}</a>
           <span v-else class="text-[13px] font-medium text-slate-800 truncate" :title="next.template">{{ next.template }}</span>
+          <!-- MD (TOA material) in front of the task status on installs. -->
+          <MdChip v-if="next.isInstall && toa" :toa="toa" />
           <span class="inline-flex items-center px-1.5 py-[1px] rounded-full text-[10px] font-medium" :class="next.status.pillCls">
             {{ next.status.label }}
           </span>

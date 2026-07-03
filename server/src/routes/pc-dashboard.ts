@@ -3,6 +3,7 @@ import cron from 'node-cron'
 import db from '../db'
 import { isAppActive } from '../lib/activity'
 import { decorateCommsItems } from '../lib/callerAttribution'
+import { toaForProjects } from './toa'
 import { F, QB, SELECT_FIELDS, qbQuery, fieldValue, type QbRecord } from './field'
 
 const router = Router()
@@ -1043,6 +1044,10 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     return { key: 'other', label: template || 'Task' }
   }
 
+  // TOA material state per project — drives the MD chip on the tile's
+  // progress rail.
+  const toaMap = toaForProjects(collected.map(rec => String(fieldValue(rec, F.relatedProject) || '')))
+
   const tasks = collected.map(rec => {
     const arrivyId = String(fieldValue(rec, 3) || '')
     const projectRid = String(fieldValue(rec, F.relatedProject) || '')
@@ -1072,6 +1077,7 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
       status_label: c.label,
       task_url: String(fieldValue(rec, F.taskUrl) || ''),
       progress: { enroute, onsite, submitted, install_complete: installComplete, rtr_ready: rtrReady, rtr_status: rtrStatusRaw },
+      toa: toaMap[projectRid] || null,
     }
   })
 
