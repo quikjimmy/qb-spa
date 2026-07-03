@@ -100,7 +100,14 @@ function resolveKey(userId: number, provider: ProviderId): ResolvedKey | null {
     const k = process.env['OPENAI_API_KEY']
     return k ? { apiKey: k, baseUrl: null, usingOwnKey: false } : null
   }
-  // Ollama has no platform fallback by design — it's BYOK-only for now.
+  if (provider === 'ollama') {
+    // Platform Ollama: a key implies Ollama Cloud, so the base defaults to
+    // https://ollama.com (never localhost — that points at nothing in
+    // prod). OLLAMA_BASE_URL overrides for self-hosted endpoints.
+    const k = process.env['OLLAMA_API_KEY']
+    if (!k) return null
+    return { apiKey: k, baseUrl: process.env['OLLAMA_BASE_URL'] || 'https://ollama.com', usingOwnKey: false }
+  }
   return null
 }
 
