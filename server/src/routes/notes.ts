@@ -109,6 +109,24 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_note_created ON note_cache(date_created 
   if (!cols.has('thread_id')) db.exec(`ALTER TABLE note_cache ADD COLUMN thread_id INTEGER`)
 }
 
+// Note templates — a portal-side convenience (QB never sees them). A
+// template captures the WHOLE composer state: body, category, visibility
+// and notify flags. Personal by default; `shared` makes it org-visible.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS note_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    category TEXT,
+    visible_to_rep TEXT,
+    notify_pm INTEGER NOT NULL DEFAULT 0,
+    notify_rep INTEGER NOT NULL DEFAULT 0,
+    shared INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`)
+
 async function refreshForProject(projectId: number): Promise<{ total: number }> {
   const { realm, token } = getQbConfig()
   if (!token) throw new Error('QB_USER_TOKEN not configured')
@@ -406,6 +424,101 @@ router.post('/', denyReferralAgent, async (req: Request, res: Response): Promise
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
   }
+})
+
+// ── Templates ─────────────────────────────────────────────
+// GET /api/notes/templates — own templates + shared ones.
+router.get('/templates', denyReferralAgent, (req: Request, res: Response): void => {
+  const rows = db.prepare(`
+    SELECT t.id, t.name, t.body, t.category, t.visible_to_rep,
+           t.notify_pm, t.notify_rep, t.shared, t.owner_user_id,
+           u.name AS owner_name
+    FROM note_templates t LEFT JOIN users u ON u.id = t.owner_user_id
+    WHERE t.shared = 1 OR t.owner_user_id = ?
+    ORDER BY t.name COLLATE NOCASE
+  `).all(req.user?.userId) as Array<Record<string, unknown>>
+  const isAdmin = req.user?.actAsDepartmentId == null && req.user?.roles.includes('admin') === true
+  res.json({
+    items: rows.map(r => ({ ...r, mine: r['owner_user_id'] === req.user?.userId || isAdmin })),
+  })
+})
+
+// POST /api/notes/templates — save the composer's current state.
+router.post('/templates', denyReferralAgent, (req: Request, res: Response): void => {
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const name = String(body['name'] ?? '').trim().slice(0, 60)
+  const tplBody = String(body['body'] ?? '').trim()
+  const category = String(body['category'] ?? '')
+  const visibleToRep = String(body['visible_to_rep'] ?? 'Internal Only')
+  if (!name) { res.status(400).json({ error: 'template name is required' }); return }
+  if (!tplBody) { res.status(400).json({ error: 'template body is required' }); return }
+  if (category && !CATEGORIES.includes(category)) {
+    res.status(400).json({ error: 'invalid category' }); return
+  }
+  if (!VISIBILITIES.includes(visibleToRep)) {
+    res.status(400).json({ error: 'invalid visibility' }); return
+  }
+  const result = db.prepare(`
+    INSERT INTO note_templates (owner_user_id, name, body, category, visible_to_rep, notify_pm, notify_rep, shared)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    req.user?.userId, name, tplBody, category || null, visibleToRep,
+    body['notify_pm'] === true ? 1 : 0,
+    body['notify_rep'] === true ? 1 : 0,
+    body['shared'] === true ? 1 : 0,
+  )
+  res.json({ ok: true, id: Number(result.lastInsertRowid) })
+})
+
+// PATCH /api/notes/templates/:tid — owner or admin; full-state update.
+router.patch('/templates/:tid', denyReferralAgent, (req: Request, res: Response): void => {
+  const tid = parseInt(String(req.params['tid'] ?? ''), 10)
+  if (!Number.isFinite(tid)) { res.status(400).json({ error: 'template id required' }); return }
+  const tpl = db.prepare(`SELECT owner_user_id FROM note_templates WHERE id = ?`).get(tid) as
+    { owner_user_id: number } | undefined
+  if (!tpl) { res.status(404).json({ error: 'template not found' }); return }
+  const scoped = req.user?.actAsDepartmentId != null
+  const isAdmin = !scoped && req.user?.roles.includes('admin') === true
+  if (tpl.owner_user_id !== req.user?.userId && !isAdmin) {
+    res.status(403).json({ error: 'only the template owner or an admin can edit it' }); return
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const name = String(body['name'] ?? '').trim().slice(0, 60)
+  const tplBody = String(body['body'] ?? '').trim()
+  const category = String(body['category'] ?? '')
+  const visibleToRep = String(body['visible_to_rep'] ?? 'Internal Only')
+  if (!name) { res.status(400).json({ error: 'template name is required' }); return }
+  if (!tplBody) { res.status(400).json({ error: 'template body is required' }); return }
+  if (category && !CATEGORIES.includes(category)) { res.status(400).json({ error: 'invalid category' }); return }
+  if (!VISIBILITIES.includes(visibleToRep)) { res.status(400).json({ error: 'invalid visibility' }); return }
+  db.prepare(`
+    UPDATE note_templates
+    SET name = ?, body = ?, category = ?, visible_to_rep = ?, notify_pm = ?, notify_rep = ?, shared = ?
+    WHERE id = ?
+  `).run(
+    name, tplBody, category || null, visibleToRep,
+    body['notify_pm'] === true ? 1 : 0,
+    body['notify_rep'] === true ? 1 : 0,
+    body['shared'] === true ? 1 : 0,
+    tid,
+  )
+  res.json({ ok: true, id: tid })
+})
+
+// DELETE /api/notes/templates/:tid — owner or admin.
+router.delete('/templates/:tid', denyReferralAgent, (req: Request, res: Response): void => {
+  const tid = parseInt(String(req.params['tid'] ?? ''), 10)
+  if (!Number.isFinite(tid)) { res.status(400).json({ error: 'template id required' }); return }
+  const tpl = db.prepare(`SELECT owner_user_id FROM note_templates WHERE id = ?`).get(tid) as
+    { owner_user_id: number } | undefined
+  if (!tpl) { res.status(404).json({ error: 'template not found' }); return }
+  const scoped = req.user?.actAsDepartmentId != null
+  const isAdmin = !scoped && req.user?.roles.includes('admin') === true
+  if (tpl.owner_user_id !== req.user?.userId && !isAdmin) {
+    res.status(403).json({ error: 'only the template owner or an admin can delete it' }); return
+  }
+  db.prepare(`DELETE FROM note_templates WHERE id = ?`).run(tid)
+  res.json({ ok: true })
 })
 
 // PATCH /api/notes/:id — edit a note's text. Author or admin only.

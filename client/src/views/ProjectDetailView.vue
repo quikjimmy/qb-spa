@@ -884,7 +884,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
               </TabsList>
               <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" /></TabsContent>
               <TabsContent value="notes" class="mt-3">
-                <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
+                <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" :project="project" @posted="loadNotes" />
                 <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
               </TabsContent>
               <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
@@ -918,7 +918,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             </div>
             <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" /></TabsContent>
             <TabsContent value="notes" class="mt-3">
-              <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
+              <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" :project="project" @posted="loadNotes" />
               <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
             </TabsContent>
             <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
