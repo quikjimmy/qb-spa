@@ -26,6 +26,7 @@ import { permitAnalyticsRouter } from './routes/permit-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
+import { changelogRouter } from './routes/changelog'
 import { improvementProposalsRouter } from './routes/improvement-proposals'
 import { userAgentsRouter } from './routes/user-agents'
 import { userSettingsRouter } from './routes/user-settings'
@@ -126,6 +127,7 @@ app.use('/api/daily-goals', authenticate, denyReferralAgent, dailyGoalsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, referralAgentScope, pcDashboardRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
+app.use('/api/changelog', authenticate, changelogRouter)
 app.use('/api/improvement-proposals', authenticate, improvementProposalsRouter)
 app.use('/api/user-agents', authenticate, userAgentsRouter)
 app.use('/api/user-settings', authenticate, userSettingsRouter)

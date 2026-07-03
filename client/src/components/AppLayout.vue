@@ -16,6 +16,7 @@ import NotificationBell from '@/components/NotificationBell.vue'
 import ScopeAsDepartment from '@/components/ScopeAsDepartment.vue'
 import ScopeAsBanner from '@/components/ScopeAsBanner.vue'
 import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
+import WhatsNewDialog from '@/components/WhatsNewDialog.vue'
 import GlobalIncomingCallAlert from '@/components/GlobalIncomingCallAlert.vue'
 import CommsLiveRail from '@/components/CommsLiveRail.vue'
 import ProjectJumpSearch from '@/components/project-detail/ProjectJumpSearch.vue'
@@ -194,6 +195,9 @@ const { pullDistance, isRefreshing } = usePullToRefresh(mainEl, async () => {
       </main>
     </SidebarInset>
     <FeedbackLauncher />
+    <!-- Daily What's New wrap-up — self-gating: renders nothing unless
+         the user has unseen published changelog entries. -->
+    <WhatsNewDialog v-if="!auth.isReferralAgent" />
     <!-- Sits above everything else; inner component is absent until a live
          ringing event arrives, so zero cost on render when idle. -->
     <GlobalIncomingCallAlert v-if="!auth.isReferralAgent" />

@@ -235,6 +235,11 @@ const router = createRouter({
           component: () => import('../views/SettingsView.vue'),
         },
         {
+          path: 'whats-new',
+          name: 'whats-new',
+          component: () => import('../views/WhatsNewView.vue'),
+        },
+        {
           path: 'admin',
           name: 'admin',
           component: () => import('../views/AdminView.vue'),

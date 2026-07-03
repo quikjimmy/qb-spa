@@ -285,6 +285,9 @@ function isActive(path: string) {
               <DropdownMenuItem as-child>
                 <RouterLink to="/settings" class="cursor-pointer w-full">Settings</RouterLink>
               </DropdownMenuItem>
+              <DropdownMenuItem as-child>
+                <RouterLink to="/whats-new" class="cursor-pointer w-full">What's New</RouterLink>
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem @click="auth.logout()">
                 Sign out
