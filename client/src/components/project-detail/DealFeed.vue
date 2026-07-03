@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import NoteThread, { type ReplyRow } from './NoteThread.vue'
+import NoteEditor from './NoteEditor.vue'
 import { mentionSegs } from '@/lib/mentions'
 import { initials, avatarTone } from '@/lib/avatar'
 
@@ -20,6 +21,12 @@ export interface FeedRow {
   noteRecordId?: number
   /** Whether the note is Rep Visible (replies inherit this). */
   repVisible?: boolean
+  /** Full raw note text (title/body are display-derived) — edit source. */
+  noteText?: string
+  /** Current user may edit (author or admin) — server re-enforces. */
+  noteCanEdit?: boolean
+  /** Modified meaningfully after creation. */
+  noteEdited?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -42,7 +49,11 @@ const props = withDefaults(defineProps<{
   repliesByRoot?: Record<number, ReplyRow[]>
 }>(), { mode: 'single', showFilters: true })
 
-const emit = defineEmits<{ 'reply-posted': [] }>()
+const emit = defineEmits<{ 'reply-posted': []; 'note-edited': [] }>()
+
+// Note row currently in inline-edit mode (root notes; replies handle
+// their own editing inside NoteThread).
+const editingNoteId = ref<number | null>(null)
 
 // Rows whose reply box was opened via the byline "Reply" button (rows
 // with existing replies always render their thread).
@@ -250,16 +261,26 @@ function decorate(it: FeedRow): Decoration {
               <span v-if="it.pinned" class="text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">📌 Pinned</span>
               <span class="ml-auto text-[11px] font-medium text-slate-500 tabular-nums">{{ timeOf(it.occurred_at) }}</span>
             </div>
-            <div class="text-[13px] text-slate-900 mt-1 leading-snug">
-              <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.title)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
-              <template v-else>{{ it.title }}</template>
-            </div>
-            <div v-if="it.body" class="text-[12.5px] text-slate-600 mt-1 leading-relaxed whitespace-pre-line line-clamp-3">
-              <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.body)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
-              <template v-else>{{ it.body }}</template>
-            </div>
-            <div v-if="it.actor_name || canReply(it)" class="text-[10.5px] text-slate-400 mt-1.5">
+            <NoteEditor
+              v-if="it.noteRecordId && editingNoteId === it.noteRecordId"
+              :note-id="it.noteRecordId"
+              :initial-text="it.noteText ?? ''"
+              @saved="editingNoteId = null; emit('note-edited')"
+              @cancel="editingNoteId = null"
+            />
+            <template v-else>
+              <div class="text-[13px] text-slate-900 mt-1 leading-snug">
+                <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.title)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
+                <template v-else>{{ it.title }}</template>
+              </div>
+              <div v-if="it.body" class="text-[12.5px] text-slate-600 mt-1 leading-relaxed whitespace-pre-line line-clamp-3">
+                <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.body)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
+                <template v-else>{{ it.body }}</template>
+              </div>
+            </template>
+            <div v-if="(it.actor_name || canReply(it)) && editingNoteId !== it.noteRecordId" class="text-[10.5px] text-slate-400 mt-1.5">
               <template v-if="it.actor_name">{{ it.actor_name }}<span v-if="it.actor_role"> · {{ it.actor_role }}</span></template>
+              <span v-if="it.noteEdited"> · edited</span>
               <button
                 v-if="canReply(it) && !threadVisible(it)"
                 type="button"
@@ -267,6 +288,12 @@ function decorate(it: FeedRow): Decoration {
                 :class="it.actor_name ? 'ml-2.5' : ''"
                 @click="openReply(it.noteRecordId!)"
               >Reply</button>
+              <button
+                v-if="it.noteCanEdit && it.noteRecordId"
+                type="button"
+                class="text-slate-400 font-medium cursor-pointer hover:text-slate-600 ml-2.5"
+                @click="editingNoteId = it.noteRecordId"
+              >Edit</button>
             </div>
             <NoteThread
               v-if="threadVisible(it)"

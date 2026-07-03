@@ -7,6 +7,7 @@ import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useMentions, mentionSegs } from '@/lib/mentions'
 import { initials, avatarTone } from '@/lib/avatar'
+import NoteEditor from './NoteEditor.vue'
 
 export interface ReplyRow {
   record_id: number
@@ -14,6 +15,7 @@ export interface ReplyRow {
   note_by: string | null
   record_owner: string | null
   date_created: string | null
+  date_modified?: string | null
 }
 
 const props = defineProps<{
@@ -53,6 +55,22 @@ const clusterNames = computed(() => {
 
 function author(r: ReplyRow): string {
   return r.note_by || r.record_owner || 'Unknown'
+}
+
+// ── Editing (author or admin — server re-enforces) ────────
+const editingId = ref<number | null>(null)
+function canEdit(r: ReplyRow): boolean {
+  if (auth.isAdmin) return true
+  const me = (auth.user?.name ?? '').trim().toLowerCase()
+  return !!me && author(r).trim().toLowerCase() === me
+}
+// Heuristic: QB bumps Date Modified on any field change, so only flag
+// clearly-later modifications as edits.
+function isEdited(r: ReplyRow): boolean {
+  if (!r.date_created || !r.date_modified) return false
+  const a = new Date(r.date_created).getTime()
+  const b = new Date(r.date_modified).getTime()
+  return isFinite(a) && isFinite(b) && b - a > 90_000
 }
 
 // ── Timestamps — prominent: time always, date when not today ──
@@ -153,8 +171,23 @@ async function post() {
           <div class="flex items-baseline gap-2 flex-wrap">
             <span class="text-[11.5px] font-semibold text-slate-600">{{ author(r) }}</span>
             <span class="text-[11px] font-medium text-slate-500 tabular-nums">{{ replyStamp(r.date_created) }}</span>
+            <span v-if="isEdited(r)" class="text-[10px] text-slate-400">edited</span>
+            <button
+              v-if="canEdit(r) && editingId !== r.record_id"
+              type="button"
+              class="text-[10.5px] text-slate-400 hover:text-slate-600 font-medium cursor-pointer"
+              @click="editingId = r.record_id"
+            >Edit</button>
           </div>
-          <div class="text-[12.5px] text-slate-600 leading-relaxed whitespace-pre-line"><template v-for="(s, si) in mentionSegs(r.note ?? '')" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></div>
+          <NoteEditor
+            v-if="editingId === r.record_id"
+            :note-id="r.record_id"
+            :initial-text="r.note ?? ''"
+            small
+            @saved="editingId = null; emit('posted')"
+            @cancel="editingId = null"
+          />
+          <div v-else class="text-[12.5px] text-slate-600 leading-relaxed whitespace-pre-line"><template v-for="(s, si) in mentionSegs(r.note ?? '')" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></div>
         </div>
       </div>
     </template>

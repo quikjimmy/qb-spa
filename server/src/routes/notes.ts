@@ -408,4 +408,90 @@ router.post('/', denyReferralAgent, async (req: Request, res: Response): Promise
   }
 })
 
+// PATCH /api/notes/:id — edit a note's text. Author or admin only.
+// Body: { note: string, mentions?: [{type,id}] } — mentions here are only
+// the ones PICKED during the edit session (client tracks them), so people
+// already @'d in the original text aren't re-pinged on every edit.
+// Text is the only editable field: category and
+// visibility stay fixed after posting (replies inherited them from the
+// root at creation, so changing them later would desync threads).
+// Authorship is matched by name (QB gives us the author's display name;
+// the service token owns the record, so Record Owner can't be used).
+router.patch('/:id', denyReferralAgent, async (req: Request, res: Response): Promise<void> => {
+  const noteId = parseInt(String(req.params['id'] ?? ''), 10)
+  const noteText = String((req.body ?? {})['note'] ?? '').trim()
+  if (!Number.isFinite(noteId) || noteId <= 0) {
+    res.status(400).json({ error: 'note id is required' }); return
+  }
+  if (!noteText) { res.status(400).json({ error: 'note text is required' }); return }
+
+  const cached = db.prepare(`
+    SELECT record_id, project_rid, note_by, record_owner FROM note_cache WHERE record_id = ?
+  `).get(noteId) as { record_id: number; project_rid: number; note_by: string | null; record_owner: string | null } | undefined
+  if (!cached) { res.status(404).json({ error: 'note not found' }); return }
+
+  // Match requireRole semantics: a department-scoped admin (View-as mode)
+  // loses the admin bypass and edits only their own notes.
+  const scoped = req.user?.actAsDepartmentId != null
+  const isAdmin = !scoped && req.user?.roles.includes('admin') === true
+  if (!isAdmin) {
+    const me = db.prepare(`SELECT name FROM users WHERE id = ?`).get(req.user?.userId) as { name: string | null } | undefined
+    const authorName = (cached.note_by || cached.record_owner || '').trim().toLowerCase()
+    const myName = (me?.name || '').trim().toLowerCase()
+    if (!authorName || !myName || authorName !== myName) {
+      res.status(403).json({ error: 'only the note author or an admin can edit a note' }); return
+    }
+  }
+
+  const { realm, token } = getQbConfig()
+  if (!token) { res.status(500).json({ error: 'QB_USER_TOKEN not configured' }); return }
+
+  try {
+    const response = await fetch('https://api.quickbase.com/v1/records', {
+      method: 'POST',
+      headers: {
+        'QB-Realm-Hostname': realm,
+        'Authorization': `QB-USER-TOKEN ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        to: NOTES_TABLE,
+        mergeFieldId: F.recordId,
+        data: [{
+          [String(F.recordId)]: { value: noteId },
+          [String(F.note)]: { value: noteText },
+        }],
+        fieldsToReturn: [F.recordId, F.dateModified],
+      }),
+    })
+    const json = await response.json().catch(() => ({})) as {
+      metadata?: { lineErrors?: Record<string, string[]> }
+    }
+    const lineErrors = json.metadata?.lineErrors
+    if (!response.ok || (lineErrors && Object.keys(lineErrors).length > 0)) {
+      res.status(response.ok ? 502 : response.status).json({ error: 'QB note update failed', details: json })
+      return
+    }
+
+    try { await refreshForProject(cached.project_rid) }
+    catch (e) {
+      console.error('[notes] post-edit refresh failed:', e instanceof Error ? e.message : e)
+    }
+
+    const editor = db.prepare(`SELECT name, email FROM users WHERE id = ?`).get(req.user?.userId) as
+      { name: string | null; email: string } | undefined
+    const mentionsNotified = notifyNoteMentions({
+      mentionsRaw: (req.body ?? {})['mentions'],
+      authorUserId: req.user?.userId,
+      authorName: editor?.name || editor?.email || 'Someone',
+      projectId: cached.project_rid,
+      noteText,
+    })
+
+    res.json({ ok: true, record_id: noteId, mentions_notified: mentionsNotified })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 export { router as notesRouter }

@@ -533,10 +533,12 @@ const feedItems = computed<FeedRow[]>(() => {
   // body is the full text. Category goes into the chip slot we already
   // render above the title. Replies (thread_id set) are excluded here —
   // they render inside their root note's thread, not as feed rows.
+  const myName = (auth.user?.name ?? '').trim().toLowerCase()
   for (const n of notes.value) {
     if (!n.date_created || n.thread_id) continue
     const noteText = (n.note ?? '').trim()
     const firstLine = noteText.split('\n')[0]?.slice(0, 140) || (n.category ?? 'Note')
+    const authorName = (n.note_by ?? n.record_owner ?? '').trim().toLowerCase()
     merged.push({
       id: `n:${n.record_id}`,
       occurred_at: n.date_created,
@@ -547,10 +549,22 @@ const feedItems = computed<FeedRow[]>(() => {
       category: n.category ?? null,
       noteRecordId: n.record_id,
       repVisible: n.visible_to_rep === 'Rep Visible',
+      noteText,
+      noteCanEdit: auth.isAdmin || (!!myName && authorName === myName),
+      noteEdited: isNoteEdited(n.date_created, n.date_modified),
     })
   }
   return merged
 })
+
+// QB bumps Date Modified on any field change (incl. automations), so
+// only flag clearly-later modifications as edits.
+function isNoteEdited(created: string | null, modified: string | null): boolean {
+  if (!created || !modified) return false
+  const a = new Date(created).getTime()
+  const b = new Date(modified).getTime()
+  return isFinite(a) && isFinite(b) && b - a > 90_000
+}
 
 // Replies grouped by their root note's record id, for the thread UI.
 const noteRepliesByRoot = computed<Record<number, NoteRow[]>>(() => {
@@ -868,10 +882,10 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="docs" class="flex-1">Docs</TabsTrigger>
                 <TabsTrigger value="comms" class="flex-1">Comms</TabsTrigger>
               </TabsList>
-              <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" /></TabsContent>
+              <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" /></TabsContent>
               <TabsContent value="notes" class="mt-3">
                 <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
-                <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" />
+                <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
               </TabsContent>
               <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
               <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
@@ -902,10 +916,10 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="breakdown" class="shrink-0">Deal</TabsTrigger>
               </TabsList>
             </div>
-            <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" /></TabsContent>
+            <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" /></TabsContent>
             <TabsContent value="notes" class="mt-3">
               <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
-              <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" />
+              <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
             </TabsContent>
             <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
             <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
