@@ -295,6 +295,41 @@ function firstName(full: string | null | undefined): string | null {
 const pcLabel = computed(() => firstName(props.coordinator) ? `PC · ${firstName(props.coordinator)}` : 'Project coordinator')
 const repLabel = computed(() => firstName(props.closer) ? `Rep · ${firstName(props.closer)}` : 'Sales rep')
 
+// ── AI polish ─────────────────────────────────────────────
+// Sends the rough draft to /api/notes/assist (whatever LLM provider is
+// connected for this user/platform). The result replaces the draft —
+// with Undo — and the suggested category fills in only if none is set,
+// so an explicit choice is never overridden.
+const polishing = ref(false)
+const preAiDraft = ref<string | null>(null)
+async function polish() {
+  const draft = noteText.value.trim()
+  if (!draft || polishing.value) return
+  polishing.value = true
+  errorMsg.value = null
+  try {
+    const res = await fetch('/api/notes/assist', {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({ project_id: props.projectRid, draft }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `AI assist unavailable (${res.status})`)
+    preAiDraft.value = noteText.value
+    noteText.value = String(data.note ?? '')
+    if (data.category && !category.value) category.value = String(data.category)
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    polishing.value = false
+  }
+}
+function undoPolish() {
+  if (preAiDraft.value === null) return
+  noteText.value = preAiDraft.value
+  preAiDraft.value = null
+}
+
 // ── Submit ────────────────────────────────────────────────
 const saving = ref(false)
 const errorMsg = ref<string | null>(null)
@@ -311,6 +346,7 @@ function reset() {
   templateName.value = ''
   templateShared.value = false
   editingTemplateId.value = null
+  preAiDraft.value = null
   errorMsg.value = null
 }
 
@@ -560,7 +596,24 @@ async function post() {
         >Cancel</button>
       </div>
 
-      <div class="flex items-center gap-2 pt-0.5">
+      <div class="flex items-center gap-2.5 pt-0.5">
+        <button
+          v-if="noteText.trim()"
+          type="button"
+          class="inline-flex items-center gap-1 text-[11.5px] font-medium cursor-pointer transition-colors"
+          :class="polishing ? 'text-violet-400' : 'text-violet-700 hover:text-violet-800'"
+          :disabled="polishing"
+          @click="polish"
+        >
+          <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
+          {{ polishing ? 'Polishing…' : 'Polish' }}
+        </button>
+        <button
+          v-if="preAiDraft !== null && !polishing"
+          type="button"
+          class="text-[11.5px] text-slate-400 hover:text-slate-600 cursor-pointer"
+          @click="undoPolish"
+        >Undo</button>
         <button
           v-if="noteText.trim() && !templateFormOpen"
           type="button"

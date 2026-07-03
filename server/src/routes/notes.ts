@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { denyReferralAgent } from '../lib/referralAgent'
 import { resolveMentionInputs } from './feed'
+import { callUserLlm, type ChatMessage } from '../lib/callUserLlm'
 
 const router = Router()
 
@@ -468,6 +469,103 @@ router.post('/templates', denyReferralAgent, (req: Request, res: Response): void
     body['shared'] === true ? 1 : 0,
   )
   res.json({ ok: true, id: Number(result.lastInsertRowid) })
+})
+
+// ── AI assist ─────────────────────────────────────────────
+// POST /api/notes/assist — polish a rough draft into a clean ops note.
+// Uses callUserLlm, i.e. whatever provider the requesting user (or the
+// platform) already has connected — no provider is hardcoded here. The
+// model sees light project context + recent notes so it can sharpen
+// references, but is instructed to keep every fact and never invent.
+const ASSIST_SYSTEM = `You polish rough operations notes for Kin Home's residential solar portal. The user gives you a rough draft (shorthand, bullets, or messy prose) plus project context.
+
+Rewrite the draft into a clear, professional project note:
+- Keep EVERY fact from the draft. Never invent facts, dates, or commitments that aren't in the draft.
+- Preserve any "@First Last" mentions and any {token} placeholders EXACTLY as written, character for character.
+- Concise and scannable: usually 1-5 sentences. Use the project context only to clarify references (names, milestones), not to add new information.
+- Plain professional tone. No greetings, no sign-offs, no markdown.
+
+Also pick the best-fitting category for the note from this list: __CATEGORIES__
+
+Respond with ONLY a JSON object: {"note": "<polished note>", "category": "<category from the list>"}`
+
+router.post('/assist', denyReferralAgent, async (req: Request, res: Response): Promise<void> => {
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const projectId = parseInt(String(body['project_id'] ?? ''), 10)
+  const draft = String(body['draft'] ?? '').trim()
+  const userId = req.user?.userId
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    res.status(400).json({ error: 'project_id is required' }); return
+  }
+  if (!draft) { res.status(400).json({ error: 'write a rough draft first' }); return }
+  if (!userId) { res.status(401).json({ error: 'not authenticated' }); return }
+
+  const proj = db.prepare(`
+    SELECT customer_name, status, state, lender, coordinator, closer,
+           install_scheduled, install_completed, survey_scheduled, pto_approved
+    FROM project_cache WHERE record_id = ? LIMIT 1
+  `).get(projectId) as Record<string, string | null> | undefined
+  const recentNotes = db.prepare(`
+    SELECT category, note, note_by, date_created FROM note_cache
+    WHERE project_rid = ? AND (thread_id IS NULL OR thread_id = 0)
+    ORDER BY date_created DESC LIMIT 8
+  `).all(projectId) as Array<{ category: string | null; note: string | null; note_by: string | null; date_created: string | null }>
+
+  const context = [
+    proj ? `Project: ${proj['customer_name'] ?? ''} · status ${proj['status'] ?? '?'} · ${proj['state'] ?? ''} · lender ${proj['lender'] ?? '—'} · PC ${proj['coordinator'] ?? '—'} · rep ${proj['closer'] ?? '—'}` : 'Project: (no cached record)',
+    proj?.['install_scheduled'] ? `Install scheduled: ${proj['install_scheduled']}` : '',
+    recentNotes.length
+      ? 'Recent notes:\n' + recentNotes.map(n =>
+          `- [${(n.date_created ?? '').slice(0, 10)}] (${n.category ?? '—'}) ${n.note_by ?? ''}: ${(n.note ?? '').slice(0, 160)}`
+        ).join('\n')
+      : '',
+  ].filter(Boolean).join('\n')
+
+  const messages: ChatMessage[] = [
+    { role: 'system', content: ASSIST_SYSTEM.replace('__CATEGORIES__', CATEGORIES.join(', ')) },
+    { role: 'user', content: `PROJECT CONTEXT:\n${context}\n\nROUGH DRAFT:\n${draft}` },
+  ]
+
+  try {
+    const llm = await callUserLlm({
+      userId,
+      feature: 'note-assist',
+      messages,
+      // Reasoning models (e.g. gpt-oss via Ollama) burn output budget on
+      // chain-of-thought before the answer — a tight cap comes back empty.
+      maxOutputTokens: 2000,
+      temperature: 0.2,
+      timeoutMs: 60_000,
+    })
+    if (!llm.ok) {
+      res.status(503).json({ error: llm.error, reason: llm.reason }); return
+    }
+    // Extraction is defensive: strip <think> blocks and code fences, then
+    // parse the first JSON object found anywhere in the output; fall back
+    // to the raw text as the note when the model ignored the JSON shape.
+    let note = ''
+    let category: string | null = null
+    const cleaned = llm.output
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/```json/gi, '```')
+      .replace(/```/g, '')
+      .trim()
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]) as { note?: string; category?: string }
+        note = String(parsed.note ?? '').trim()
+        category = CATEGORIES.includes(String(parsed.category)) ? String(parsed.category) : null
+      } catch { /* fall through to raw text */ }
+    }
+    if (!note) note = cleaned
+    if (!note) {
+      res.status(502).json({ error: 'the model returned an empty note — try again' }); return
+    }
+    res.json({ ok: true, note, category, provider: llm.provider, model: llm.model })
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+  }
 })
 
 // PATCH /api/notes/templates/:tid — owner or admin; full-state update.
