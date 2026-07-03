@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import NoteThread, { type ReplyRow } from './NoteThread.vue'
+import { mentionSegs } from '@/lib/mentions'
+import { initials, avatarTone } from '@/lib/avatar'
 
 export interface FeedRow {
   id: string | number
@@ -13,6 +16,10 @@ export interface FeedRow {
   actor_role?: string | null
   category?: string | null
   pinned?: boolean
+  /** QB note record id (note rows only) — keys the reply thread. */
+  noteRecordId?: number
+  /** Whether the note is Rep Visible (replies inherit this). */
+  repVisible?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -29,7 +36,30 @@ const props = withDefaults(defineProps<{
    *  category. Equivalent to passing pre-filtered `items` but cleaner
    *  for parents that already share the same feedItems prop. */
   lockedFilter?: string
+  /** Enables reply threads on note rows (needed to post replies). */
+  projectRid?: number
+  /** Replies grouped by root note record id. */
+  repliesByRoot?: Record<number, ReplyRow[]>
 }>(), { mode: 'single', showFilters: true })
+
+const emit = defineEmits<{ 'reply-posted': [] }>()
+
+// Rows whose reply box was opened via the byline "Reply" button (rows
+// with existing replies always render their thread).
+const openReplies = ref<Set<number>>(new Set())
+function openReply(rootId: number) {
+  openReplies.value = new Set(openReplies.value).add(rootId)
+}
+function repliesFor(it: FeedRow): ReplyRow[] {
+  return (it.noteRecordId && props.repliesByRoot?.[it.noteRecordId]) || []
+}
+function threadVisible(it: FeedRow): boolean {
+  if (!props.projectRid || !it.noteRecordId) return false
+  return repliesFor(it).length > 0 || openReplies.value.has(it.noteRecordId)
+}
+function canReply(it: FeedRow): boolean {
+  return !!props.projectRid && !!it.noteRecordId && it.category !== 'Status Update'
+}
 
 // Filter dimensions. Drops the old "Changes" and "Tasks" buckets;
 // "Schedule" replaces "Tasks" since it reads more clearly to ops.
@@ -103,10 +133,20 @@ const groups = computed<Group[]>(() => {
   return out
 })
 
+// Prominent stamp: time for today's items; date + time once the day
+// header alone can't anchor it precisely enough.
 function timeOf(s: string): string {
   const d = new Date(s)
   if (isNaN(d.getTime())) return ''
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  if (d.toDateString() === new Date().toDateString()) return time
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${time}`
+}
+
+// Note rows get @mention highlighting (lib/mentions) and author-initial
+// avatars (lib/avatar) instead of the generic amber pencil glyph.
+function isNoteType(k: string): boolean {
+  return k === 'note_added' || k === 'note' || k === 'user_post'
 }
 
 interface Decoration { bg: string; fg: string; label: string; emoji: string }
@@ -191,6 +231,12 @@ function decorate(it: FeedRow): Decoration {
           style="border-color: #e6dfd6;"
         >
           <div
+            v-if="isNoteType(it.event_type || '')"
+            class="size-7 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold"
+            :style="{ background: avatarTone(it.actor_name).bg, color: avatarTone(it.actor_name).fg }"
+          >{{ initials(it.actor_name) }}</div>
+          <div
+            v-else
             class="size-7 rounded-lg shrink-0 flex items-center justify-center text-[14px]"
             :style="{ background: decorate(it).bg, color: decorate(it).fg }"
           >{{ decorate(it).emoji }}</div>
@@ -202,13 +248,36 @@ function decorate(it: FeedRow): Decoration {
               >{{ decorate(it).label }}</span>
               <span v-if="it.category" class="text-[10px] text-slate-500 font-medium">· {{ it.category }}</span>
               <span v-if="it.pinned" class="text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">📌 Pinned</span>
-              <span class="ml-auto text-[10.5px] text-slate-400 tabular-nums">{{ timeOf(it.occurred_at) }}</span>
+              <span class="ml-auto text-[11px] font-medium text-slate-500 tabular-nums">{{ timeOf(it.occurred_at) }}</span>
             </div>
-            <div class="text-[13px] text-slate-900 mt-1 leading-snug">{{ it.title }}</div>
-            <div v-if="it.body" class="text-[12.5px] text-slate-600 mt-1 leading-relaxed whitespace-pre-line line-clamp-3">{{ it.body }}</div>
-            <div v-if="it.actor_name" class="text-[10.5px] text-slate-400 mt-1.5">
-              {{ it.actor_name }}<span v-if="it.actor_role"> · {{ it.actor_role }}</span>
+            <div class="text-[13px] text-slate-900 mt-1 leading-snug">
+              <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.title)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
+              <template v-else>{{ it.title }}</template>
             </div>
+            <div v-if="it.body" class="text-[12.5px] text-slate-600 mt-1 leading-relaxed whitespace-pre-line line-clamp-3">
+              <template v-if="isNoteType(it.event_type || '')"><template v-for="(s, si) in mentionSegs(it.body)" :key="si"><span v-if="s.mention" class="text-teal-700 font-medium bg-teal-600/10 rounded-[4px] px-0.5">{{ s.text }}</span><template v-else>{{ s.text }}</template></template></template>
+              <template v-else>{{ it.body }}</template>
+            </div>
+            <div v-if="it.actor_name || canReply(it)" class="text-[10.5px] text-slate-400 mt-1.5">
+              <template v-if="it.actor_name">{{ it.actor_name }}<span v-if="it.actor_role"> · {{ it.actor_role }}</span></template>
+              <button
+                v-if="canReply(it) && !threadVisible(it)"
+                type="button"
+                class="text-teal-700 font-medium cursor-pointer hover:underline"
+                :class="it.actor_name ? 'ml-2.5' : ''"
+                @click="openReply(it.noteRecordId!)"
+              >Reply</button>
+            </div>
+            <NoteThread
+              v-if="threadVisible(it)"
+              :project-rid="projectRid!"
+              :root-id="it.noteRecordId!"
+              :category="it.category ?? null"
+              :rep-visible="it.repVisible === true"
+              :replies="repliesFor(it)"
+              :auto-compose="openReplies.has(it.noteRecordId!) && repliesFor(it).length === 0"
+              @posted="emit('reply-posted')"
+            />
           </div>
         </div>
       </div>

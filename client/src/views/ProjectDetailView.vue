@@ -19,6 +19,7 @@ import Communications from '@/components/project-detail/Communications.vue'
 import Tickets from '@/components/project-detail/Tickets.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import DealFeed, { type FeedRow } from '@/components/project-detail/DealFeed.vue'
+import NoteComposer from '@/components/project-detail/NoteComposer.vue'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
 import MilestoneDetail from '@/components/project-detail/MilestoneDetail.vue'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
@@ -194,6 +195,9 @@ interface NoteRow {
   category: string | null
   notify_pm: number
   notify_rep: number
+  note_by: string | null
+  visible_to_rep: string | null
+  thread_id: number | null
 }
 const notes = ref<NoteRow[]>([])
 // Most recent retention row (used by the milestone strip — the full list
@@ -527,9 +531,10 @@ const feedItems = computed<FeedRow[]>(() => {
   // feed_items convention) so the "Notes" filter chip surfaces them too.
   // Title is the first line of the note (or the category as fallback);
   // body is the full text. Category goes into the chip slot we already
-  // render above the title.
+  // render above the title. Replies (thread_id set) are excluded here —
+  // they render inside their root note's thread, not as feed rows.
   for (const n of notes.value) {
-    if (!n.date_created) continue
+    if (!n.date_created || n.thread_id) continue
     const noteText = (n.note ?? '').trim()
     const firstLine = noteText.split('\n')[0]?.slice(0, 140) || (n.category ?? 'Note')
     merged.push({
@@ -538,11 +543,23 @@ const feedItems = computed<FeedRow[]>(() => {
       event_type: 'note_added',
       title: firstLine,
       body: noteText && noteText !== firstLine ? noteText : null,
-      actor_name: n.last_modified_by ?? n.record_owner ?? null,
+      actor_name: n.note_by ?? n.last_modified_by ?? n.record_owner ?? null,
       category: n.category ?? null,
+      noteRecordId: n.record_id,
+      repVisible: n.visible_to_rep === 'Rep Visible',
     })
   }
   return merged
+})
+
+// Replies grouped by their root note's record id, for the thread UI.
+const noteRepliesByRoot = computed<Record<number, NoteRow[]>>(() => {
+  const out: Record<number, NoteRow[]> = {}
+  for (const n of notes.value) {
+    if (!n.thread_id) continue
+    ;(out[n.thread_id] ??= []).push(n)
+  }
+  return out
 })
 
 // ── Scroll spy for mobile section nav ─────────────────────
@@ -851,8 +868,11 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="docs" class="flex-1">Docs</TabsTrigger>
                 <TabsTrigger value="comms" class="flex-1">Comms</TabsTrigger>
               </TabsList>
-              <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
-              <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
+              <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" /></TabsContent>
+              <TabsContent value="notes" class="mt-3">
+                <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
+                <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" />
+              </TabsContent>
               <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
               <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
               <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
@@ -882,8 +902,11 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <TabsTrigger value="breakdown" class="shrink-0">Deal</TabsTrigger>
               </TabsList>
             </div>
-            <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" /></TabsContent>
-            <TabsContent value="notes" class="mt-3"><DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" /></TabsContent>
+            <TabsContent value="all" class="mt-3"><DealFeed :items="feedItems" mode="multi" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" /></TabsContent>
+            <TabsContent value="notes" class="mt-3">
+              <NoteComposer :project-rid="project.record_id" :coordinator="project.coordinator" :closer="project.closer" @posted="loadNotes" />
+              <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" />
+            </TabsContent>
             <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
             <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
             <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
