@@ -119,12 +119,13 @@ const BUCKET_ORDER: Record<Milestone, string[]> = {
 // ignored so an unset filter is a no-op. Lender uses the same
 // '— Unassigned' bucket the lender pivot uses so the chip choice maps
 // 1:1 to the lender row.
-interface DashFilters { state?: string; closer?: string; lender?: string }
+interface DashFilters { state?: string; closer?: string; lender?: string; status?: string }
 function filterClauses(f: DashFilters): { sql: string; params: string[] } {
   const parts: string[] = []
   const params: string[] = []
   if (f.state)  { parts.push(`state = ?`);  params.push(f.state) }
   if (f.closer) { parts.push(`closer = ?`); params.push(f.closer) }
+  if (f.status) { parts.push(`status = ?`); params.push(f.status) }
   if (f.lender) {
     if (f.lender === '— Unassigned') parts.push(`(lender IS NULL OR lender = '')`)
     else { parts.push(`lender = ?`); params.push(f.lender) }
@@ -136,7 +137,7 @@ function parseFilters(req: Request): DashFilters {
     const v = req.query[k]
     return typeof v === 'string' && v.trim() ? v.trim() : undefined
   }
-  return { state: pick('state'), closer: pick('closer'), lender: pick('lender') }
+  return { state: pick('state'), closer: pick('closer'), lender: pick('lender'), status: pick('status') }
 }
 
 function bucketSummary(key: string, filters: DashFilters = {}): { count: number; expectedAmount: number } {
@@ -314,10 +315,17 @@ router.get('/filter-options', (_req: Request, res: Response): void => {
       FROM project_cache ${BASE_WHERE}
       ORDER BY v ASC
     `).all() as Array<{ v: string }>
+    // Project statuses ordered by population size — the useful ones
+    // (Active, holds) surface first in the dropdown (feedback #22).
+    const statuses = db.prepare(`
+      SELECT status AS v, COUNT(*) AS n FROM project_cache ${BASE_WHERE} AND status IS NOT NULL AND status != ''
+      GROUP BY status ORDER BY n DESC
+    `).all() as Array<{ v: string }>
     res.json({
       states:  states.map(r => r.v),
       closers: closers.map(r => r.v),
       lenders: lenders.map(r => r.v),
+      statuses: statuses.map(r => r.v),
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

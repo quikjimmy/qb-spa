@@ -39,7 +39,7 @@ interface OverviewResp {
   rows: Row[]
   appliedFilters?: { state?: string; closer?: string; lender?: string }
 }
-interface FilterOptions { states: string[]; closers: string[]; lenders: string[] }
+interface FilterOptions { states: string[]; closers: string[]; lenders: string[]; statuses: string[] }
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -54,37 +54,41 @@ const RETURN_REFRESH_DEBOUNCE_MS = 750
 // Filters — shared key with Funding Dashboard so a scope set there
 // carries over here.
 const FILTERS_KEY = 'funding.filters.v1'
-function readFilters(): { state: string; closer: string; lender: string } {
-  if (typeof localStorage === 'undefined') return { state: '', closer: '', lender: '' }
+function readFilters(): { state: string; closer: string; lender: string; status: string } {
+  if (typeof localStorage === 'undefined') return { state: '', closer: '', lender: '', status: '' }
   try {
     const raw = localStorage.getItem(FILTERS_KEY)
-    if (!raw) return { state: '', closer: '', lender: '' }
+    if (!raw) return { state: '', closer: '', lender: '', status: '' }
     const v = JSON.parse(raw)
-    return { state: v.state || '', closer: v.closer || '', lender: v.lender || '' }
-  } catch { return { state: '', closer: '', lender: '' } }
+    return { state: v.state || '', closer: v.closer || '', lender: v.lender || '', status: v.status || '' }
+  } catch { return { state: '', closer: '', lender: '', status: '' } }
 }
 const fState  = ref('')
 const fCloser = ref('')
 const fLender = ref('')
+const fStatus = ref('')
 const initial = readFilters()
 fState.value  = initial.state
 fCloser.value = initial.closer
 fLender.value = initial.lender
-const filterOptions = ref<FilterOptions>({ states: [], closers: [], lenders: [] })
-const hasFilters = computed(() => !!(fState.value || fCloser.value || fLender.value))
+fStatus.value = initial.status
+const filterOptions = ref<FilterOptions>({ states: [], closers: [], lenders: [], statuses: [] })
+const hasFilters = computed(() => !!(fState.value || fCloser.value || fLender.value || fStatus.value))
 const showFilterDrawer = ref(false)
 function filterQS(): string {
   const p: string[] = []
   if (fState.value)  p.push(`state=${encodeURIComponent(fState.value)}`)
   if (fCloser.value) p.push(`closer=${encodeURIComponent(fCloser.value)}`)
   if (fLender.value) p.push(`lender=${encodeURIComponent(fLender.value)}`)
+  if (fStatus.value) p.push(`status=${encodeURIComponent(fStatus.value)}`)
   return p.join('&')
 }
 function persistFilters() {
-  try { localStorage.setItem(FILTERS_KEY, JSON.stringify({ state: fState.value, closer: fCloser.value, lender: fLender.value })) } catch { /* ignore */ }
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify({ state: fState.value, closer: fCloser.value, lender: fLender.value, status: fStatus.value })) } catch { /* ignore */ }
 }
 function clearFilters() {
-  fState.value = ''; fCloser.value = ''; fLender.value = ''
+  fState.value = ''; fCloser.value = ''; fLender.value = ''; fStatus.value = ''
+  m3StatusFilter.value = ''
   persistFilters(); void load()
 }
 async function loadFilterOptions() {
@@ -141,11 +145,25 @@ onBeforeUnmount(() => {
   }
 })
 
-function applyFilter(key: 'state' | 'closer' | 'lender', value: string) {
+function applyFilter(key: 'state' | 'closer' | 'lender' | 'status', value: string) {
   if (key === 'state')  fState.value  = fState.value  === value ? '' : value
   if (key === 'closer') fCloser.value = fCloser.value === value ? '' : value
   if (key === 'lender') fLender.value = fLender.value === value ? '' : value
+  if (key === 'status') fStatus.value = fStatus.value === value ? '' : value
   persistFilters(); void load()
+}
+
+// M3-status quick chips — client-side narrowing of the loaded table
+// (the KPI tiles keep their recency-gated definitions; these chips are
+// plain equality on the m3_status column). Feedback #22.
+const m3StatusFilter = ref('')
+const m3StatusOptions = computed(() => {
+  const seen = new Set<string>()
+  for (const r of data.value?.rows || []) if (r.m3Status) seen.add(r.m3Status)
+  return [...seen].sort()
+})
+function toggleM3Status(s: string) {
+  m3StatusFilter.value = m3StatusFilter.value === s ? '' : s
 }
 
 // Project drawer — plain click opens the lite right-side bump-out
@@ -276,8 +294,14 @@ function sortIndicator(col: SortCol): string {
   if (!s || s.col !== col) return ''
   return s.dir === 'desc' ? '▼' : '▲'
 }
-const sortedRows = computed<Row[]>(() => {
+const visibleRows = computed<Row[]>(() => {
   const rows = data.value?.rows || []
+  if (!m3StatusFilter.value) return rows
+  return rows.filter(r => r.m3Status === m3StatusFilter.value)
+})
+
+const sortedRows = computed<Row[]>(() => {
+  const rows = visibleRows.value
   if (!sort.value) return rows
   const k = SORT_KEY[sort.value.col]
   const sign = sort.value.dir === 'asc' ? 1 : -1
@@ -290,7 +314,7 @@ const sortedRows = computed<Row[]>(() => {
 })
 
 const totals = computed(() => {
-  const rows = data.value?.rows || []
+  const rows = visibleRows.value
   return {
     count: rows.length,
     kw: Math.round(rows.reduce((s, r) => s + r.systemSizeKw, 0) * 10) / 10,
@@ -326,7 +350,17 @@ const totals = computed(() => {
       <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground" @click="clearFilters">Clear</button>
     </div>
 
-    <div v-if="showFilterDrawer" class="rounded-xl border bg-card p-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <div v-if="showFilterDrawer" class="rounded-xl border bg-card p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="space-y-1.5">
+        <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Project Status</Label>
+        <Select :model-value="fStatus || '__all__'" @update:model-value="v => applyFilter('status', v === '__all__' ? '' : String(v))">
+          <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All statuses" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All statuses</SelectItem>
+            <SelectItem v-for="s in filterOptions.statuses" :key="s" :value="s">{{ s }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <div class="space-y-1.5">
         <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label>
         <Select :model-value="fState || '__all__'" @update:model-value="v => applyFilter('state', v === '__all__' ? '' : String(v))">
@@ -382,8 +416,19 @@ const totals = computed(() => {
         </div>
       </section>
 
+      <!-- M3-status quick chips — narrow the table to one funding state.
+           Placed directly above the table it filters (per ui-component-specs). -->
+      <div v-if="m3StatusOptions.length > 1" class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0">
+        <button
+          v-for="s in m3StatusOptions" :key="s"
+          class="flex-none px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors whitespace-nowrap"
+          :class="m3StatusFilter === s ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted text-muted-foreground'"
+          @click="toggleM3Status(s)"
+        >{{ s }}</button>
+      </div>
+
       <!-- Unified table — all projects in any actionable M3 state. -->
-      <div v-if="data.rows.length === 0" class="rounded-xl bg-card p-6 text-sm text-muted-foreground italic">
+      <div v-if="sortedRows.length === 0" class="rounded-xl bg-card p-6 text-sm text-muted-foreground italic">
         No projects match this filter.
       </div>
       <div v-else class="rounded-xl border bg-card overflow-hidden min-w-0">
