@@ -12,6 +12,7 @@ import { getStatusConfig } from '@/lib/status'
 import { computeMilestones, dotStyle, labelStyle, connectorStyle, type MilestoneStep } from '@/lib/milestones'
 import DataFreshness from '@/components/DataFreshness.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import BatteryOnlyBadge from '@/components/BatteryOnlyBadge.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
 const auth = useAuthStore()
@@ -54,6 +55,7 @@ interface Project {
   next_task_date: string
   is_favorite: boolean
   open_tickets?: number
+  battery_only?: number
 }
 
 interface FilterOption { value: string; count: number }
@@ -66,6 +68,7 @@ const loading = ref(true)
 const refreshing = ref(false)
 const search = ref('')
 const showFavorites = ref(false)
+const showBatteryOnly = ref(false)
 const showDrawer = ref(false)
 
 // Pop-in: record_ids that arrived in the most recent freshness-driven
@@ -107,6 +110,7 @@ function hydrateFromUrl() {
   search.value = s('q')
   activeKpi.value = s('kpi')
   showFavorites.value = s('fav') === '1'
+  showBatteryOnly.value = s('bat') === '1'
 }
 
 function syncUrl() {
@@ -126,6 +130,7 @@ function syncUrl() {
   if (search.value.trim()) qy['q'] = search.value.trim()
   if (activeKpi.value) qy['kpi'] = activeKpi.value
   if (showFavorites.value) qy['fav'] = '1'
+  if (showBatteryOnly.value) qy['bat'] = '1'
   router.replace({ query: qy })
 }
 const filters = ref<Filters>({ statuses: [], offices: [], coordinators: [], states: [], closers: [], lenders: [], epcs: [] })
@@ -207,6 +212,7 @@ async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
   const params = new URLSearchParams({ limit: '100' })
   if (search.value.trim()) params.set('q', search.value.trim())
   if (showFavorites.value) params.set('favorites', '1')
+  if (showBatteryOnly.value) params.set('battery_only', '1')
   if (f.value.statuses.length) {
     params.set('status', f.value.statuses.join(','))
     if (f.value.statusMode === 'exclude') params.set('status_mode', 'exclude')
@@ -312,7 +318,7 @@ async function runHoldClassifier() {
     await loadHoldClassifications()
   } finally { classifierRunning.value = false }
 }
-function clearFilters() { search.value = ''; showFavorites.value = false; activeKpi.value = ''; f.value = { statuses: [], statusMode: 'include', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' } }
+function clearFilters() { search.value = ''; showFavorites.value = false; showBatteryOnly.value = false; activeKpi.value = ''; f.value = { statuses: [], statusMode: 'include', coordinator: '', state: '', closer: '', office: '', lender: '', epc: 'Kin Home', dateField: 'sales_date', dateFrom: '', dateTo: '', sort: '' } }
 
 function setKpiFilter(key: string) {
   activeKpi.value = activeKpi.value === key ? '' : key
@@ -342,7 +348,7 @@ type StringFilterKey = 'coordinator' | 'state' | 'closer' | 'office' | 'lender' 
 function setFilter(key: StringFilterKey, val: string) { f.value[key] = val === '__all__' ? '' : val }
 
 const drawerFilterCount = computed(() => { let c = 0; if (f.value.statuses.length) c++; if (f.value.coordinator) c++; if (f.value.state) c++; if (f.value.epc && f.value.epc !== 'Kin Home') c++; if (f.value.closer) c++; if (f.value.office) c++; if (f.value.lender) c++; if (f.value.dateFrom || f.value.dateTo) c++; return c })
-const hasFilters = computed(() => search.value || showFavorites.value || activeKpi.value || drawerFilterCount.value > 0)
+const hasFilters = computed(() => search.value || showFavorites.value || showBatteryOnly.value || activeKpi.value || drawerFilterCount.value > 0)
 
 // ─── Active-filter chips ─────────────────────────────────
 // One chip per filter value, each individually removable. Spec:
@@ -394,6 +400,7 @@ const activeChips = computed<FilterChip[]>(() => {
     chips.push({ key: 'kpi', label: kpiLabels[activeKpi.value] || activeKpi.value, remove: () => { activeKpi.value = '' } })
   }
   if (showFavorites.value) chips.push({ key: 'fav', label: 'Favorites', remove: () => { showFavorites.value = false } })
+  if (showBatteryOnly.value) chips.push({ key: 'bat', label: 'Battery only', remove: () => { showBatteryOnly.value = false } })
   return chips
 })
 
@@ -528,7 +535,7 @@ hydrateFromUrl()
 // silent freshness poll and explicit refresh bypass this (they call
 // loadProjects directly and never rewrite the URL).
 let reloadTimeout: ReturnType<typeof setTimeout> | null = null
-watch([f, activeKpi, showFavorites, search], () => {
+watch([f, activeKpi, showFavorites, showBatteryOnly, search], () => {
   if (reloadTimeout) clearTimeout(reloadTimeout)
   reloadTimeout = setTimeout(() => { syncUrl(); loadProjects() }, 250)
 }, { deep: true })
@@ -602,6 +609,9 @@ onBeforeUnmount(() => {
       </div>
       <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showFavorites ? 'bg-amber-50 border-amber-300 text-amber-700' : 'hover:bg-muted'" @click="showFavorites = !showFavorites" title="Favorites">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" :fill="showFavorites ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      </button>
+      <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showBatteryOnly ? 'bg-teal-50 border-teal-300 text-teal-700' : 'hover:bg-muted'" @click="showBatteryOnly = !showBatteryOnly" title="Battery only">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/></svg>
       </button>
       <button v-if="!auth.isReferralAgent" class="relative inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors" :class="showDrawer ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="showDrawer = !showDrawer" title="Filters">
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
@@ -734,6 +744,7 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="flex gap-1 shrink-0 items-center">
+              <BatteryOnlyBadge v-if="p.battery_only" />
               <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
               <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
             </div>
@@ -828,6 +839,7 @@ onBeforeUnmount(() => {
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
                   <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
                 </span>
+                <BatteryOnlyBadge v-if="p.battery_only" />
                 <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
               </div>

@@ -253,6 +253,8 @@ router.get('/m2-not-m3', (req: Request, res: Response): void => {
         COALESCE(closer, '') AS closer,
         COALESCE(sales_date, '') AS salesDate,
         COALESCE(m3_status, '')         AS m3Status,
+        COALESCE(m3_not_ready_note, '') AS m3NotReadyNote,
+        COALESCE(m3_funding_note, '')   AS m3FundingNote,
         COALESCE(m3_expected_amount, 0) AS m3ExpectedAmount,
         COALESCE(m3_net_received, 0)    AS m3NetReceived,
         COALESCE(m3_requested_date, '') AS m3RequestedDate,
@@ -340,7 +342,9 @@ router.get('/audit', (req: Request, res: Response): void => {
           '' AS milestoneRejectedDate,
           COALESCE(dca_actual_deposit, '') AS milestoneDepositDate,
           COALESCE(dca_expected_amount, 0) AS milestoneExpectedAmount,
-          COALESCE(dca_total_received, 0) AS milestoneNetReceived
+          COALESCE(dca_total_received, 0) AS milestoneNetReceived,
+          '' AS milestoneNotReadyNote,
+          '' AS milestoneFundingNote
       `
       : `
           ${milestonePrefix}_status AS milestoneStatus,
@@ -349,7 +353,9 @@ router.get('/audit', (req: Request, res: Response): void => {
           COALESCE(${milestonePrefix}_rejected_date, '')  AS milestoneRejectedDate,
           COALESCE(${milestonePrefix}_deposit_date, '')   AS milestoneDepositDate,
           COALESCE(${milestonePrefix}_expected_amount, 0) AS milestoneExpectedAmount,
-          COALESCE(${milestonePrefix}_net_received, 0)    AS milestoneNetReceived
+          COALESCE(${milestonePrefix}_net_received, 0)    AS milestoneNetReceived,
+          COALESCE(${milestonePrefix}_not_ready_note, '') AS milestoneNotReadyNote,
+          COALESCE(${milestonePrefix}_funding_note, '')   AS milestoneFundingNote
       `
     const m3Selects = includeM3
       ? `,
