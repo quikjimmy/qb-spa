@@ -1,6 +1,7 @@
 //Quickbase Notes table fields
 //Table ID = bsb6bqt3b
 //Refresh file with https://api.quickbase.com/v1/fields?tableId=bsb6bqt3b
+//Refreshed 2026-07-03
 [
   {
     "appearsByDefault": true,

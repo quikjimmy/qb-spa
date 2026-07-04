@@ -54,7 +54,8 @@ interface ResolvedMention { name: string; role: 'mention' | 'department'; user_i
 
 // Validate client-sent mentions against the DB (never trust names from
 // the wire) and expand them to the concrete users to notify.
-function resolveMentionInputs(raw: unknown): { mentions: ResolvedMention[]; notifyUserIds: Set<number> } {
+// Exported — the notes route reuses it for @mentions in note bodies.
+export function resolveMentionInputs(raw: unknown): { mentions: ResolvedMention[]; notifyUserIds: Set<number> } {
   const mentions: ResolvedMention[] = []
   const notifyUserIds = new Set<number>()
   let inputs: MentionInput[] = []
