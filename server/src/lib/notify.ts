@@ -21,11 +21,14 @@ interface NotifyArgs {
  *  the dedup gate matched. */
 export function insertIfNew(a: NotifyArgs): number | null {
   const existing = db.prepare(
-    'SELECT id FROM notifications WHERE user_id = ? AND type = ? AND COALESCE(link, "") = COALESCE(?, "") LIMIT 1'
+    // Single-quoted literals only: better-sqlite3 compiles SQLite with
+    // SQLITE_DQS=0, so double-quoted "" parses as an identifier and the
+    // statement throws `no such column` at prepare time.
+    "SELECT id FROM notifications WHERE user_id = ? AND type = ? AND COALESCE(link, '') = COALESCE(?, '') LIMIT 1"
   ).get(a.userId, a.type, a.link ?? null) as { id: number } | undefined
   if (existing) return null
   const res = db.prepare(
-    'INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, ?, ?, ?, ?, 0, datetime("now"))'
+    "INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, ?, ?, ?, ?, 0, datetime('now'))"
   ).run(a.userId, a.type, a.title, a.body ?? null, a.link ?? null)
   return Number(res.lastInsertRowid) || null
 }
@@ -42,12 +45,12 @@ export function notifyChatComplete(a: { userId: number; threadId: number; title:
   ).get(a.userId, link) as { id: number } | undefined
   if (existing) {
     db.prepare(
-      'UPDATE notifications SET title = ?, body = ?, created_at = datetime("now") WHERE id = ?'
+      "UPDATE notifications SET title = ?, body = ?, created_at = datetime('now') WHERE id = ?"
     ).run(a.title, a.body ?? null, existing.id)
     return existing.id
   }
   const res = db.prepare(
-    'INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, "chat_complete", ?, ?, ?, 0, datetime("now"))'
+    "INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, 'chat_complete', ?, ?, ?, 0, datetime('now'))"
   ).run(a.userId, a.title, a.body ?? null, link)
   return Number(res.lastInsertRowid)
 }

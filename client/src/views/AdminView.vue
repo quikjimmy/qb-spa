@@ -1322,12 +1322,116 @@ async function setFeedbackStatus(id: number, status: string) {
     method: 'PATCH', headers: hdrs(), body: JSON.stringify({ status }),
   })
   await loadFeedback()
+  // Shipping auto-drafts a What's New entry — surface it immediately.
+  if (status === 'shipped') await loadChangelog()
 }
 
 function fmtFeedbackTime(iso: string): string {
   const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
   if (isNaN(d.getTime())) return iso
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+// ─── What's New changelog authoring ──────────────────────
+// Drafts are auto-created when feedback is marked shipped (plus manual
+// entries). Publishing makes an entry visible in the daily wrap-up
+// dialog + /whats-new from its publish_date onward.
+interface ChangelogEntry {
+  id: number
+  publish_date: string
+  status: string
+  category: string
+  title: string
+  body: string
+  path: string | null
+  requested_by: string | null
+  audience: string
+  show_popup: number
+  created_by_name?: string | null
+}
+const changelogEntries = ref<ChangelogEntry[]>([])
+// Editor model — nullable fields flattened to '' so v-model stays happy.
+// Audience is split into kind + target id so the template can drive two
+// selects; recombined to 'dept:<id>' / 'role:<id>' on save.
+interface ChangelogEditModel {
+  id: number; publish_date: string; status: string; category: string
+  title: string; body: string; path: string; requested_by: string
+  audienceKind: 'all' | 'admin' | 'dept' | 'role'
+  audienceId: number | null
+  archiveOnly: boolean
+}
+const changelogEdit = ref<ChangelogEditModel | null>(null)
+const changelogSaving = ref(false)
+
+function parseAudience(a: string): { audienceKind: ChangelogEditModel['audienceKind']; audienceId: number | null } {
+  if (a === 'admin') return { audienceKind: 'admin', audienceId: null }
+  if (a.startsWith('dept:')) return { audienceKind: 'dept', audienceId: parseInt(a.slice(5), 10) || null }
+  if (a.startsWith('role:')) return { audienceKind: 'role', audienceId: parseInt(a.slice(5), 10) || null }
+  return { audienceKind: 'all', audienceId: null }
+}
+function audienceLabel(a: string): string {
+  if (a === 'admin') return 'Admins only'
+  if (a.startsWith('dept:')) return `Dept: ${departments.value.find(d => d.id === parseInt(a.slice(5), 10))?.name || a.slice(5)}`
+  if (a.startsWith('role:')) return `Role: ${roles.value.find(r => r.id === parseInt(a.slice(5), 10))?.name || a.slice(5)}`
+  return ''
+}
+
+async function loadChangelog() {
+  const res = await fetch('/api/changelog/admin', { headers: hdrs() })
+  if (!res.ok) return
+  changelogEntries.value = ((await res.json()) as { entries: ChangelogEntry[] }).entries
+}
+
+function newChangelogEntry() {
+  const tomorrow = new Date(Date.now() + 86_400_000)
+  const iso = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`
+  changelogEdit.value = {
+    id: 0, publish_date: iso, status: 'draft', category: 'improved', title: '', body: '', path: '', requested_by: '',
+    audienceKind: 'all', audienceId: null, archiveOnly: false,
+  }
+}
+function editChangelogEntry(e: ChangelogEntry) {
+  changelogEdit.value = {
+    id: e.id, publish_date: e.publish_date, status: e.status, category: e.category,
+    title: e.title, body: e.body, path: e.path || '', requested_by: e.requested_by || '',
+    ...parseAudience(e.audience || 'all'),
+    archiveOnly: e.show_popup === 0,
+  }
+}
+
+async function saveChangelogEntry(publish: boolean) {
+  const e = changelogEdit.value
+  if (!e || !e.title.trim() || changelogSaving.value) return
+  // A dept/role audience needs a target picked before saving.
+  if ((e.audienceKind === 'dept' || e.audienceKind === 'role') && !e.audienceId) return
+  changelogSaving.value = true
+  const audience = e.audienceKind === 'all' ? 'all'
+    : e.audienceKind === 'admin' ? 'admin'
+    : `${e.audienceKind}:${e.audienceId}`
+  const payload = {
+    title: e.title, body: e.body, category: e.category, path: e.path || '',
+    publish_date: e.publish_date, requested_by: e.requested_by || '',
+    status: publish ? 'published' : 'draft',
+    audience, show_popup: e.archiveOnly ? 0 : 1,
+  }
+  try {
+    const url = e.id ? `/api/changelog/admin/${e.id}` : '/api/changelog/admin'
+    await fetch(url, { method: e.id ? 'PATCH' : 'POST', headers: hdrs(), body: JSON.stringify(payload) })
+    changelogEdit.value = null
+    await loadChangelog()
+  } finally {
+    changelogSaving.value = false
+  }
+}
+
+async function setChangelogStatus(id: number, status: 'published' | 'draft') {
+  await fetch(`/api/changelog/admin/${id}`, { method: 'PATCH', headers: hdrs(), body: JSON.stringify({ status }) })
+  await loadChangelog()
+}
+
+async function deleteChangelogEntry(id: number) {
+  await fetch(`/api/changelog/admin/${id}`, { method: 'DELETE', headers: hdrs() })
+  await loadChangelog()
 }
 
 // ─── Feedback triage agent (manual run) ──────────────────
@@ -1567,7 +1671,7 @@ onMounted(async () => {
     return
   }
   try {
-    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadQbWebhookEvents(), loadFeedback(), loadProposals(), loadTriageRuns(), loadTriageKeys(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus()])
+    await Promise.all([loadRoles(), loadUsers(), loadPermissions(), loadRecordFilters(), loadCaches(), loadQbWebhookEvents(), loadFeedback(), loadProposals(), loadTriageRuns(), loadTriageKeys(), loadUserAgents(), loadDepartments(), loadDialpad(), loadWebhookConfig(), loadSubStatus(), loadChangelog()])
   } catch (e) {
     console.error('Admin load failed:', e)
   }
@@ -2212,6 +2316,116 @@ onMounted(async () => {
 
         <!-- ════════════ FEEDBACK TAB ════════════ -->
         <TabsContent value="feedback" class="grid gap-6">
+          <!-- ── What's New changelog authoring ── -->
+          <Card>
+            <CardHeader>
+              <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div class="space-y-1">
+                  <CardTitle>What's New Changelog</CardTitle>
+                  <CardDescription>
+                    Entries users see in the daily wrap-up popup and on /whats-new. Marking feedback shipped
+                    auto-drafts one — review the wording, then publish. Entries go live on their publish date.
+                  </CardDescription>
+                </div>
+                <Button variant="outline" @click="newChangelogEntry">New entry</Button>
+              </div>
+            </CardHeader>
+            <CardContent class="grid gap-3">
+              <!-- Inline editor -->
+              <div v-if="changelogEdit" class="rounded-lg border bg-muted/20 p-3 grid gap-2.5">
+                <div class="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                  <Input v-model="changelogEdit.title" placeholder="Title — one sentence, user-facing" class="h-9 text-sm" />
+                  <select v-model="changelogEdit.category" class="h-9 rounded-md border bg-background px-2 text-xs">
+                    <option value="new">New</option>
+                    <option value="improved">Improved</option>
+                    <option value="fixed">Fixed</option>
+                  </select>
+                  <Input v-model="changelogEdit.publish_date" type="date" class="h-9 text-xs w-[150px]" title="Publish date" />
+                </div>
+                <textarea
+                  v-model="changelogEdit.body"
+                  rows="2"
+                  placeholder="Optional detail — 1–2 plain sentences"
+                  class="rounded-md border bg-background px-3 py-2 text-sm resize-y"
+                />
+                <div class="grid gap-2 sm:grid-cols-2">
+                  <Input v-model="changelogEdit.path" placeholder="Deep link, e.g. /projects/pc (optional)" class="h-9 text-xs" />
+                  <Input v-model="changelogEdit.requested_by" placeholder="Requested by (optional credit)" class="h-9 text-xs" />
+                </div>
+                <!-- Visibility: who sees the entry + whether it pops. -->
+                <div class="flex items-center gap-2 flex-wrap">
+                  <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Visible to</Label>
+                  <select v-model="changelogEdit.audienceKind" class="h-8 rounded-md border bg-background px-2 text-xs">
+                    <option value="all">Everyone</option>
+                    <option value="admin">Admins only</option>
+                    <option value="dept">Department…</option>
+                    <option value="role">Role…</option>
+                  </select>
+                  <select
+                    v-if="changelogEdit.audienceKind === 'dept'"
+                    v-model.number="changelogEdit.audienceId"
+                    class="h-8 rounded-md border bg-background px-2 text-xs max-w-[220px]"
+                  >
+                    <option :value="null" disabled>Pick a department</option>
+                    <option v-for="d in departments" :key="d.id" :value="d.id">{{ d.name }}</option>
+                  </select>
+                  <select
+                    v-if="changelogEdit.audienceKind === 'role'"
+                    v-model.number="changelogEdit.audienceId"
+                    class="h-8 rounded-md border bg-background px-2 text-xs max-w-[220px]"
+                  >
+                    <option :value="null" disabled>Pick a role</option>
+                    <option v-for="r in roles" :key="r.id" :value="r.id">{{ r.name }}</option>
+                  </select>
+                  <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none ml-auto">
+                    <input v-model="changelogEdit.archiveOnly" type="checkbox" class="size-3.5 accent-current" />
+                    Archive only — don't show in the popup
+                  </label>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <Button size="sm" :disabled="changelogSaving || !changelogEdit.title.trim()" @click="saveChangelogEntry(true)">Publish</Button>
+                  <Button size="sm" variant="outline" :disabled="changelogSaving || !changelogEdit.title.trim()" @click="saveChangelogEntry(false)">Save draft</Button>
+                  <Button size="sm" variant="ghost" @click="changelogEdit = null">Cancel</Button>
+                </div>
+              </div>
+
+              <div v-if="changelogEntries.length === 0 && !changelogEdit" class="text-sm text-muted-foreground py-4 text-center">
+                No entries yet. Mark feedback as shipped to auto-draft one, or create an entry manually.
+              </div>
+              <div v-else class="space-y-2">
+                <div v-for="e in changelogEntries" :key="e.id" class="rounded-lg border bg-card p-3">
+                  <div class="flex items-center gap-2 flex-wrap text-[11px]">
+                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize"
+                      :class="e.status === 'published' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">
+                      {{ e.status }}
+                    </span>
+                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                      :class="e.category === 'new' ? 'bg-sky-500/10 text-sky-600' : e.category === 'fixed' ? 'bg-emerald-500/10 text-emerald-600' : 'bg-violet-500/10 text-violet-600'">
+                      {{ e.category }}
+                    </span>
+                    <span class="text-muted-foreground tabular-nums">{{ e.publish_date }}</span>
+                    <span v-if="e.audience && e.audience !== 'all'" class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-slate-500/10 text-slate-500">
+                      {{ audienceLabel(e.audience) }}
+                    </span>
+                    <span v-if="e.show_popup === 0" class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-slate-500/10 text-slate-500">
+                      Archive only
+                    </span>
+                    <span v-if="e.requested_by" class="text-muted-foreground">· req. {{ e.requested_by }}</span>
+                    <span class="ml-auto flex items-center gap-1">
+                      <button class="text-[11px] text-muted-foreground hover:text-foreground px-1.5 py-1" @click="editChangelogEntry(e)">Edit</button>
+                      <button v-if="e.status === 'draft'" class="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 px-1.5 py-1" @click="setChangelogStatus(e.id, 'published')">Publish</button>
+                      <button v-else class="text-[11px] text-muted-foreground hover:text-foreground px-1.5 py-1" @click="setChangelogStatus(e.id, 'draft')">Unpublish</button>
+                      <button class="text-[11px] text-rose-500 hover:text-rose-600 px-1.5 py-1" @click="deleteChangelogEntry(e.id)">Delete</button>
+                    </span>
+                  </div>
+                  <p class="mt-1.5 text-sm font-medium leading-snug">{{ e.title }}</p>
+                  <p v-if="e.body" class="mt-0.5 text-xs text-muted-foreground">{{ e.body }}</p>
+                  <p v-if="e.path" class="mt-0.5 text-[11px] text-sky-600">{{ e.path }}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <div class="flex items-start justify-between gap-3 flex-wrap">

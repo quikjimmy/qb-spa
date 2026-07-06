@@ -32,7 +32,7 @@ interface Overview {
   byLender: Array<{ lender: string; status: string; count: number; expectedAmount: number }>
   appliedFilters?: { state?: string; closer?: string; lender?: string }
 }
-interface FilterOptions { states: string[]; closers: string[]; lenders: string[] }
+interface FilterOptions { states: string[]; closers: string[]; lenders: string[]; statuses: string[] }
 interface AuditRow {
   recordId: number
   customerName: string
@@ -50,6 +50,7 @@ const auth = useAuthStore()
 const router = useRouter()
 const overview = ref<Overview | null>(null)
 const loading = ref(true)
+const liveRefreshing = ref(false)
 const err = ref('')
 
 // Selected milestone — persists in localStorage so a coordinator
@@ -66,39 +67,43 @@ const milestone = ref<MilestoneMode>(readStored())
 // single state / closer / lender. Empty string = unset. Persisted in
 // localStorage so navigation in/out keeps the active scope.
 const FILTERS_KEY = 'funding.filters.v1'
-function readFilters(): { state: string; closer: string; lender: string } {
-  if (typeof localStorage === 'undefined') return { state: '', closer: '', lender: '' }
+function readFilters(): { state: string; closer: string; lender: string; status: string } {
+  if (typeof localStorage === 'undefined') return { state: '', closer: '', lender: '', status: '' }
   try {
     const raw = localStorage.getItem(FILTERS_KEY)
-    if (!raw) return { state: '', closer: '', lender: '' }
+    if (!raw) return { state: '', closer: '', lender: '', status: '' }
     const v = JSON.parse(raw)
-    return { state: v.state || '', closer: v.closer || '', lender: v.lender || '' }
-  } catch { return { state: '', closer: '', lender: '' } }
+    return { state: v.state || '', closer: v.closer || '', lender: v.lender || '', status: v.status || '' }
+  } catch { return { state: '', closer: '', lender: '', status: '' } }
 }
 const fState  = ref('')
 const fCloser = ref('')
 const fLender = ref('')
+const fStatus = ref('')
 const initial = readFilters()
 fState.value  = initial.state
 fCloser.value = initial.closer
 fLender.value = initial.lender
-const filterOptions = ref<FilterOptions>({ states: [], closers: [], lenders: [] })
-const hasFilters = computed(() => !!(fState.value || fCloser.value || fLender.value))
+fStatus.value = initial.status
+const filterOptions = ref<FilterOptions>({ states: [], closers: [], lenders: [], statuses: [] })
+const hasFilters = computed(() => !!(fState.value || fCloser.value || fLender.value || fStatus.value))
 const showFilterDrawer = ref(false)
 function filterQS() {
   const p: string[] = []
   if (fState.value)  p.push(`state=${encodeURIComponent(fState.value)}`)
   if (fCloser.value) p.push(`closer=${encodeURIComponent(fCloser.value)}`)
   if (fLender.value) p.push(`lender=${encodeURIComponent(fLender.value)}`)
+  if (fStatus.value) p.push(`status=${encodeURIComponent(fStatus.value)}`)
   return p.length ? '&' + p.join('&') : ''
 }
 function persistFilters() {
-  try { localStorage.setItem(FILTERS_KEY, JSON.stringify({ state: fState.value, closer: fCloser.value, lender: fLender.value })) } catch { /* ignore */ }
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify({ state: fState.value, closer: fCloser.value, lender: fLender.value, status: fStatus.value })) } catch { /* ignore */ }
 }
 function clearFilters() {
   fState.value = ''
   fCloser.value = ''
   fLender.value = ''
+  fStatus.value = ''
   persistFilters()
   auditRows.value = {}
   auditSort.value = {}
@@ -162,6 +167,18 @@ function sortedRows(bucketKey: string): AuditRow[] {
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}` } }
 
+// Pull M1/M2/M3 dates live from QB into the cache before the first read
+// so the dashboard opens on current data, not the lagging tier cache.
+// Server-side guard/coalescing means this is cheap on rapid reloads; on
+// failure we fall through and render whatever the cache holds.
+async function refreshLive() {
+  liveRefreshing.value = true
+  try {
+    await fetch('/api/funding/refresh', { method: 'POST', headers: hdrs() })
+  } catch { /* fall back to cache */ }
+  finally { liveRefreshing.value = false }
+}
+
 async function loadOverview() {
   loading.value = true
   err.value = ''
@@ -211,18 +228,24 @@ function setMilestone(m: MilestoneMode) {
   loadOverview()
 }
 
-onMounted(() => { loadOverview(); loadFilterOptions() })
+onMounted(async () => {
+  loadFilterOptions()
+  // Block on the live pull so the first numbers shown are current.
+  await refreshLive()
+  loadOverview()
+})
 watch(milestone, () => {
   // Re-fetch when milestone changes via toggle.
   auditRows.value = {}
   auditSort.value = {}
 })
-function applyFilter(key: 'state' | 'closer' | 'lender', value: string) {
+function applyFilter(key: 'state' | 'closer' | 'lender' | 'status', value: string) {
   // Re-pull data when a filter changes. Existing audits are dropped
   // because their bucket counts are filter-scoped too.
   if (key === 'state')  fState.value  = fState.value  === value ? '' : value
   if (key === 'closer') fCloser.value = fCloser.value === value ? '' : value
   if (key === 'lender') fLender.value = fLender.value === value ? '' : value
+  if (key === 'status') fStatus.value = fStatus.value === value ? '' : value
   persistFilters()
   auditRows.value = {}
   auditSort.value = {}
@@ -480,8 +503,18 @@ function milestoneForBucket(bucketKey: string): Milestone {
       <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground" @click="clearFilters">Clear</button>
     </div>
 
-    <!-- Filter drawer — state + closer + lender. Hidden by default. -->
-    <div v-if="showFilterDrawer" class="rounded-xl border bg-card p-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <!-- Filter drawer — status + state + closer + lender. Hidden by default. -->
+    <div v-if="showFilterDrawer" class="rounded-xl border bg-card p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="space-y-1.5">
+        <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Project Status</Label>
+        <Select :model-value="fStatus || '__all__'" @update:model-value="v => applyFilter('status', v === '__all__' ? '' : String(v))">
+          <SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All statuses" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All statuses</SelectItem>
+            <SelectItem v-for="s in filterOptions.statuses" :key="s" :value="s">{{ s }}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <div class="space-y-1.5">
         <Label class="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label>
         <Select :model-value="fState || '__all__'" @update:model-value="v => applyFilter('state', v === '__all__' ? '' : String(v))">
@@ -514,7 +547,7 @@ function milestoneForBucket(bucketKey: string): Milestone {
       </div>
     </div>
 
-    <p v-if="loading" class="text-sm text-muted-foreground italic">Loading…</p>
+    <p v-if="loading" class="text-sm text-muted-foreground italic">{{ liveRefreshing ? 'Fetching live funding data from QuickBase…' : 'Loading…' }}</p>
     <div v-else-if="err" class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
       Failed to load: {{ err }}
     </div>

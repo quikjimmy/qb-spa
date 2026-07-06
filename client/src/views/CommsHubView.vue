@@ -77,8 +77,23 @@ interface SummaryResponse {
 const loading = ref(true)
 const refreshing = ref(false)
 const summary = ref<SummaryResponse | null>(null)
-const viewMode = ref<'personal' | 'team'>('team')
+// Scope of the reporting/summary view. Coordinators care about their own
+// threads first, so default to 'personal' ("Me"). The last explicit Me/Team
+// choice is persisted (see setViewMode) so it sticks across visits.
+// Do NOT flip this default back to 'team' — PC feedback #6 (Emma M.): the hub
+// should open on the signed-in user's own activity, not the whole team.
+function initialViewMode(): 'personal' | 'team' {
+  const saved = localStorage.getItem('comms.viewMode')
+  return saved === 'team' ? 'team' : 'personal'
+}
+const viewMode = ref<'personal' | 'team'>(initialViewMode())
 const fCoordinator = ref('')
+
+function setViewMode(m: 'personal' | 'team') {
+  viewMode.value = m
+  if (m === 'personal') fCoordinator.value = ''
+  localStorage.setItem('comms.viewMode', m)
+}
 
 // Date window — same preset vocabulary as the PC Dashboard
 const datePreset = ref('last_30')
@@ -328,8 +343,8 @@ function setMainTab(t: CommsTab) {
           </SelectContent>
         </Select>
         <div class="flex rounded-md border overflow-hidden shrink-0">
-          <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'personal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'personal'; fCoordinator = ''">Me</button>
-          <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'team' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="viewMode = 'team'">Team</button>
+          <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'personal' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setViewMode('personal')">Me</button>
+          <button class="px-2.5 h-8 text-xs font-medium transition-colors" :class="viewMode === 'team' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'" @click="setViewMode('team')">Team</button>
         </div>
         <button
           type="button"

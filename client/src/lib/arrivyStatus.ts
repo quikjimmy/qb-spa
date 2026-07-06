@@ -36,6 +36,46 @@ export const STATUS_INFO: Record<ArrivyStatusKey, ArrivyStatusInfo> = {
   cancelled: { key: 'cancelled', label: 'Cancelled', pillCls: 'bg-rose-600 text-white',           borderCls: 'border-l-rose-600', dotCls: 'bg-rose-600' },
 }
 
+// ─── TOA material status ("MD" — Material Delivered) ─────
+// Sourced from the TOA order webhooks (QB table bvf3ydgnq) via
+// toa_order_cache on the server. Sits IN FRONT of the Arrivy task
+// progression on install tiles: MD → En Route → On Site → Submitted.
+// One "MD" chip whose tone carries the state (per James 2026-07-03):
+// slate = ordered, amber = confirmed, emerald = delivered.
+
+export type ToaStatusKey = 'ordered' | 'confirmed' | 'delivered'
+
+export interface ToaState {
+  status: ToaStatusKey
+  statusAt: string
+  deliveredAt: string
+  poNumber: string
+  distributor: string
+  installationDate: string
+}
+
+export interface ToaStatusInfo {
+  key: ToaStatusKey
+  label: string
+  pillCls: string
+  dotCls: string
+}
+
+export const TOA_INFO: Record<ToaStatusKey, ToaStatusInfo> = {
+  ordered:   { key: 'ordered',   label: 'Material Ordered',   pillCls: 'bg-slate-100 text-slate-600',     dotCls: 'bg-slate-400' },
+  confirmed: { key: 'confirmed', label: 'Material Confirmed', pillCls: 'bg-amber-100 text-amber-700',     dotCls: 'bg-amber-500' },
+  delivered: { key: 'delivered', label: 'Material Delivered', pillCls: 'bg-emerald-100 text-emerald-700', dotCls: 'bg-emerald-500' },
+}
+
+/** Hover/tooltip line for an MD chip — full state + PO + distributor. */
+export function toaTitle(t: ToaState): string {
+  const parts = [TOA_INFO[t.status]?.label || t.status]
+  if (t.status === 'delivered' && t.deliveredAt) parts.push(`on ${t.deliveredAt.slice(0, 10)}`)
+  if (t.poNumber) parts.push(`PO ${t.poNumber}`)
+  if (t.distributor) parts.push(t.distributor)
+  return parts.join(' · ')
+}
+
 /** Normalize the raw task_status string from QB into one of our known keys.
  *  Substring-tolerant so noisy QB labels ("Cancelled by Customer",
  *  "Task Cancelled", "Site Work Complete") still classify correctly.

@@ -26,6 +26,7 @@ import { permitAnalyticsRouter } from './routes/permit-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
 import { feedbackRouter } from './routes/feedback'
+import { changelogRouter } from './routes/changelog'
 import { improvementProposalsRouter } from './routes/improvement-proposals'
 import { userAgentsRouter } from './routes/user-agents'
 import { userSettingsRouter } from './routes/user-settings'
@@ -45,6 +46,8 @@ import { startPredictedLatePoller } from './lib/predictedLatePoller'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
+import { startOutreachCacheScheduler } from './routes/pc-dashboard'
+import { toaRouter, startToaScheduler } from './routes/toa'
 import { startArrivyUsersScheduler } from './lib/arrivyUsersSync'
 import { startFeedbackTriageScheduler } from './lib/feedbackTriageSchedule'
 import { reportsRouter } from './routes/reports'
@@ -124,7 +127,9 @@ app.use('/api/analytics/permit', authenticate, denyReferralAgent, permitAnalytic
 app.use('/api/daily-goals', authenticate, denyReferralAgent, dailyGoalsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, referralAgentScope, pcDashboardRouter)
+app.use('/api/toa', authenticate, denyReferralAgent, toaRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
+app.use('/api/changelog', authenticate, changelogRouter)
 app.use('/api/improvement-proposals', authenticate, improvementProposalsRouter)
 app.use('/api/user-agents', authenticate, userAgentsRouter)
 app.use('/api/user-settings', authenticate, userSettingsRouter)
@@ -183,6 +188,8 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startDialpadEventMirror() } catch (e) { console.error('[startup] dialpad mirror failed:', e) }
   try { startProjectCacheScheduler() } catch (e) { console.error('[startup] project cache scheduler failed:', e) }
   try { startTicketCacheScheduler() } catch (e) { console.error('[startup] ticket cache scheduler failed:', e) }
+  try { startOutreachCacheScheduler() } catch (e) { console.error('[startup] outreach cache scheduler failed:', e) }
+  try { startToaScheduler() } catch (e) { console.error('[startup] toa scheduler failed:', e) }
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
   try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
   try { startPredictedLatePoller() } catch (e) { console.error('[startup] predicted-late poller failed:', e) }

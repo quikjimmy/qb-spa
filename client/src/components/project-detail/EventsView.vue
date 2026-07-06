@@ -2,7 +2,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import SectionCard from './SectionCard.vue'
-import { classifyArrivyTask, STATUS_INFO, type ArrivyStatusKey } from '@/lib/arrivyStatus'
+import { classifyArrivyTask, STATUS_INFO, type ArrivyStatusKey, type ToaState } from '@/lib/arrivyStatus'
+import MdChip from '@/components/MdChip.vue'
 
 // Per-project Arrivy task feed. Backed by /api/field/project-tasks which
 // proxies QB's Arrivy table (bvbqgs5yc). Shows past + upcoming events with
@@ -50,6 +51,8 @@ const F = ref<FieldIds | null>(null)
 // (bvbbznmdb). The QB task row itself often still reads "STARTED" when
 // an in-flight task gets cancelled, so the log is the source of truth.
 const cancelledTaskRids = ref<Set<string>>(new Set())
+// TOA material-order state for THIS project (MD chip on install rows).
+const toa = ref<ToaState | null>(null)
 const loading = ref(true)
 const errorMsg = ref('')
 const isDesktop = ref(false)
@@ -72,6 +75,7 @@ async function load() {
     records.value = data.records ?? []
     F.value = data.fields ?? null
     cancelledTaskRids.value = new Set<string>(data.cancelledTaskRids || [])
+    toa.value = (data.toaByProject?.[String(props.projectRid)] as ToaState | undefined) || null
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -168,6 +172,7 @@ function getStatus(t: QbRecord): StatusInfo {
 interface TaskItem {
   rid: string
   template: string
+  isInstall: boolean
   scheduled: Date | null
   scheduledIso: string
   crew: string
@@ -207,9 +212,11 @@ const tasks = computed<TaskItem[]>(() => {
     const enrouteValid = enroute && !isNaN(enroute.getTime()) ? enroute : null
     const onTime = !!(arrivedValid && valid &&
       (arrivedValid.getTime() - valid.getTime()) <= ON_TIME_GRACE_MIN * 60_000)
+    const templateStr = qbStr(t, F.value!.templateName) || 'Task'
     return {
       rid: String(qbv(t, 3) ?? ''),
-      template: qbStr(t, F.value!.templateName) || 'Task',
+      template: templateStr,
+      isInstall: /install|battery|ess/i.test(templateStr) && !/inspect/i.test(templateStr),
       scheduled: valid,
       scheduledIso: isoDay,
       crew: getCrew(t),
@@ -610,6 +617,8 @@ function eventLabel(e: LogEntry): { label: string; tone: string } {
                       @click.stop
                     >{{ t.template }}</a>
                     <span v-else class="text-[12.5px] font-medium truncate" :class="isExpandable(t) ? 'text-rose-900' : 'text-slate-800'" :title="t.template">{{ t.template }}</span>
+                    <!-- MD (TOA material) leads the status chips on install rows. -->
+                    <MdChip v-if="t.isInstall && toa" :toa="toa" />
                     <span
                       class="inline-flex items-center gap-1 rounded-full font-semibold uppercase tracking-wide whitespace-nowrap"
                       :class="[t.status.pillCls, isExpandable(t) ? 'px-2 py-[2px] text-[10.5px]' : 'px-1.5 py-[1px] text-[10px] font-medium normal-case tracking-normal']"

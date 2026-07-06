@@ -1,6 +1,9 @@
 import { Router, type Request, type Response } from 'express'
+import cron from 'node-cron'
 import db from '../db'
+import { isAppActive } from '../lib/activity'
 import { decorateCommsItems } from '../lib/callerAttribution'
+import { toaForProjects } from './toa'
 import { F, QB, SELECT_FIELDS, qbQuery, fieldValue, type QbRecord } from './field'
 
 const router = Router()
@@ -733,13 +736,17 @@ router.get('/', (req: Request, res: Response): void => {
     groups[tp].push(r)
   }
 
-  // Statuses that close/pause a project — excluded from Blocked NEM/PTO panels
+  // Statuses that close/pause a project — excluded from the Blocked PTO panel
   // so reps don't see dead accounts cluttering blocker lists.
   const DEAD_STATUSES = ['Cancelled', 'Pending Cancel', 'Lost', 'ROR']
   const deadPlaceholders = DEAD_STATUSES.map(() => '?').join(',')
 
-  // Blocked NEM from project_cache
-  const blockedNemParams: unknown[] = [...DEAD_STATUSES]
+  // Blocked NEM from project_cache. Whitelist to the live pipeline
+  // (Active + any hold) instead of blacklisting dead statuses — a
+  // blacklist misses Complete and cancelled-derivative statuses
+  // (Pending KCA, Completed | Paid, Rejected…), which cluttered the
+  // panel with dead accounts (feedback #2 / #10).
+  const blockedNemParams: unknown[] = []
   let blockedNemWhere = ''
   if (coordinator) { blockedNemWhere = `AND pc.coordinator = ?`; blockedNemParams.push(coordinator) }
   const blockedNem = db.prepare(
@@ -749,7 +756,7 @@ router.get('/', (req: Request, res: Response): void => {
      WHERE pc.nem_submitted != '' AND pc.nem_submitted IS NOT NULL
        AND (pc.nem_approved = '' OR pc.nem_approved IS NULL)
        AND (pc.nem_rejected = '' OR pc.nem_rejected IS NULL)
-       AND pc.status NOT IN (${deadPlaceholders})
+       AND (LOWER(pc.status) = 'active' OR LOWER(pc.status) LIKE '%hold%')
        ${blockedNemWhere}
      ORDER BY pc.nem_submitted ASC`
   ).all(...blockedNemParams) as Array<Record<string, unknown>>
@@ -905,8 +912,17 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
 
   if (rows.length === 0) { res.json({ tasks: [], window: { fromIso, toIso } }); return }
 
-  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number }>()
-  for (const r of rows) projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0 })
+  // Battery-only mirrors projects.ts: system_size_kw < 1 AND a battery
+  // adder (battery_project set). SQL's NULL < 1 is falsy there, so a
+  // missing system size must NOT count as battery-only here either.
+  const batteryRids = new Set(
+    (db.prepare('SELECT project_rid FROM battery_project').all() as Array<{ project_rid: number }>).map(r => r.project_rid)
+  )
+  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number; battery_only: boolean }>()
+  for (const r of rows) {
+    const batteryOnly = r.system_size_kw != null && Number(r.system_size_kw) < 1 && batteryRids.has(Number(r.record_id))
+    projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0, battery_only: batteryOnly })
+  }
 
   // ONE QB call: date window only, then filter in-memory against the PC
   // project rid set. Looping QB per 50-rid batch was the previous shape
@@ -1028,6 +1044,10 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     return { key: 'other', label: template || 'Task' }
   }
 
+  // TOA material state per project — drives the MD chip on the tile's
+  // progress rail.
+  const toaMap = toaForProjects(collected.map(rec => String(fieldValue(rec, F.relatedProject) || '')))
+
   const tasks = collected.map(rec => {
     const arrivyId = String(fieldValue(rec, 3) || '')
     const projectRid = String(fieldValue(rec, F.relatedProject) || '')
@@ -1050,12 +1070,14 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
       task_type_key: tt.key,
       task_type_label: tt.label,
       system_size_kw: meta?.system_size_kw || 0,
+      battery_only: meta?.battery_only || false,
       scheduled_at: String(fieldValue(rec, F.scheduledDateTime) || ''),
       crew_names: crewNames(rec),
       status: c.status,
       status_label: c.label,
       task_url: String(fieldValue(rec, F.taskUrl) || ''),
       progress: { enroute, onsite, submitted, install_complete: installComplete, rtr_ready: rtrReady, rtr_status: rtrStatusRaw },
+      toa: toaMap[projectRid] || null,
     }
   })
 
@@ -1512,5 +1534,48 @@ router.get('/adders', (req: Request, res: Response): void => {
   ).get() as { total: number; last_refresh: string }
   res.json({ rows, cache })
 })
+
+// ── Outreach cache scheduler ─────────────────────────────
+// The outreach cache previously refreshed only on a manual admin click,
+// so completed outreaches lingered on the PC dashboard for days
+// (feedback #12 / #15). Same shape as the ticket-cache scheduler:
+// frequent refresh gated on app activity + an ungated daily sweep.
+
+const OUTREACH_ACTIVITY_WINDOW_MS = 30 * 60_000
+let outreachSchedulerStarted = false
+
+export function startOutreachCacheScheduler(): void {
+  if (outreachSchedulerStarted) return
+  outreachSchedulerStarted = true
+
+  // Full rebuild every 15 min while users are active. The QB pull is a
+  // handful of batched queries (~6k rows), cheap enough to rebuild whole.
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      if (!getQbConfig().token) return
+      if (!isAppActive(OUTREACH_ACTIVITY_WINDOW_MS)) return
+      const result = await refreshOutreachCache()
+      console.log(`[outreach-cache] refresh: ${result.total} rows in ${result.duration}ms`)
+    } catch (e) {
+      console.error('[outreach-cache] refresh failed:', e instanceof Error ? e.message : e)
+    }
+  })
+
+  // Daily sweep at 03:40 UTC (offset from the ticket sweep at 03:30) —
+  // runs even with no activity and also rebuilds the completed-outreach
+  // analytics cache, which is only read by slower-moving reports.
+  cron.schedule('40 3 * * *', async () => {
+    try {
+      if (!getQbConfig().token) return
+      const open = await refreshOutreachCache()
+      const done = await refreshCompletedCache()
+      console.log(`[outreach-cache] daily sweep: open=${open.total} completed=${done.total}`)
+    } catch (e) {
+      console.error('[outreach-cache] daily sweep failed:', e instanceof Error ? e.message : e)
+    }
+  })
+
+  console.log('[outreach-cache] scheduler started: open=15m (gated on activity), open+completed=03:40 UTC daily')
+}
 
 export { router as pcDashboardRouter }

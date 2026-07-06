@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { requireRole } from '../middleware/auth'
 import { runFeedbackTriage } from '../agents/feedbackTriage'
+import { draftChangelogFromFeedback } from './changelog'
 
 const router = Router()
 
@@ -95,6 +96,12 @@ router.patch('/:id', requireRole('admin'), (req: Request, res: Response): void =
   params.push(id)
   const result = db.prepare(`UPDATE app_feedback SET ${sets.join(', ')} WHERE id = ?`).run(...params)
   if (result.changes === 0) { res.status(404).json({ error: 'not found' }); return }
+
+  // Shipping an item auto-drafts a What's New entry crediting the
+  // requester. Draft only — the admin reviews wording before publish.
+  if (status === 'shipped') {
+    try { draftChangelogFromFeedback(id, req.user!.userId) } catch { /* non-fatal */ }
+  }
   res.json({ ok: true })
 })
 

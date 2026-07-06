@@ -12,6 +12,7 @@ import { arrivyConfigured, getArrivyTask, getArrivyTaskFiles, ArrivyApiError, ty
 import { officeTodayIso, officeDayBoundsUtc, addDaysIso } from '../lib/officeTime'
 import { syncArrivyUsers } from '../lib/arrivyUsersSync'
 import { notifyPcOfSurveyCancel } from '../lib/notify'
+import { toaForProjects } from './toa'
 
 const router = Router()
 
@@ -281,11 +282,19 @@ router.get('/tasks', async (req: Request, res: Response): Promise<void> => {
         else if (subType === 'ENROUTE' && phase !== 'onsite') phase = 'enroute'
       }
     }
+    // TOA material state for every project in the payload — drives the
+    // MD (Material Delivered) chip in front of En Route on install tiles.
+    const toaRids = new Set<string>(relevantProjectRids)
+    for (const rec of records) {
+      const rid = String(rec[String(F.relatedProject)]?.value || '')
+      if (rid) toaRids.add(rid)
+    }
     res.json({
       preset, from: fromDate, to: toDate,
       records, fields: F,
       cancelledTaskRids: Object.keys(cancelledTaskInfo),
       cancelledTaskInfo,
+      toaByProject: toaForProjects([...toaRids]),
     })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
@@ -645,6 +654,7 @@ router.get('/project-tasks', async (req: Request, res: Response): Promise<void> 
       fields: F,
       cancelledTaskRids: Object.keys(cancelledTaskInfo),
       cancelledTaskInfo,
+      toaByProject: toaForProjects([projRid]),
     })
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
