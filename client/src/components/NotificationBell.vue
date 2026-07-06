@@ -149,6 +149,16 @@ const typeIcon: Record<string, string> = {
   // Note @mention / reply — same "you were named" family as feed_mention.
   note_mention: 'text-[#b6004f]',
   note_reply: 'text-[#b6004f]',
+  // Tickets — assignment is actionable (warm); the rest stay calm.
+  ticket_assigned: 'text-amber-600',
+  ticket_completed: 'text-emerald-600',
+  ticket_updated: 'text-slate-500',
+  ticket_chat: 'text-indigo-500',
+  // Manager check-ins/escalations are actionable; ride-alongs are the
+  // agent spotting savings — violet like the rest of the Ari family.
+  ticket_nudge: 'text-amber-700',
+  ticket_ride_along: 'text-violet-600',
+  ticket_team_report: 'text-amber-700',
   // Late field job — actionable + time-sensitive (a customer is waiting).
   // Deeper amber than generic `warning` so it reads "act now" while staying
   // in the warm/actionable family, short of the alarm-red reserved for errors.

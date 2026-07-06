@@ -7,6 +7,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import DataFreshness from '@/components/DataFreshness.vue'
+import TicketComposer from '@/components/tickets/TicketComposer.vue'
+import TicketDetailSheet, { type TicketRow as FullTicketRow } from '@/components/tickets/TicketDetailSheet.vue'
 import { fmtDate, fmtDateLong as fmtDateFull, daysBetween, timeAgo, localTodayIso, localDateKey } from '@/lib/dates'
 
 const auth = useAuthStore()
@@ -160,6 +162,27 @@ function dueStatus(d: string): { label: string; cls: string } {
 function daysPastDue(d: string): number { return Math.max(0, daysBetween(d)) }
 function ticketAge(d: string): number { return Math.max(0, daysBetween(d)) }
 
+// ── Create + work drawer ──────────────────────────────────
+const composerOpen = ref(false)
+const workOpen = ref(false)
+const workTicket = ref<FullTicketRow | null>(null)
+function workOn(t: { record_id: number }) {
+  // The list row already carries every cache column (SELECT *), so it can
+  // seed the drawer directly; `changed` re-fetches for freshness.
+  workTicket.value = t as unknown as FullTicketRow
+  workOpen.value = true
+}
+async function onWorkChanged() {
+  await loadTickets()
+  if (workTicket.value) {
+    try {
+      const res = await fetch(`/api/tickets/${workTicket.value.record_id}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+      if (res.ok) workTicket.value = (await res.json()).ticket as FullTicketRow
+    } catch { /* keep stale */ }
+  }
+  if (selectedTicket.value) selectedTicket.value = tickets.value.find(t => t.record_id === selectedTicket.value?.record_id) ?? selectedTicket.value
+}
+
 const registerRefresh = inject<(fn: () => Promise<void>) => void>('registerRefresh')
 // First-paint cache seed: if the cache is empty (fresh dev DB), kick a
 // full refresh in the background. The DataFreshness badge handles ongoing
@@ -193,6 +216,11 @@ onMounted(() => { loadTickets().then(seedIfEmpty); registerRefresh?.(() => loadT
         <DataFreshness resource="tickets" label="Cache" />
       </div>
       <div class="flex items-center gap-2 ml-auto">
+        <button
+          type="button"
+          class="h-7 rounded-lg px-3 text-xs font-semibold bg-teal-700 text-white hover:bg-teal-800 transition-colors cursor-pointer"
+          @click="composerOpen = true"
+        >+ New ticket</button>
         <div class="flex gap-0.5 p-0.5 bg-muted rounded-lg">
           <button class="px-3 py-1 text-xs font-medium rounded-md transition-colors" :class="viewMode === 'list' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'" @click="viewMode = 'list'">List</button>
           <button class="px-3 py-1 text-xs font-medium rounded-md transition-colors" :class="viewMode === 'activity' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground'" @click="viewMode = 'activity'">Activity</button>
@@ -425,7 +453,12 @@ onMounted(() => { loadTickets().then(seedIfEmpty); registerRefresh?.(() => loadT
         </div>
         <div v-if="selectedTicket.blocker" class="text-sm"><span class="text-muted-foreground text-xs">Blocker</span><p class="font-semibold text-red-600">Yes</p></div>
       </div>
-      <div class="px-4 sm:px-5 pb-4">
+      <div class="px-4 sm:px-5 pb-4 flex items-center gap-3">
+        <button
+          type="button"
+          class="h-8 rounded-full px-4 text-xs font-semibold bg-teal-700 text-white hover:bg-teal-800 transition-colors cursor-pointer"
+          @click="workOn(selectedTicket)"
+        >Work ticket</button>
         <a :href="`https://kin.quickbase.com/db/bstdqwrkg?a=dr&rid=${selectedTicket.record_id}`" target="_blank" class="text-xs text-muted-foreground hover:text-foreground underline">Open in QuickBase</a>
       </div>
     </div>
@@ -501,6 +534,9 @@ onMounted(() => { loadTickets().then(seedIfEmpty); registerRefresh?.(() => loadT
         </div>
       </div>
     </template>
+
+    <TicketComposer v-model:open="composerOpen" @created="loadTickets" />
+    <TicketDetailSheet v-model:open="workOpen" :ticket="workTicket" @changed="onWorkChanged" />
   </div>
 </template>
 
