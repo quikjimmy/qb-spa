@@ -339,7 +339,7 @@ router.post('/', denyReferralAgent, async (req: Request, res: Response): Promise
   }
   if (threadRootId) baseFields[String(F.threadId)] = { value: String(threadRootId) }
   const userFields: Record<string, { value: unknown }> = {}
-  if (author?.email) userFields[String(F.noteBy)] = { value: { email: author.email } }
+  if (author?.email) userFields[String(F.noteBy)] = { value: author.email }
 
   async function createNote(fields: Record<string, { value: unknown }>) {
     const response = await fetch('https://api.quickbase.com/v1/records', {

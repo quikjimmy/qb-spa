@@ -1,0 +1,18 @@
+{
+  "alias": "_DBID_TICKETS",
+  "created": "2022-10-31T22:10:37Z",
+  "defaultSortFieldId": 2,
+  "defaultSortOrder": "DESC",
+  "description": "",
+  "id": "bstdqwrkg",
+  "keyFieldId": 3,
+  "name": "Tickets",
+  "nextFieldId": 184,
+  "nextRecordId": 8252,
+  "pluralRecordName": "Tickets",
+  "singleRecordName": "Ticket",
+  "sizeLimit": "500 MB",
+  "spaceRemaining": "485 MB",
+  "spaceUsed": "15 MB",
+  "updated": "2026-06-16T00:26:31Z"
+}

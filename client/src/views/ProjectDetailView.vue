@@ -23,6 +23,8 @@ import NoteComposer from '@/components/project-detail/NoteComposer.vue'
 import MilestoneStrip from '@/components/project-detail/MilestoneStrip.vue'
 import MilestoneDetail from '@/components/project-detail/MilestoneDetail.vue'
 import SmsThreadDialog from '@/components/SmsThreadDialog.vue'
+import TicketComposer from '@/components/tickets/TicketComposer.vue'
+import TicketDetailSheet, { type TicketRow as FullTicketRow } from '@/components/tickets/TicketDetailSheet.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 interface Project extends Record<string, unknown> {
@@ -329,6 +331,31 @@ async function loadTickets() {
     tickets.value = (data.tickets as Ticket[]) ?? []
     ticketKpi.value = data.kpi ?? null
   } catch { /* ignore */ }
+}
+
+// ── Ticket create + detail drawer ─────────────────────────
+const ticketComposerOpen = ref(false)
+const ticketSheetOpen = ref(false)
+const selectedTicket = ref<FullTicketRow | null>(null)
+
+async function openTicket(t: { record_id: number }) {
+  try {
+    const res = await fetch(`/api/tickets/${t.record_id}`, { headers: hdrs() })
+    if (!res.ok) return
+    const data = await res.json()
+    selectedTicket.value = data.ticket as FullTicketRow
+    ticketSheetOpen.value = true
+  } catch { /* stay closed */ }
+}
+
+async function onTicketChanged() {
+  await loadTickets()
+  if (selectedTicket.value) {
+    try {
+      const res = await fetch(`/api/tickets/${selectedTicket.value.record_id}`, { headers: hdrs() })
+      if (res.ok) selectedTicket.value = (await res.json()).ticket as FullTicketRow
+    } catch { /* keep stale */ }
+  }
 }
 
 async function loadNotes() {
@@ -890,7 +917,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
                 <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
               </TabsContent>
               <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" /></TabsContent>
-              <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
+              <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request creatable @create="ticketComposerOpen = true" @select="openTicket" /></TabsContent>
               <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
               <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
             </Tabs>
@@ -924,7 +951,7 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
               <DealFeed :items="feedItems" :show-filters="false" locked-filter="notes" :project-rid="project.record_id" :replies-by-root="noteRepliesByRoot" @reply-posted="loadNotes" @note-edited="loadNotes" />
             </TabsContent>
             <TabsContent value="schedule" class="mt-3"><EventsView :project-rid="project.record_id" list-only /></TabsContent>
-            <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request /></TabsContent>
+            <TabsContent value="tickets" class="mt-3"><Tickets :items="tickets" flat show-request creatable @create="ticketComposerOpen = true" @select="openTicket" /></TabsContent>
             <TabsContent value="docs" class="mt-3"><Documents :project-rid="project.record_id" /></TabsContent>
             <TabsContent value="comms" class="mt-3"><Communications :items="comms" /></TabsContent>
             <TabsContent value="breakdown" class="mt-3"><DealBreakdown :p="project" /></TabsContent>
@@ -1018,6 +1045,18 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
         v-model:open="chatOpen"
         :project-id="project.record_id"
         :project-name="project.customer_name"
+      />
+
+      <TicketComposer
+        v-model:open="ticketComposerOpen"
+        :project-rid="project.record_id"
+        :project-name="project.customer_name"
+        @created="loadTickets"
+      />
+      <TicketDetailSheet
+        v-model:open="ticketSheetOpen"
+        :ticket="selectedTicket"
+        @changed="onTicketChanged"
       />
     </template>
   </div>

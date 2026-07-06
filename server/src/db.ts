@@ -1197,6 +1197,13 @@ db.exec(`
   )
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_user_departments_user ON user_departments(user_id)`)
+{
+  const cols = db.prepare(`PRAGMA table_info(user_departments)`).all() as Array<{ name: string }>
+  // Department leads get the daily past-due ticket report for their team.
+  if (!cols.some(c => c.name === 'is_lead')) {
+    db.exec(`ALTER TABLE user_departments ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0`)
+  }
+}
 
 // --- Department <-> Permission (department-level view/table/field grants) ---
 // Mirrors the (role)-permissions table shape so the existing helpers

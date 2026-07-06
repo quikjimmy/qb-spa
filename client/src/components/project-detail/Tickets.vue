@@ -25,7 +25,11 @@ const props = defineProps<{
    *  screens. Only used where the tile has room (full project view); the
    *  narrow bump-out leaves it off. */
   showRequest?: boolean
+  /** Show the "New ticket" header action (emits `create`). */
+  creatable?: boolean
 }>()
+
+const emit = defineEmits<{ select: [TicketRow]; create: [] }>()
 
 type DueBucket = 'overdue' | 'today' | 'future' | 'none'
 // Subset of StatusPill's tones we use here.
@@ -135,15 +139,16 @@ const accent: Record<Decorated['tone'], string> = {
 </script>
 
 <template>
-  <SectionCard title="Tickets" :count="items.length" no-padding>
+  <SectionCard title="Tickets" :count="items.length" no-padding :action="creatable ? 'New ticket' : undefined" @action="emit('create')">
     <!-- FLAT — outlined white tiles, matching EventsView's flat list -->
     <div v-if="flat" class="px-4 pb-3.5">
       <ul class="space-y-1.5">
         <li
           v-for="t in decorated"
           :key="t.record_id"
-          class="rounded-md border-l-[4px] bg-white ring-1 ring-slate-200/90 shadow-sm"
+          class="rounded-md border-l-[4px] bg-white ring-1 ring-slate-200/90 shadow-sm cursor-pointer hover:ring-slate-300 transition-shadow"
           :class="t.borderCls"
+          @click="emit('select', t)"
         >
           <div class="flex items-stretch gap-3 py-2 pl-2.5 pr-2">
             <div class="flex-1 min-w-0 flex flex-col justify-center">
@@ -175,9 +180,10 @@ const accent: Record<Decorated['tone'], string> = {
       <div
         v-for="(t, i) in decorated"
         :key="t.record_id"
-        class="py-2.5"
+        class="py-2.5 cursor-pointer hover:bg-slate-50/60"
         :class="i < decorated.length - 1 ? 'border-b' : ''"
         :style="{ borderLeft: `3px solid ${accent[t.tone]}`, paddingLeft: '12px', marginLeft: '-16px', borderColor: i < decorated.length - 1 ? '#e6dfd6' : 'transparent' }"
+        @click="emit('select', t)"
       >
         <div class="flex items-start gap-2">
           <div class="flex-1 min-w-0">

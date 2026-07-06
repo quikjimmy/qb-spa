@@ -925,6 +925,35 @@ router.get('/departments', (_req: Request, res: Response): void => {
   res.json({ departments: rows })
 })
 
+// Members of a department with their lead flag — powers the leads editor.
+router.get('/departments/:id/members', (req: Request, res: Response): void => {
+  const deptId = parseInt(String(req.params['id'] ?? ''), 10)
+  if (!Number.isFinite(deptId)) { res.status(400).json({ error: 'department id required' }); return }
+  const members = db.prepare(`
+    SELECT u.id, u.name, u.email, ud.is_lead
+    FROM user_departments ud JOIN users u ON u.id = ud.user_id
+    WHERE ud.department_id = ? AND u.is_active = 1
+    ORDER BY u.name
+  `).all(deptId)
+  res.json({ members })
+})
+
+// Set which members lead a department (receive the daily past-due team
+// report). Replaces the full lead set for the department.
+router.put('/departments/:id/leads', (req: Request, res: Response): void => {
+  const deptId = parseInt(String(req.params['id'] ?? ''), 10)
+  if (!Number.isFinite(deptId)) { res.status(400).json({ error: 'department id required' }); return }
+  const ids = Array.isArray((req.body ?? {})['user_ids'])
+    ? ((req.body as { user_ids: unknown[] }).user_ids).map(x => parseInt(String(x), 10)).filter(Number.isFinite)
+    : []
+  db.transaction(() => {
+    db.prepare(`UPDATE user_departments SET is_lead = 0 WHERE department_id = ?`).run(deptId)
+    const set = db.prepare(`UPDATE user_departments SET is_lead = 1 WHERE department_id = ? AND user_id = ?`)
+    for (const id of ids) set.run(deptId, id)
+  })()
+  res.json({ ok: true, lead_user_ids: ids })
+})
+
 router.post('/departments', (req: Request, res: Response): void => {
   const { name, description } = req.body as { name?: string; description?: string }
   if (!name?.trim()) { res.status(400).json({ error: 'name is required' }); return }
