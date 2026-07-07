@@ -12,6 +12,7 @@ import { getStatusConfig } from '@/lib/status'
 import { computeMilestones, dotStyle, labelStyle, connectorStyle, type MilestoneStep } from '@/lib/milestones'
 import DataFreshness from '@/components/DataFreshness.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
+import TicketComposer from '@/components/tickets/TicketComposer.vue'
 import BatteryOnlyBadge from '@/components/BatteryOnlyBadge.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
@@ -192,6 +193,18 @@ const cancellationsByProject = ref<Record<string, { survey?: boolean; install?: 
 
 // Per-project open-ticket buckets for the at-a-glance urgency badge on rows.
 const { ticketsFor, loadTicketBuckets } = useTicketBuckets()
+
+// ── New ticket from a project card ────────────────────────
+// Cards are <a> links, so the action must stop navigation before
+// opening the composer pre-linked to the project.
+const ticketComposerOpen = ref(false)
+const ticketProject = ref<{ rid: number; name: string } | null>(null)
+function openTicketComposer(e: Event, p: { record_id: number; customer_name: string | null }) {
+  e.preventDefault()
+  e.stopPropagation()
+  ticketProject.value = { rid: p.record_id, name: p.customer_name || `Project ${p.record_id}` }
+  ticketComposerOpen.value = true
+}
 
 async function loadCancellations() {
   try {
@@ -744,6 +757,14 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="flex gap-1 shrink-0 items-center">
+              <button
+                v-if="!auth.isReferralAgent"
+                class="shrink-0 inline-flex items-center justify-center size-5 rounded text-muted-foreground/60 active:text-teal-700"
+                title="New ticket for this project"
+                @click="openTicketComposer($event, p)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 9v6"/><path d="M10 12h6"/></svg>
+              </button>
               <BatteryOnlyBadge v-if="p.battery_only" />
               <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
               <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
@@ -839,6 +860,14 @@ onBeforeUnmount(() => {
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
                   <span class="text-[10px] font-semibold">{{ p.open_tickets }}</span>
                 </span>
+                <button
+                  v-if="!auth.isReferralAgent"
+                  class="shrink-0 inline-flex items-center justify-center size-5 rounded opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-teal-700 hover:bg-teal-600/10 transition-all"
+                  title="New ticket for this project"
+                  @click="openTicketComposer($event, p)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M13 9v6"/><path d="M10 12h6"/></svg>
+                </button>
                 <BatteryOnlyBadge v-if="p.battery_only" />
                 <span v-if="p.state" class="text-[9px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{{ p.state }}</span>
                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold" :class="[getStatusConfig(p.status).bg, getStatusConfig(p.status).text]">{{ p.status }}</span>
@@ -908,5 +937,12 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="!loading && projects.length > 0 && projects.length < total" class="text-center text-xs text-muted-foreground py-2">Showing {{ projects.length }} of {{ total.toLocaleString() }}</p>
+
+    <TicketComposer
+      v-model:open="ticketComposerOpen"
+      :project-rid="ticketProject?.rid ?? null"
+      :project-name="ticketProject?.name ?? null"
+      @created="loadTicketBuckets"
+    />
   </div>
 </template>

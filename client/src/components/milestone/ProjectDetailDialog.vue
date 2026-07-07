@@ -21,6 +21,8 @@ import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import FundingChips, { type FundingProject } from '@/components/project-detail/FundingChips.vue'
 import FundingNotes from '@/components/project-detail/FundingNotes.vue'
 import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
+import NoteComposer from '@/components/project-detail/NoteComposer.vue'
+import TicketDetailSheet, { type TicketRow as FullTicketRow } from '@/components/tickets/TicketDetailSheet.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
 
 interface ProjectRow {
@@ -110,6 +112,29 @@ async function loadTickets(rid: number) {
   } catch { /* non-fatal — drawer still renders without tickets */ }
 }
 watch(() => props.project?.record_id, (rid) => { if (rid) loadTickets(rid) }, { immediate: true })
+
+// ── Work a ticket from the drawer (status/reassign/complete/chat) ──
+// Opens the shared TicketDetailSheet stacked above this drawer, same
+// pattern as the chat sheet below.
+const workOpen = ref(false)
+const workTicket = ref<FullTicketRow | null>(null)
+async function openWorkTicket(t: { record_id: number }) {
+  try {
+    const res = await fetch(`/api/tickets/${t.record_id}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+    if (!res.ok) return
+    workTicket.value = (await res.json()).ticket as FullTicketRow
+    workOpen.value = true
+  } catch { /* stay closed */ }
+}
+async function onWorkChanged() {
+  if (props.project?.record_id) await loadTickets(props.project.record_id)
+  if (workTicket.value) {
+    try {
+      const res = await fetch(`/api/tickets/${workTicket.value.record_id}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+      if (res.ok) workTicket.value = (await res.json()).ticket as FullTicketRow
+    } catch { /* keep stale */ }
+  }
+}
 
 function onOpenChange(v: boolean) {
   isOpen.value = v
@@ -249,6 +274,18 @@ const hasFunding = computed(() => {
              when the drawer was opened from a funding report. -->
         <FundingNotes :p="project" :emphasis="context === 'funding'" />
 
+        <!-- Leave a note without leaving the drawer — the full composer
+             (@mentions, / templates, {facts}, AI Polish). The note lands
+             on the project's Notes tab / QB like any other. -->
+        <div class="px-4 pb-3">
+          <NoteComposer
+            :project-rid="project.record_id"
+            :coordinator="(project.coordinator as string | null) ?? null"
+            :closer="(project.closer as string | null) ?? null"
+            :project="project"
+          />
+        </div>
+
         <!-- Milestone strip -->
         <div class="px-4 pb-3">
           <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Milestones</p>
@@ -282,7 +319,7 @@ const hasFunding = computed(() => {
              own "Tickets" header + count. -->
         <div v-if="openTickets.length" class="px-4 pb-4">
           <div class="max-h-72 overflow-y-auto">
-            <Tickets :items="openTickets" flat />
+            <Tickets :items="openTickets" flat @select="openWorkTicket" />
           </div>
         </div>
 
@@ -303,5 +340,13 @@ const hasFunding = computed(() => {
     v-model:open="chatOpen"
     :project-id="project.record_id"
     :project-name="project.customer_name"
+  />
+
+  <!-- Work a ticket (respond in chat, update status/due/assignee) —
+       stacked above the drawer like the chat sheet. -->
+  <TicketDetailSheet
+    v-model:open="workOpen"
+    :ticket="workTicket"
+    @changed="onWorkChanged"
   />
 </template>
