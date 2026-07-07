@@ -13,6 +13,7 @@ import CommsInbox from '@/components/CommsInbox.vue'
 import CommsSearch from '@/components/CommsSearch.vue'
 import RecentThreads from '@/components/RecentThreads.vue'
 import { useCommsRail } from '@/composables/useCommsRail'
+import { officeTodayIso } from '@/lib/dates'
 import DtIconInbox from '@dialpad/dialtone-icons/vue3/inbox'
 import DtIconBarChart from '@dialpad/dialtone-icons/vue3/bar-chart-2'
 
@@ -100,6 +101,8 @@ const datePreset = ref('last_30')
 const dateFrom = ref('')
 const dateTo = ref('')
 const presets = [
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yday' },
   { key: 'last_7', label: '7d' },
   { key: 'last_14', label: '14d' },
   { key: 'last_30', label: '30d' },
@@ -108,6 +111,7 @@ const presets = [
   { key: 'this_month', label: 'Mo' },
   { key: 'this_quarter', label: 'Qtr' },
   { key: 'this_year', label: 'YTD' },
+  { key: 'custom', label: 'Custom' },
 ]
 
 function hdrs() { return { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' } }
@@ -118,10 +122,18 @@ function fmtLocalDate(d: Date): string {
 
 function applyPreset(key: string) {
   datePreset.value = key
-  const t = new Date()
+  // Custom keeps whatever range is already loaded as the editable starting
+  // values; the native date inputs drive loadSummary() from here on.
+  if (key === 'custom') return
+  // Anchor every window on the office calendar (America/Denver, issue #29) so
+  // the chip ranges agree with the server KPI counts regardless of the
+  // viewer's browser timezone. Noon avoids any DST edge on the date math.
+  const t = new Date(officeTodayIso() + 'T12:00:00')
   const to = fmtLocalDate(t)
   const daysBack = (n: number) => { const d = new Date(t); d.setDate(d.getDate() - n); return fmtLocalDate(d) }
-  if (key === 'last_7')  { dateFrom.value = daysBack(6);  dateTo.value = to }
+  if (key === 'today') { dateFrom.value = to; dateTo.value = to }
+  else if (key === 'yesterday') { dateFrom.value = daysBack(1); dateTo.value = daysBack(1) }
+  else if (key === 'last_7')  { dateFrom.value = daysBack(6);  dateTo.value = to }
   else if (key === 'last_14') { dateFrom.value = daysBack(13); dateTo.value = to }
   else if (key === 'last_30') { dateFrom.value = daysBack(29); dateTo.value = to }
   else if (key === 'last_60') { dateFrom.value = daysBack(59); dateTo.value = to }
@@ -129,6 +141,18 @@ function applyPreset(key: string) {
   else if (key === 'this_month') { dateFrom.value = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-01`; dateTo.value = to }
   else if (key === 'this_quarter') { dateFrom.value = `${t.getFullYear()}-${String(Math.floor(t.getMonth() / 3) * 3 + 1).padStart(2, '0')}-01`; dateTo.value = to }
   else if (key === 'this_year') { dateFrom.value = `${t.getFullYear()}-01-01`; dateTo.value = to }
+  loadSummary()
+}
+
+// Manually editing either native date input switches the window to 'custom'.
+// If both ends are set and inverted (from > to), clamp the *other* input to
+// match the one just edited, then reload.
+function onCustomDate(edited: 'from' | 'to') {
+  datePreset.value = 'custom'
+  if (dateFrom.value && dateTo.value && dateFrom.value > dateTo.value) {
+    if (edited === 'from') dateTo.value = dateFrom.value
+    else dateFrom.value = dateTo.value
+  }
   loadSummary()
 }
 
@@ -283,7 +307,9 @@ function consumeOpenThreadQuery() {
 onMounted(() => {
   // Set the default date window for Reporting but only load the summary if
   // Reporting is the active tab — otherwise we wait until the user switches.
-  const t = new Date()
+  // Anchor the default window on the office calendar (issue #29) so it agrees
+  // with the server KPI counts regardless of the viewer's browser timezone.
+  const t = new Date(officeTodayIso() + 'T12:00:00')
   const from = new Date(t); from.setDate(t.getDate() - 29)
   dateFrom.value = fmtLocalDate(from)
   dateTo.value = fmtLocalDate(t)
@@ -416,7 +442,16 @@ function setMainTab(t: CommsTab) {
         :class="datePreset === p.key ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'"
         @click="applyPreset(p.key)"
       >{{ p.label }}</button>
-      <span v-if="dateFrom && dateTo" class="text-[10px] text-muted-foreground ml-2">{{ dateFrom }} → {{ dateTo }}</span>
+      <!-- Custom range: two native date inputs styled to match the tiny chips.
+           They flex-wrap to a second line on narrow screens (no h-scroll). -->
+      <template v-if="datePreset === 'custom'">
+        <input type="date" v-model="dateFrom" @change="onCustomDate('from')"
+          class="text-[10px] px-2 py-0.5 rounded border bg-transparent hover:bg-muted transition-colors" />
+        <span class="text-[10px] text-muted-foreground">→</span>
+        <input type="date" v-model="dateTo" @change="onCustomDate('to')"
+          class="text-[10px] px-2 py-0.5 rounded border bg-transparent hover:bg-muted transition-colors" />
+      </template>
+      <span v-else-if="dateFrom && dateTo" class="text-[10px] text-muted-foreground ml-2">{{ dateFrom }} → {{ dateTo }}</span>
       <!-- Historical batch sync status (NOT the live webhook feed, which is
            shown separately in the Live Activity panel below). -->
       <span class="text-[10px] text-muted-foreground ml-auto" title="Historical records pulled from Dialpad's Stats API on demand. Separate from the live webhook feed.">
