@@ -113,7 +113,7 @@ function overlayActiveSignals(base: QbRecord, active: QbRecord): QbRecord {
 // Resolve a preset to office-calendar dates (issue #29). The server is
 // authoritative for day boundaries so every viewer sees the same task set
 // regardless of their browser timezone.
-function presetOfficeRange(preset: string): { fromDate: string; toDate: string } {
+export function presetOfficeRange(preset: string): { fromDate: string; toDate: string } {
   const today = officeTodayIso()
   switch (preset) {
     case 'yesterday': {
