@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import db from '../db'
 import { officeTodayIso } from '../lib/officeTime'
 import { buildM1NotM2, type Filters } from './reports'
-import { refreshFundingLive } from './projects'
+import { refreshFundingLive, refreshFundingFull, fundingFullAgeMs, FUNDING_FULL_MAX_AGE_MS } from './projects'
 
 const router = Router()
 
@@ -14,8 +14,31 @@ const router = Router()
 // ───────────────────────────────────────────────────────────────────
 router.post('/refresh', async (_req: Request, res: Response): Promise<void> => {
   try {
+    // Accuracy guarantee: if the last FULL sweep is stale (>1h) or has
+    // never run, do the sledgehammer instead of the delta — one QB query
+    // over the whole funding universe, immune to formula/lookup
+    // watermark blind spots.
+    const age = fundingFullAgeMs()
+    if (age == null || age > FUNDING_FULL_MAX_AGE_MS) {
+      const full = await refreshFundingFull()
+      const delta = await refreshFundingLive()
+      res.json({ refreshed: true, full: true, rows: full.rows + delta.rows, skipped: false })
+      return
+    }
     const result = await refreshFundingLive()
     res.json({ refreshed: !result.skipped, ...result })
+  } catch (err) {
+    res.status(200).json({ refreshed: false, rows: 0, skipped: false, error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Manual "make it match QB right now" — full sweep on demand, no
+// watermarks involved. Wired to the dashboard's Full Sync button.
+router.post('/refresh-full', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const full = await refreshFundingFull()
+    const delta = await refreshFundingLive().catch(() => ({ rows: 0, skipped: true }))
+    res.json({ refreshed: !full.skipped, full: true, rows: full.rows + delta.rows, skipped: full.skipped })
   } catch (err) {
     res.status(200).json({ refreshed: false, rows: 0, skipped: false, error: err instanceof Error ? err.message : String(err) })
   }

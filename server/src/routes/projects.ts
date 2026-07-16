@@ -885,6 +885,54 @@ async function refreshTier(tier: RefreshTier): Promise<{ rows: number; duration:
 const FUNDING_REFRESH_MIN_INTERVAL_MS = 15_000
 let fundingRefreshInFlight: Promise<{ rows: number; skipped: boolean }> | null = null
 
+// ─── Funding Events (QB bub2ixkr4) ─────
+// The project-level funding columns (m2_status, m2_last_funding_check_date,
+// …) are QB formulas/lookups over this child table — editing an event or
+// logging a funding-pass note does NOT bump the project's Date Modified,
+// so the watermark delta above never sees those changes (the "dashboard
+// is stale" bug, diagnosed 2026-07-16). Fix: watermark the EVENTS table
+// too — {2.AF} catches direct event edits, {86.OAF} (Max Not Ready for
+// Funding Pass Date/Time, a queryable summary) catches funding-pass note
+// activity — then re-pull the affected PROJECT rows so QB's own formulas
+// stay the single source of truth. Events are also mirrored into
+// funding_events_cache for event-level reporting.
+const FUNDING_EVENTS_TABLE = 'bub2ixkr4'
+const FE = {
+  recordId: 3,
+  modified: 2,
+  milestone: 6,        // 'M1' | 'M2' | 'M3' | ...
+  relatedProject: 12,
+  status: 44,          // Funding Event Status (formula)
+  requested: 46,
+  approved: 47,
+  rejected: 48,
+  resubDue: 53,        // Official Resubmission Due Date
+  lastPass: 83,        // Last Funding Pass Date (formula ← summary 86)
+  maxPassAt: 86,       // Max Not Ready for Funding Pass Date/Time (summary)
+  notReadyNote: 87,
+  isMaxM1: 91, isMaxM2: 92, isMaxM3: 93,
+}
+const FE_SELECT = [FE.recordId, FE.modified, FE.milestone, FE.relatedProject, FE.status, FE.requested, FE.approved, FE.rejected, FE.resubDue, FE.lastPass, FE.maxPassAt, FE.notReadyNote, FE.isMaxM1, FE.isMaxM2, FE.isMaxM3]
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS funding_events_cache (
+    event_rid        INTEGER PRIMARY KEY,
+    milestone        TEXT,
+    project_rid      TEXT,
+    status           TEXT,
+    requested_date   TEXT,
+    approved_date    TEXT,
+    rejected_date    TEXT,
+    resubmission_due TEXT,
+    last_pass_date   TEXT,
+    not_ready_note   TEXT,
+    is_max           INTEGER,
+    modified_at      TEXT,
+    cached_at        TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_funding_events_project ON funding_events_cache(project_rid, milestone);
+`)
+
 export async function refreshFundingLive(): Promise<{ rows: number; skipped: boolean }> {
   // Coalesce concurrent callers onto one in-flight pull.
   if (fundingRefreshInFlight) return fundingRefreshInFlight
@@ -945,6 +993,102 @@ export async function refreshFundingLive(): Promise<{ rows: number; skipped: boo
         skip += batch
       }
 
+      // ── Events arm: find projects whose funding data changed WITHOUT a
+      // project edit (event edits + funding-pass notes) and re-pull them.
+      const evRun = db.prepare(`SELECT last_watermark AS wm FROM project_cache_tier_runs WHERE tier = 'funding_events'`)
+        .get() as { wm: string | null } | undefined
+      let evWatermark = evRun?.wm || null
+      const changedEventProjects = new Set<string>()
+      if (!evWatermark) {
+        // First run: seed and let the next pull do deltas — the regular
+        // tiers provide the baseline. ISO-Z format is load-bearing:
+        // Date.parse treats sqlite's space-separated form as LOCAL time,
+        // which would shift the watermark hours into the future.
+        db.prepare(`INSERT INTO project_cache_tier_runs (tier, last_watermark, last_started_at, last_status)
+                    VALUES ('funding_events', strftime('%Y-%m-%dT%H:%M:%SZ','now'), datetime('now'), 'ok')
+                    ON CONFLICT(tier) DO UPDATE SET last_watermark = excluded.last_watermark`).run()
+      } else {
+        const evFloor = watermarkFloor(evWatermark)
+        const evWhere = `{${FE.modified}.AF.'${evFloor}'}OR{${FE.maxPassAt}.OAF.'${evFloor}'}`
+        let evSkip = 0
+        const evRecords: Array<Record<string, { value: unknown }>> = []
+        while (true) {
+          const res = await fetch('https://api.quickbase.com/v1/records/query', {
+            method: 'POST',
+            headers: {
+              'QB-Realm-Hostname': realm,
+              'Authorization': `QB-USER-TOKEN ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ from: FUNDING_EVENTS_TABLE, select: FE_SELECT, where: evWhere, options: { skip: evSkip, top: batch } }),
+          })
+          if (!res.ok) throw new Error(`QB funding events delta failed: ${res.status}`)
+          const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+          const recs = data.data || []
+          evRecords.push(...recs)
+          if (recs.length < batch) break
+          evSkip += batch
+        }
+        const evUpsert = db.prepare(`
+          INSERT OR REPLACE INTO funding_events_cache
+            (event_rid, milestone, project_rid, status, requested_date, approved_date, rejected_date,
+             resubmission_due, last_pass_date, not_ready_note, is_max, modified_at, cached_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `)
+        db.transaction(() => {
+          for (const rec of evRecords) {
+            const projectRid = String(val(rec, FE.relatedProject) || '').replace(/\.0$/, '')
+            const isMax = val(rec, FE.isMaxM1) === true || val(rec, FE.isMaxM2) === true || val(rec, FE.isMaxM3) === true
+            evUpsert.run(
+              Number(val(rec, FE.recordId)) || 0,
+              String(val(rec, FE.milestone) || ''),
+              projectRid,
+              String(val(rec, FE.status) || ''),
+              String(val(rec, FE.requested) || ''),
+              String(val(rec, FE.approved) || ''),
+              String(val(rec, FE.rejected) || ''),
+              String(val(rec, FE.resubDue) || ''),
+              String(val(rec, FE.lastPass) || ''),
+              String(val(rec, FE.notReadyNote) || ''),
+              isMax ? 1 : 0,
+              String(val(rec, FE.modified) || ''),
+            )
+            if (projectRid) changedEventProjects.add(projectRid)
+          }
+        })()
+        // Advance the events watermark past everything just seen.
+        let evMax = evWatermark
+        for (const rec of evRecords) {
+          for (const fid of [FE.modified, FE.maxPassAt]) {
+            const v = String(val(rec, fid) || '')
+            if (v && (!evMax || v > evMax)) evMax = v
+          }
+        }
+        db.prepare(`UPDATE project_cache_tier_runs SET last_watermark = ? WHERE tier = 'funding_events'`)
+          .run(evMax || evWatermark)
+
+        // Re-pull the affected PROJECT rows (minus ones the project delta
+        // already fetched) so QB's formula columns land fresh in cache.
+        const already = new Set(allRecords.map(r => String(r['3']?.value ?? '')))
+        const needy = [...changedEventProjects].filter(rid => rid && !already.has(rid))
+        for (let i = 0; i < needy.length; i += 100) {
+          const ids = needy.slice(i, i + 100)
+          const where3 = ids.map(id => `{3.EX.${id}}`).join('OR')
+          const res = await fetch('https://api.quickbase.com/v1/records/query', {
+            method: 'POST',
+            headers: {
+              'QB-Realm-Hostname': realm,
+              'Authorization': `QB-USER-TOKEN ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ from: 'br9kwm8na', select: selectFids, where: `{622.EX.'false'}AND(${where3})`, options: { top: ids.length } }),
+          })
+          if (!res.ok) throw new Error(`QB funding project re-pull failed: ${res.status}`)
+          const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+          allRecords = allRecords.concat(data.data || [])
+        }
+      }
+
       const cols = fieldMap.map(f => f.col).join(', ')
       const placeholders = fieldMap.map(() => '?').join(', ')
       const upsert = db.prepare(`
@@ -983,6 +1127,96 @@ export async function refreshFundingLive(): Promise<{ rows: number; skipped: boo
   })()
 
   return fundingRefreshInFlight
+}
+
+// ─── Funding FULL sweep — the accuracy guarantee ─────
+// The watermark deltas above are the fast path; this is the sledgehammer:
+// re-pull EVERY project in the funding universe (QB dashboard baseline:
+// not test, not archived, not status-excluded, active pipeline — ~640
+// rows, a single QB query) so the cache provably matches QB regardless
+// of any formula/lookup watermark blind spot. Runs on demand from the
+// dashboard's sync button, and automatically when the last full sweep
+// is older than FUNDING_FULL_MAX_AGE_MS.
+const FUNDING_FULL_MIN_INTERVAL_MS = 60_000
+export const FUNDING_FULL_MAX_AGE_MS = 60 * 60_000   // auto full sweep hourly
+let fundingFullInFlight: Promise<{ rows: number; skipped: boolean }> | null = null
+
+export function fundingFullAgeMs(): number | null {
+  const row = db.prepare(`
+    SELECT (julianday('now') - julianday(last_finished_at)) * 86400000.0 AS ageMs
+      FROM project_cache_tier_runs WHERE tier = 'funding_full' AND last_status = 'ok'
+  `).get() as { ageMs: number | null } | undefined
+  return row?.ageMs ?? null
+}
+
+export async function refreshFundingFull(): Promise<{ rows: number; skipped: boolean }> {
+  if (fundingFullInFlight) return fundingFullInFlight
+  const age = fundingFullAgeMs()
+  if (age != null && age >= 0 && age < FUNDING_FULL_MIN_INTERVAL_MS) return { rows: 0, skipped: true }
+
+  fundingFullInFlight = (async () => {
+    db.prepare(`INSERT INTO project_cache_tier_runs (tier, last_started_at, last_status) VALUES ('funding_full', datetime('now'), 'running')
+                ON CONFLICT(tier) DO UPDATE SET last_started_at = excluded.last_started_at, last_status = excluded.last_status`).run()
+    try {
+      const { realm, token } = getQbConfig()
+      const where = `{622.EX.'false'}AND{2569.XEX.'1'}AND{2568.XEX.'1'}AND{1942.XEX.'1'}`
+      let allRecords: Array<Record<string, { value: unknown }>> = []
+      let skip = 0
+      const batch = 1000
+      while (true) {
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ from: 'br9kwm8na', select: selectFids, where, options: { skip, top: batch } }),
+        })
+        if (!res.ok) throw new Error(`QB funding full sweep failed: ${res.status}`)
+        const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+        const records = data.data || []
+        allRecords = allRecords.concat(records)
+        if (records.length < batch) break
+        skip += batch
+      }
+
+      const cols = fieldMap.map(f => f.col).join(', ')
+      const placeholders = fieldMap.map(() => '?').join(', ')
+      const upsert = db.prepare(`
+        INSERT OR REPLACE INTO project_cache (${cols}, refresh_tier, last_fetch_status, last_fetch_started, cached_at)
+        VALUES (${placeholders}, ?, 'ok', datetime('now'), datetime('now'))
+      `)
+      let changed = 0
+      db.transaction(() => {
+        for (const rec of allRecords) {
+          const computedTier = classifyTier({
+            status: val(rec, 255) || null,
+            install_scheduled: val(rec, 178) || null,
+            install_completed: val(rec, 534) || null,
+            inspection_passed: val(rec, 491) || null,
+            pto_approved: val(rec, 538) || null,
+            qb_modified_at: val(rec, 2) || null,
+            permit_rejected: val(rec, 706) || null,
+            nem_rejected: val(rec, 1878) || null,
+          })
+          upsert.run(...mapRecordToValues(rec), computedTier)
+          changed++
+        }
+      })()
+      db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_error = NULL WHERE tier = 'funding_full'`)
+        .run(changed)
+      console.log(`[funding] full sweep: ${changed} projects re-pulled from QB`)
+      return { rows: changed, skipped: false }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'failed', last_error = ? WHERE tier = 'funding_full'`).run(msg)
+      throw e
+    } finally {
+      fundingFullInFlight = null
+    }
+  })()
+  return fundingFullInFlight
 }
 
 // ─── Refresh battery-adder set ───────────────────────────

@@ -179,6 +179,24 @@ async function refreshLive() {
   finally { liveRefreshing.value = false }
 }
 
+// The sledgehammer: re-pull the ENTIRE funding universe from QB (one
+// query server-side) and reload. Guaranteed to match QuickBase — no
+// watermarks, no deltas, no formula blind spots.
+const fullSyncing = ref(false)
+const fullSyncedRows = ref<number | null>(null)
+async function fullSync() {
+  fullSyncing.value = true
+  fullSyncedRows.value = null
+  try {
+    const res = await fetch('/api/funding/refresh-full', { method: 'POST', headers: hdrs() })
+    const data = await res.json() as { rows?: number }
+    fullSyncedRows.value = data.rows ?? null
+    auditRows.value = {}
+    await loadOverview()
+  } catch { /* keep whatever is on screen */ }
+  finally { fullSyncing.value = false }
+}
+
 async function loadOverview() {
   loading.value = true
   err.value = ''
@@ -467,9 +485,22 @@ function milestoneForBucket(bucketKey: string): Milestone {
         <h1 class="text-2xl font-semibold tracking-tight">Funding</h1>
         <DataFreshness resource="projects" label="Cache" @refreshed="loadOverview" />
       </div>
-      <p v-if="overview" class="text-[11px] tabular-nums text-muted-foreground self-end">
-        As of {{ overview.asOf }}
-      </p>
+      <div class="flex items-center gap-2 self-end">
+        <span v-if="fullSyncedRows != null" class="text-[10px] text-emerald-600 font-medium">synced {{ fullSyncedRows }} from QB ✓</span>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md bg-muted hover:bg-muted/70 transition-colors cursor-pointer disabled:opacity-50"
+          :disabled="fullSyncing || liveRefreshing"
+          title="Re-pull every funding project from QuickBase right now — guaranteed match"
+          @click="fullSync"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="fullSyncing ? 'animate-spin' : ''"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+          {{ fullSyncing ? 'Syncing from QB…' : 'Full QB sync' }}
+        </button>
+        <p v-if="overview" class="text-[11px] tabular-nums text-muted-foreground">
+          As of {{ overview.asOf }}
+        </p>
+      </div>
     </div>
 
     <!-- Milestone toggle + filter-icon drawer (BookedBoarded pattern).
