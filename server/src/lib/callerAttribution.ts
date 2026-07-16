@@ -18,7 +18,9 @@ export interface CallerInfo {
   source: 'arrivy' | 'app_user' | 'contact' | null
 }
 
-const FIELD_ROLE_RX = /tech|crew|field|installer|surveyor|driver/i
+// "subcontract" included per James 2026-07-16: subcontractors are field
+// crew for attribution purposes (22 Arrivy entities carry that role).
+const FIELD_ROLE_RX = /tech|crew|field|installer|surveyor|driver|subcontract/i
 
 function classifyByRole(role: string | null): CallerKind {
   if (!role) return 'crew'
