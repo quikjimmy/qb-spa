@@ -25,6 +25,7 @@ import { designAnalyticsRouter } from './routes/design-analytics'
 import { permitAnalyticsRouter } from './routes/permit-analytics'
 import { agentsRouter } from './routes/agents'
 import { pcDashboardRouter } from './routes/pc-dashboard'
+import { surveyTasksRouter } from './routes/survey-tasks'
 import { feedbackRouter } from './routes/feedback'
 import { changelogRouter } from './routes/changelog'
 import { improvementProposalsRouter } from './routes/improvement-proposals'
@@ -128,6 +129,7 @@ app.use('/api/daily-goals', authenticate, denyReferralAgent, dailyGoalsRouter)
 app.use('/api/agents', authenticate, requireRole('admin'), agentsRouter)
 app.use('/api/pc-dashboard', authenticate, referralAgentScope, pcDashboardRouter)
 app.use('/api/toa', authenticate, denyReferralAgent, toaRouter)
+app.use('/api/survey-tasks', authenticate, denyReferralAgent, surveyTasksRouter)
 app.use('/api/feedback', authenticate, feedbackRouter)
 app.use('/api/changelog', authenticate, changelogRouter)
 app.use('/api/improvement-proposals', authenticate, improvementProposalsRouter)

@@ -106,8 +106,8 @@ const router = createRouter({
         {
           path: 'projects/site-survey',
           name: 'milestone-site-survey',
-          component: () => import('../views/MilestonePlaceholder.vue'),
-          meta: { order: 5, title: 'Site Survey', description: 'Surveys scheduled / in-flight / submitted / cancelled. Field crew + customer reschedule loops live here.' },
+          component: () => import('../views/SiteSurveyDashboardView.vue'),
+          meta: { order: 5, title: 'Site Survey', description: 'Floating field tasks — signed deals not yet submitted, plus tasks with no project.' },
         },
         {
           path: 'projects/design',
