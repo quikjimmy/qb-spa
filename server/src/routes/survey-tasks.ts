@@ -203,10 +203,36 @@ function taskSort(a: FloatingTask, b: FloatingTask): number {
   return a.scheduled_at.localeCompare(b.scheduled_at)
 }
 
+// Signed-date floor: fid 148 is a QB formula, so QB evaluates it across
+// the whole Enerflo table (every deal since 2023) — that's what blew the
+// prod 503 "Operation took too long". The cheap scalar date predicate
+// lets QB prune the ancient rows first. Every signed-not-submitted deal
+// with a v2 deal ID is 2024+ (verified 2026-07-15), so nothing real is
+// dropped.
+const SIGNED_FLOOR = '2024-01-01'
+
+// QB intermittently 503s on heavy formula queries — retry with backoff
+// before giving up.
+async function withRetry<T>(fn: () => Promise<T>, attempts: number): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn() } catch (e) {
+      lastErr = e
+      const msg = e instanceof Error ? e.message : String(e)
+      if (i < attempts - 1 && /503|timeout|took too long/i.test(msg)) {
+        await new Promise(r => setTimeout(r, 2000 * (i + 1)))
+        continue
+      }
+      throw e
+    }
+  }
+  throw lastErr
+}
+
 async function buildFloating(): Promise<FloatingResponse> {
   // The fid-144 guard is mandatory: without it the flag matches ~1,026
   // rows, mostly stale 2023-era records with no v2 deal ID.
-  const dealWhere = `{${EF.signedNotSubmitted}.EX.true}AND{${EF.override}.EX.false}AND{${EF.isTest}.EX.false}AND{${EF.dealId}.XEX.''}`
+  const dealWhere = `{${EF.signedNotSubmitted}.EX.true}AND{${EF.override}.EX.false}AND{${EF.isTest}.EX.false}AND{${EF.dealId}.XEX.''}AND{${EF.signedAt}.OAF.'${SIGNED_FLOOR}'}`
   const taskWhere = `{${F.relatedProject}.EX.''}`
   const [dealRecs, taskRecs] = await Promise.all([
     qbQuery(ENERFLO_TABLE, dealWhere, EF_SELECT),
@@ -279,9 +305,15 @@ let inFlight: Promise<FloatingResponse> | null = null
 async function getFloating(forceRefresh: boolean): Promise<FloatingResponse> {
   if (!forceRefresh && cache && Date.now() - cache.at < TTL_MS) return cache.data
   if (!inFlight) {
-    inFlight = buildFloating()
+    inFlight = withRetry(buildFloating, 2)
       .then(data => { cache = { data, at: Date.now() }; return data })
       .finally(() => { inFlight = null })
+  }
+  // Stale-while-revalidate: any cached copy is served immediately while
+  // the refresh lands in the background — users never wait on QB.
+  if (!forceRefresh && cache) {
+    inFlight.catch(e => console.warn('[survey-tasks] background refresh failed:', e))
+    return cache.data
   }
   try {
     return await inFlight
@@ -293,6 +325,10 @@ async function getFloating(forceRefresh: boolean): Promise<FloatingResponse> {
     throw e
   }
 }
+
+// Warm the cache shortly after boot so the first visitor never eats the
+// cold QB query (which can run long enough to 503 under load).
+setTimeout(() => { getFloating(false).catch(e => console.warn('[survey-tasks] boot warm failed:', e)) }, 5_000)
 
 // ─── Survey tasks in a date window ─────
 // Server-side variant of /api/field/tasks scoped to survey templates,
