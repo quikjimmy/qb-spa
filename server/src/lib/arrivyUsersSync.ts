@@ -27,7 +27,7 @@ function pickPhone(u: ArrivyUser): string {
 }
 
 function pickRole(u: ArrivyUser): string {
-  return String(u.type ?? u.role ?? '').trim()
+  return String(u.type || u.user_type || u.role || '').trim()
 }
 
 function isActive(u: ArrivyUser): boolean {

@@ -46,6 +46,13 @@ async function arrivyGet<T>(path: string): Promise<T> {
   if (!h) throw new Error('Arrivy auth not configured (ARRIVY_AUTH_KEY / ARRIVY_AUTH_TOKEN)')
   const res = await fetch(`${BASE}${path}`, { headers: h as unknown as Record<string, string> })
   if (!res.ok) throw new ArrivyApiError(res.status, await res.text())
+  // Arrivy serves its web app (HTML, status 200) for unknown /api paths
+  // instead of a 404 — surface that as a clear error rather than a JSON
+  // parse crash.
+  const ct = res.headers.get('content-type') || ''
+  if (!/json|text\/plain/i.test(ct)) {
+    throw new ArrivyApiError(res.status, `non-JSON response (${ct}) from ${path} — endpoint likely wrong`)
+  }
   return res.json() as Promise<T>
 }
 
@@ -106,11 +113,14 @@ export function getArrivyTaskStatuses(externalId: string): Promise<unknown[]> {
 
 // ─── Users / crew ─────────────────────────────────────────────────────
 //
-// Arrivy returns crew members from /users (legacy) or /team_members on
-// some account tiers. Shapes vary slightly — we keep the union of the
-// fields we use across both. The sync job in lib/arrivyUsersSync.ts
-// pages through results and mirrors them into the local arrivy_users
-// table for fast joins (e.g. "is this inbound caller a crew member?").
+// Arrivy calls crew members "entities" — GET /entities returns the full
+// roster in one response (verified live 2026-07-16: 89 entities with
+// name / phone / email / type / user_type / is_disabled / is_active).
+// NOTE: /users and /team_members are NOT API endpoints — Arrivy serves
+// its web app HTML with a 200 for them, which is why the original sync
+// never worked. The sync job in lib/arrivyUsersSync.ts mirrors the
+// roster into the local arrivy_users table for fast joins (e.g. "is
+// this inbound caller a crew member?").
 
 export interface ArrivyUser {
   id?: string | number
@@ -123,6 +133,7 @@ export interface ArrivyUser {
   mobile_number?: string
   cell_phone?: string
   type?: string         // "TECHNICIAN", "DISPATCHER", "ADMIN", etc.
+  user_type?: string
   role?: string
   is_active?: boolean
   is_disabled?: boolean
@@ -131,15 +142,5 @@ export interface ArrivyUser {
 }
 
 export async function getArrivyUsers(): Promise<ArrivyUser[]> {
-  // Arrivy's /users endpoint paginates via ?page=N (older accounts) OR
-  // returns a flat list (newer accounts). We try the simple form first
-  // and fall back to /team_members on 404.
-  try {
-    return await arrivyGet<ArrivyUser[]>('/users')
-  } catch (e) {
-    if (e instanceof ArrivyApiError && e.status === 404) {
-      return await arrivyGet<ArrivyUser[]>('/team_members')
-    }
-    throw e
-  }
+  return arrivyGet<ArrivyUser[]>('/entities')
 }
