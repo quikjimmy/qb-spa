@@ -442,11 +442,73 @@ router.get('/audit', (req: Request, res: Response): void => {
       FROM project_cache ${BASE_WHERE} AND ${def.where}${fc.sql}
       ORDER BY install_completed ASC
       LIMIT 5000`
-    const rows = db.prepare(sql).all(...fc.params)
+    const rows = db.prepare(sql).all(...fc.params) as Array<Record<string, unknown>>
+    // Attach the human "reason why" (server-side so every client renders
+    // the same cleaned text) — sourced from the milestone's MAX funding
+    // event in funding_events_cache, falling back to the project-level
+    // note columns already selected.
+    if (!isDca) {
+      const msLabel = milestonePrefix.toUpperCase()   // 'M1' | 'M2' | 'M3'
+      const evStmt = db.prepare(`
+        SELECT not_ready_note, not_ready_note_list, funding_note_list
+          FROM funding_events_cache
+         WHERE project_rid = ? AND milestone = ? AND is_max = 1
+         ORDER BY event_rid DESC LIMIT 1
+      `)
+      // Open funding-related ticket on the project — often the richest
+      // blocker context ("Mindi assigned a ticket…" points here). Newest
+      // first; its recent note usually IS the reason.
+      const ticketStmt = db.prepare(`
+        SELECT record_id, issue, status, recent_note, description
+          FROM ticket_cache
+         WHERE project_rid = ?
+           AND status NOT IN ('Complete', 'Completed', 'Closed', 'Cancelled')
+           AND (lower(category) = 'funding' OR lower(issue || ' ' || title) LIKE '%funding%')
+         ORDER BY date_modified DESC LIMIT 1
+      `)
+      for (const r of rows) {
+        const rid = String(r['recordId'])
+        const ev = evStmt.get(rid, msLabel) as { not_ready_note: string | null; not_ready_note_list: string | null; funding_note_list: string | null } | undefined
+        const tk = ticketStmt.get(Number(rid)) as { record_id: number; issue: string | null; status: string | null; recent_note: string | null; description: string | null } | undefined
+        r['milestoneReason'] = pickFundingReason(
+          String(r['milestoneNotReadyNote'] ?? ''),
+          tk?.recent_note ?? '',
+          tk?.description ?? '',
+          ev?.not_ready_note ?? '',
+          ev?.not_ready_note_list ?? '',
+          ev?.funding_note_list ?? '',
+          String(r['milestoneFundingNote'] ?? ''),
+        )
+        if (tk) r['milestoneTicket'] = { recordId: tk.record_id, issue: tk.issue || 'Funding ticket', status: tk.status || '' }
+      }
+    }
     res.json({ bucket: bucketKey, label: def.label, count: rows.length, rows, appliedFilters: filters })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
+
+// The funding-note rollups mix real blocker reasons with workflow log
+// lines ("Mindi assigned a ticket to Mindi", "adding Dylan") and
+// boilerplate headers ("Unable to Request Funding"). Walk the candidate
+// sources in priority order, strip [MMM-DD-YY 1:23 PM Actor] stamps, drop
+// the noise lines, and return the first line that reads like a reason.
+const NOISE_LINE_RX = [
+  /assigned a ticket/i,
+  /^unable to request funding\.?$/i,
+  /^adding\s+\S+$/i,
+  /^ticket (created|completed|closed)/i,
+]
+const STAMP_PREFIX_RX = /^\[[^\]]*\]\s*/
+export function pickFundingReason(...sources: string[]): string {
+  for (const src of sources) {
+    if (!src || !src.trim()) continue
+    const lines = src.split('\n')
+      .map(l => l.replace(STAMP_PREFIX_RX, '').trim())
+      .filter(l => l && !NOISE_LINE_RX.some(rx => rx.test(l)))
+    if (lines.length) return lines[0]!.slice(0, 160)
+  }
+  return ''
+}
 
 export { router as fundingRouter }

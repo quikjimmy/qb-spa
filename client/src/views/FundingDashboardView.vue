@@ -39,7 +39,8 @@ interface AuditRow {
   state: string; status: string; lender: string
   salesDate: string; installScheduled: string; installCompleted: string
   milestoneStatus: string
-  milestoneNotReadyNote: string; milestoneFundingNote: string
+  milestoneNotReadyNote: string; milestoneFundingNote: string; milestoneReason?: string
+  milestoneTicket?: { recordId: number; issue: string; status: string }
   milestoneRequestedDate: string; milestoneApprovedDate: string
   milestoneRejectedDate: string;  milestoneDepositDate: string
   milestoneExpectedAmount: number; milestoneNetReceived: number
@@ -302,6 +303,14 @@ function fmtMoney(n: number): string {
 }
 function fmtNum(n: number): string { return Math.round(n).toLocaleString() }
 function fmtAuditDate(s: string): string { return s ? s.slice(0, 10) : '—' }
+
+// The inline "reason why it's not ready" — cleaned server-side from the
+// milestone's max funding event (stamps stripped, ticket-log noise
+// filtered), so what renders here is the funding team's actual blocker
+// text ("Waiting for the permit to submit for M2 Funding").
+function auditReason(r: { milestoneReason?: string }): string {
+  return (r.milestoneReason || '').trim()
+}
 
 function daysSinceNum(s: string): number | null {
   if (!s) return null
@@ -688,27 +697,48 @@ function milestoneForBucket(bucketKey: string): Milestone {
                     </tr>
                   </thead>
                   <tbody class="divide-y">
-                    <tr
-                      v-for="r in sortedRows(b.key)" :key="r.recordId"
-                      class="hover:bg-muted/30 cursor-pointer"
-                      @click="openProject(r.recordId, $event)"
-                      @auxclick.prevent="openProject(r.recordId, $event)"
-                    >
-                      <td class="px-3 py-1.5 font-medium truncate max-w-[180px]" :title="r.customerName">{{ r.customerName || '—' }}</td>
-                      <td class="px-2 py-1.5 truncate max-w-[80px]">{{ r.state || '—' }}</td>
-                      <td class="px-2 py-1.5 truncate max-w-[100px]">{{ r.status || '—' }}</td>
-                      <td class="px-2 py-1.5 truncate max-w-[120px]">{{ r.lender || '—' }}</td>
-                      <td class="px-2 py-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.salesDate) }}</td>
-                      <td class="px-2 py-1.5 font-mono font-semibold" :class="installCell(r).tone">{{ installCell(r).text }}</td>
-                      <td class="px-2 py-1.5 max-w-[200px]" :title="r.milestoneNotReadyNote || r.milestoneStatus">
-                        <div class="font-mono font-semibold" :class="milestoneCell(r).tone">{{ milestoneCell(r).text }}</div>
-                        <div v-if="r.milestoneNotReadyNote && isBlockerLive(r.milestoneStatus)" class="truncate text-[10px] text-amber-700/90 leading-tight">{{ r.milestoneNotReadyNote }}</div>
-                      </td>
-                      <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.milestoneRequestedDate) }}</td>
-                      <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.installScheduled) }}</td>
-                      <td class="text-right px-3 py-1.5">{{ fmtMoney(r.milestoneExpectedAmount) }}</td>
-                      <td class="text-right px-2 py-1.5 text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
-                    </tr>
+                    <template v-for="r in sortedRows(b.key)" :key="r.recordId">
+                      <tr
+                        class="hover:bg-muted/30 cursor-pointer"
+                        @click="openProject(r.recordId, $event)"
+                        @auxclick.prevent="openProject(r.recordId, $event)"
+                      >
+                        <td class="px-3 py-1.5 font-medium truncate max-w-[180px]" :title="r.customerName">{{ r.customerName || '—' }}</td>
+                        <td class="px-2 py-1.5 truncate max-w-[80px]">{{ r.state || '—' }}</td>
+                        <td class="px-2 py-1.5 truncate max-w-[100px]">{{ r.status || '—' }}</td>
+                        <td class="px-2 py-1.5 truncate max-w-[120px]">{{ r.lender || '—' }}</td>
+                        <td class="px-2 py-1.5 font-mono text-muted-foreground">{{ fmtAuditDate(r.salesDate) }}</td>
+                        <td class="px-2 py-1.5 font-mono font-semibold" :class="installCell(r).tone">{{ installCell(r).text }}</td>
+                        <td class="px-2 py-1.5 font-mono font-semibold" :class="milestoneCell(r).tone" :title="r.milestoneStatus">{{ milestoneCell(r).text }}</td>
+                        <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.milestoneRequestedDate) }}</td>
+                        <td class="text-right px-2 py-1.5 text-muted-foreground">{{ daysSince(r.installScheduled) }}</td>
+                        <td class="text-right px-3 py-1.5">{{ fmtMoney(r.milestoneExpectedAmount) }}</td>
+                        <td class="text-right px-2 py-1.5 text-muted-foreground">{{ Math.round(r.systemSizeKw * 10) / 10 }}</td>
+                      </tr>
+                      <!-- The reason why — its own full-width line so the
+                           columns above stay clean. Same click target. -->
+                      <tr
+                        v-if="(auditReason(r) || r.milestoneTicket) && isBlockerLive(r.milestoneStatus)"
+                        class="!border-t-0 hover:bg-muted/30 cursor-pointer"
+                        @click="openProject(r.recordId, $event)"
+                        @auxclick.prevent="openProject(r.recordId, $event)"
+                      >
+                        <td colspan="11" class="px-3 pt-0 pb-1.5">
+                          <p class="flex items-center gap-1.5 text-[10.5px] leading-snug text-amber-700 min-w-0" :title="auditReason(r)">
+                            <span class="size-1 rounded-full bg-amber-500 shrink-0" aria-hidden="true" />
+                            <span class="truncate">{{ auditReason(r) || 'See open funding ticket' }}</span>
+                            <span
+                              v-if="r.milestoneTicket"
+                              class="shrink-0 inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-amber-100/70 text-amber-800 text-[9.5px] font-medium"
+                              :title="`Open ticket · ${r.milestoneTicket.issue} · ${r.milestoneTicket.status}`"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg>
+                              {{ r.milestoneTicket.issue }}
+                            </span>
+                          </p>
+                        </td>
+                      </tr>
+                    </template>
                   </tbody>
                 </table>
               </div>
@@ -742,8 +772,9 @@ function milestoneForBucket(bucketKey: string): Milestone {
                   <!-- What's holding it up — the "Not Ready for Funding" reason.
                        Hidden once the milestone is submitted/approved/received so
                        stale blockers don't hang here. -->
-                  <p v-if="r.milestoneNotReadyNote && isBlockerLive(r.milestoneStatus)" class="mt-1.5 text-[11px] leading-snug rounded bg-amber-50 text-amber-900 px-2 py-1">
-                    {{ r.milestoneNotReadyNote }}
+                  <p v-if="(auditReason(r) || r.milestoneTicket) && isBlockerLive(r.milestoneStatus)" class="mt-1.5 text-[11px] leading-snug rounded bg-amber-50 text-amber-900 px-2 py-1">
+                    {{ auditReason(r) || 'See open funding ticket' }}
+                    <span v-if="r.milestoneTicket" class="block mt-0.5 text-[10px] text-amber-700/90">🎫 {{ r.milestoneTicket.issue }} · {{ r.milestoneTicket.status }}</span>
                   </p>
                 </div>
               </div>

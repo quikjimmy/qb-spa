@@ -911,8 +911,10 @@ const FE = {
   maxPassAt: 86,       // Max Not Ready for Funding Pass Date/Time (summary)
   notReadyNote: 87,
   isMaxM1: 91, isMaxM2: 92, isMaxM3: 93,
+  fundingNoteList: 112, // Most Recent Funding Note (summary, multitext)
+  notReadyList: 113,    // Not Ready for Funding Note List (summary, multitext)
 }
-const FE_SELECT = [FE.recordId, FE.modified, FE.milestone, FE.relatedProject, FE.status, FE.requested, FE.approved, FE.rejected, FE.resubDue, FE.lastPass, FE.maxPassAt, FE.notReadyNote, FE.isMaxM1, FE.isMaxM2, FE.isMaxM3]
+const FE_SELECT = [FE.recordId, FE.modified, FE.milestone, FE.relatedProject, FE.status, FE.requested, FE.approved, FE.rejected, FE.resubDue, FE.lastPass, FE.maxPassAt, FE.notReadyNote, FE.isMaxM1, FE.isMaxM2, FE.isMaxM3, FE.fundingNoteList, FE.notReadyList]
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS funding_events_cache (
@@ -932,6 +934,56 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_funding_events_project ON funding_events_cache(project_rid, milestone);
 `)
+{
+  const feCols = db.prepare(`PRAGMA table_info(funding_events_cache)`).all() as Array<{ name: string }>
+  const feNames = new Set(feCols.map(c => c.name))
+  if (!feNames.has('funding_note_list')) db.exec(`ALTER TABLE funding_events_cache ADD COLUMN funding_note_list TEXT`)
+  if (!feNames.has('not_ready_note_list')) db.exec(`ALTER TABLE funding_events_cache ADD COLUMN not_ready_note_list TEXT`)
+}
+
+// QB multitext values arrive as arrays — normalize to newline-joined text.
+function mtText(v: unknown): string {
+  if (Array.isArray(v)) return v.map(x => String(x ?? '').trim()).filter(Boolean).join('\n')
+  return String(v ?? '').trim()
+}
+
+// Mirror a batch of funding-event records into funding_events_cache.
+// Returns the set of related project rids touched.
+function upsertFundingEvents(records: Array<Record<string, { value: unknown }>>): Set<string> {
+  const touched = new Set<string>()
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO funding_events_cache
+      (event_rid, milestone, project_rid, status, requested_date, approved_date, rejected_date,
+       resubmission_due, last_pass_date, not_ready_note, is_max, modified_at,
+       funding_note_list, not_ready_note_list, cached_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `)
+  db.transaction(() => {
+    for (const rec of records) {
+      const projectRid = String(val(rec, FE.relatedProject) || '').replace(/\.0$/, '')
+      // val() stringifies — QB checkbox booleans arrive as 'true'/'false'.
+      const isMax = val(rec, FE.isMaxM1) === 'true' || val(rec, FE.isMaxM2) === 'true' || val(rec, FE.isMaxM3) === 'true'
+      stmt.run(
+        Number(val(rec, FE.recordId)) || 0,
+        String(val(rec, FE.milestone) || ''),
+        projectRid,
+        String(val(rec, FE.status) || ''),
+        String(val(rec, FE.requested) || ''),
+        String(val(rec, FE.approved) || ''),
+        String(val(rec, FE.rejected) || ''),
+        String(val(rec, FE.resubDue) || ''),
+        String(val(rec, FE.lastPass) || ''),
+        mtText(val(rec, FE.notReadyNote)),
+        isMax ? 1 : 0,
+        String(val(rec, FE.modified) || ''),
+        mtText(val(rec, FE.fundingNoteList)),
+        mtText(val(rec, FE.notReadyList)),
+      )
+      if (projectRid) touched.add(projectRid)
+    }
+  })()
+  return touched
+}
 
 export async function refreshFundingLive(): Promise<{ rows: number; skipped: boolean }> {
   // Coalesce concurrent callers onto one in-flight pull.
@@ -1029,33 +1081,7 @@ export async function refreshFundingLive(): Promise<{ rows: number; skipped: boo
           if (recs.length < batch) break
           evSkip += batch
         }
-        const evUpsert = db.prepare(`
-          INSERT OR REPLACE INTO funding_events_cache
-            (event_rid, milestone, project_rid, status, requested_date, approved_date, rejected_date,
-             resubmission_due, last_pass_date, not_ready_note, is_max, modified_at, cached_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `)
-        db.transaction(() => {
-          for (const rec of evRecords) {
-            const projectRid = String(val(rec, FE.relatedProject) || '').replace(/\.0$/, '')
-            const isMax = val(rec, FE.isMaxM1) === true || val(rec, FE.isMaxM2) === true || val(rec, FE.isMaxM3) === true
-            evUpsert.run(
-              Number(val(rec, FE.recordId)) || 0,
-              String(val(rec, FE.milestone) || ''),
-              projectRid,
-              String(val(rec, FE.status) || ''),
-              String(val(rec, FE.requested) || ''),
-              String(val(rec, FE.approved) || ''),
-              String(val(rec, FE.rejected) || ''),
-              String(val(rec, FE.resubDue) || ''),
-              String(val(rec, FE.lastPass) || ''),
-              String(val(rec, FE.notReadyNote) || ''),
-              isMax ? 1 : 0,
-              String(val(rec, FE.modified) || ''),
-            )
-            if (projectRid) changedEventProjects.add(projectRid)
-          }
-        })()
+        for (const rid of upsertFundingEvents(evRecords)) changedEventProjects.add(rid)
         // Advance the events watermark past everything just seen.
         let evMax = evWatermark
         for (const rec of evRecords) {
@@ -1204,9 +1230,40 @@ export async function refreshFundingFull(): Promise<{ rows: number; skipped: boo
           changed++
         }
       })()
+      // Mirror the current MAX funding events for every swept project so
+      // event-level fields (not-ready reasons, note lists) are complete —
+      // not just delta-touched rows. ~650 projects → 7 chunked queries.
+      // 50-rid chunks: QB 400s ("Internal error") past ~50 OR terms on
+      // this table — same limit field.ts chunks around.
+      let eventCount = 0
+      const sweptRids = allRecords.map(r => String(r['3']?.value ?? '')).filter(Boolean)
+      for (let i = 0; i < sweptRids.length; i += 50) {
+        const ids = sweptRids.slice(i, i + 50)
+        const where12 = ids.map(id => `{${FE.relatedProject}.EX.${id}}`).join('OR')
+        const res = await fetch('https://api.quickbase.com/v1/records/query', {
+          method: 'POST',
+          headers: {
+            'QB-Realm-Hostname': realm,
+            'Authorization': `QB-USER-TOKEN ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: FUNDING_EVENTS_TABLE,
+            select: FE_SELECT,
+            where: `(${where12})AND({${FE.isMaxM1}.EX.'true'}OR{${FE.isMaxM2}.EX.'true'}OR{${FE.isMaxM3}.EX.'true'})`,
+            options: { top: 1000 },
+          }),
+        })
+        if (!res.ok) throw new Error(`QB funding events sweep failed: ${res.status}`)
+        const data = await res.json() as { data?: Array<Record<string, { value: unknown }>> }
+        const recs = data.data || []
+        upsertFundingEvents(recs)
+        eventCount += recs.length
+      }
+
       db.prepare(`UPDATE project_cache_tier_runs SET last_finished_at = datetime('now'), last_status = 'ok', last_rows_changed = ?, last_error = NULL WHERE tier = 'funding_full'`)
         .run(changed)
-      console.log(`[funding] full sweep: ${changed} projects re-pulled from QB`)
+      console.log(`[funding] full sweep: ${changed} projects + ${eventCount} max events re-pulled from QB`)
       return { rows: changed, skipped: false }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
