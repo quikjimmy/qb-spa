@@ -91,8 +91,10 @@ const BUCKETS: Record<string, BucketDef> = {
   'M2:ready':            { label: 'Ready to Request',       where: `m2_status = 'Ready to Request M2'`,                                                                                                                                                                                                                              amountCol: 'm2_expected_amount' },
   'M2:pending':          { label: 'Pending Approval',       where: `m2_status IN ('Pending M2 Approval', 'Pending M2 Deposit') AND m2_last_funding_check_date IS NOT NULL AND m2_last_funding_check_date != '' AND substr(m2_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                amountCol: 'm2_expected_amount' },
   'M2:approved':         { label: 'Approved · Not Recv',    where: `m2_status = 'M2 Approved'`,                                                                                                                                                                                                                                      amountCol: 'm2_expected_amount' },
-  'M2:notReady':         { label: 'Not Ready',              where: `m2_status = 'Not Ready for M2' AND m2_last_funding_check_date IS NOT NULL AND m2_last_funding_check_date != '' AND substr(m2_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                                            amountCol: 'm2_expected_amount' },
-  'M2:followUp':         { label: 'Stale Follow-Up',        where: `m2_status = 'Not Ready for M2' AND m2_last_funding_check_date IS NOT NULL AND m2_last_funding_check_date != '' AND substr(m2_last_funding_check_date,1,10) <= date('now','-3 days')`,                                                                            amountCol: 'm2_expected_amount' },
+  // Not Ready is ALL 'Not Ready for M2' regardless of check recency —
+  // the recency-split Stale Follow-Up tile was merged away per James
+  // 2026-07-16 (matches how M1/M3 Not Ready already behave).
+  'M2:notReady':         { label: 'Not Ready',              where: `m2_status = 'Not Ready for M2'`,                                                                                                                                                                                                                                 amountCol: 'm2_expected_amount' },
   'M2:pendingFollowUp':  { label: 'Pending · Follow-Up',    where: `m2_status IN ('Pending M2 Approval', 'Pending M2 Deposit') AND (m2_last_funding_check_date IS NULL OR m2_last_funding_check_date = '' OR substr(m2_last_funding_check_date,1,10) < date('now','-2 days'))`,                                                       amountCol: 'm2_expected_amount' },
 
   // ─── M3
@@ -241,7 +243,7 @@ router.get('/overview', (req: Request, res: Response): void => {
   try {
     const milestones: Record<Milestone, { buckets: Record<string, { count: number; expectedAmount: number; label: string }>; followUp?: { count: number; expectedAmount: number }; pendingFollowUp?: { count: number; expectedAmount: number } }> = {
       M1: { buckets: {}, followUp: bucketSummary('M1:followUp', filters) },
-      M2: { buckets: {}, followUp: bucketSummary('M2:followUp', filters), pendingFollowUp: bucketSummary('M2:pendingFollowUp', filters) },
+      M2: { buckets: {}, pendingFollowUp: bucketSummary('M2:pendingFollowUp', filters) },
       M3: { buckets: {}, followUp: bucketSummary('M3:followUp', filters) },
       DCA: { buckets: {} },
     }
