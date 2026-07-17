@@ -23,7 +23,6 @@ interface Bucket { count: number; expectedAmount: number; label: string }
 interface MilestoneSummary {
   buckets: Record<string, Bucket>
   followUp?: { count: number; expectedAmount: number }
-  pendingFollowUp?: { count: number; expectedAmount: number }
 }
 interface Overview {
   asOf: string
@@ -379,8 +378,8 @@ function textClass(accent: Accent): string {
 }
 
 // Bucket views for a given milestone — status buckets followed by the
-// stale follow-up bucket (for M1/M2/M3 only) so both sit in the same
-// KPI grid. DCA has no follow-up. Used for both the KPI tile group
+// stale follow-up bucket (M1/M3 only) so both sit in the same KPI grid.
+// M2 and DCA have no follow-up tile. Used for both the KPI tile group
 // and the audit-section dropdowns.
 interface BucketView { key: string; bucket: Bucket; accent: Accent }
 function bucketsForMilestone(m: Milestone): BucketView[] {
@@ -394,13 +393,6 @@ function bucketsForMilestone(m: Milestone): BucketView[] {
       key: `${m}:followUp`,
       bucket: { count: ms.followUp.count, expectedAmount: ms.followUp.expectedAmount, label: 'Stale Follow-Up' },
       accent: 'rose',
-    })
-  }
-  if (ms.pendingFollowUp && m !== 'DCA') {
-    list.push({
-      key: `${m}:pendingFollowUp`,
-      bucket: { count: ms.pendingFollowUp.count, expectedAmount: ms.pendingFollowUp.expectedAmount, label: 'Pending · Follow-Up' },
-      accent: 'amber',
     })
   }
   return list

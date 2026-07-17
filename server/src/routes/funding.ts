@@ -77,25 +77,19 @@ const BUCKETS: Record<string, BucketDef> = {
   'M1:followUp':  { label: 'Stale Follow-Up',      where: `m1_status = 'Not Ready for M1' AND m1_last_funding_check_date IS NOT NULL AND m1_last_funding_check_date != '' AND substr(m1_last_funding_check_date,1,10) <= date('now','-3 days')`, amountCol: 'm1_expected_amount' },
 
   // ─── M2
-  // Headline tiles mirror the QB Funding-Dashboard "In SLA / Follow-Up
-  // Not Needed" reports exactly (m2_last_funding_check_date >= today−2):
-  //   pending  → QB report 1033 (Pending M2 Approval · Follow Up Not Needed)
-  //   notReady → QB report 1027 (Not Ready to Request · Follow Up In SLA)
-  // The Pending union covers both 'Pending M2 Approval' and 'Pending M2
-  // Deposit' per report 1033's CT-OR filter. The matching *FollowUp
-  // sub-callouts are the inverses (stale or never checked) and surface
-  // separately on the dashboard. Note: QB's in-SLA gate is `>= today−2`
-  // while its stale gate is `<= today−3`, leaving a 1-day gap (rows
-  // checked 2–3 days ago appear in neither bucket). We mirror that gap
-  // exactly rather than silently widening either side.
+  // Pending Approval is ALL M2 projects awaiting a decision — status in
+  // ('Pending M2 Approval', 'Pending M2 Deposit'), submitted-not-rejected —
+  // regardless of funding-check recency. The prior recency split (in-SLA
+  // headline tile + a separate "Pending · Follow-Up" stale sub-callout,
+  // mirroring QB reports 1033/1027's `>= today−2` gate) was merged into a
+  // single Pending Approval bucket per James 2026-07-17. The status union
+  // covers both 'Pending M2 Approval' and 'Pending M2 Deposit' per report
+  // 1033's CT-OR filter. This matches how M2 Not Ready already behaves
+  // (all statuses, no recency split).
   'M2:ready':            { label: 'Ready to Request',       where: `m2_status = 'Ready to Request M2'`,                                                                                                                                                                                                                              amountCol: 'm2_expected_amount' },
-  'M2:pending':          { label: 'Pending Approval',       where: `m2_status IN ('Pending M2 Approval', 'Pending M2 Deposit') AND m2_last_funding_check_date IS NOT NULL AND m2_last_funding_check_date != '' AND substr(m2_last_funding_check_date,1,10) >= date('now','-2 days')`,                                                amountCol: 'm2_expected_amount' },
+  'M2:pending':          { label: 'Pending Approval',       where: `m2_status IN ('Pending M2 Approval', 'Pending M2 Deposit')`,                                                                                                                                                                                                     amountCol: 'm2_expected_amount' },
   'M2:approved':         { label: 'Approved · Not Recv',    where: `m2_status = 'M2 Approved'`,                                                                                                                                                                                                                                      amountCol: 'm2_expected_amount' },
-  // Not Ready is ALL 'Not Ready for M2' regardless of check recency —
-  // the recency-split Stale Follow-Up tile was merged away per James
-  // 2026-07-16 (matches how M1/M3 Not Ready already behave).
   'M2:notReady':         { label: 'Not Ready',              where: `m2_status = 'Not Ready for M2'`,                                                                                                                                                                                                                                 amountCol: 'm2_expected_amount' },
-  'M2:pendingFollowUp':  { label: 'Pending · Follow-Up',    where: `m2_status IN ('Pending M2 Approval', 'Pending M2 Deposit') AND (m2_last_funding_check_date IS NULL OR m2_last_funding_check_date = '' OR substr(m2_last_funding_check_date,1,10) < date('now','-2 days'))`,                                                       amountCol: 'm2_expected_amount' },
 
   // ─── M3
   'M3:ready':     { label: 'Ready to Request',     where: `m3_status = 'Ready to Request M3'`,                                                               amountCol: 'm3_expected_amount' },
@@ -241,9 +235,9 @@ router.get('/overview', (req: Request, res: Response): void => {
   const milestone = (['M1', 'M2', 'M3', 'DCA'] as const).find(m => m === activeRaw) || 'M2'
   const filters = parseFilters(req)
   try {
-    const milestones: Record<Milestone, { buckets: Record<string, { count: number; expectedAmount: number; label: string }>; followUp?: { count: number; expectedAmount: number }; pendingFollowUp?: { count: number; expectedAmount: number } }> = {
+    const milestones: Record<Milestone, { buckets: Record<string, { count: number; expectedAmount: number; label: string }>; followUp?: { count: number; expectedAmount: number } }> = {
       M1: { buckets: {}, followUp: bucketSummary('M1:followUp', filters) },
-      M2: { buckets: {}, pendingFollowUp: bucketSummary('M2:pendingFollowUp', filters) },
+      M2: { buckets: {} },
       M3: { buckets: {}, followUp: bucketSummary('M3:followUp', filters) },
       DCA: { buckets: {} },
     }
