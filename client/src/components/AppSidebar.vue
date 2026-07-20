@@ -73,6 +73,7 @@ const projectSubItems = [
   { label: 'Projects',             to: '/projects' },
   { label: 'Sales',                to: '/projects/sales' },
   { label: 'Intake',               to: '/projects/intake' },
+  { label: 'Battery Intake',       to: '/projects/battery-intake' },
   { label: 'Project Coordination', to: '/projects/pc' },
   { label: 'Site Survey',          to: '/projects/site-survey' },
   { label: 'Design & Engineering', to: '/projects/design' },

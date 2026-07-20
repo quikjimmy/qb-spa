@@ -98,6 +98,12 @@ const router = createRouter({
           meta: { order: 3, title: 'Intake', description: 'KCA + welcome call, intake failed-run recovery, and retry queue.' },
         },
         {
+          path: 'projects/battery-intake',
+          name: 'milestone-battery-intake',
+          component: () => import('../views/BatteryIntakeView.vue'),
+          meta: { order: 3.5, title: 'Battery Intake', description: 'Monitor & re-push battery deals from the Sunobi Battery Sizer.' },
+        },
+        {
           path: 'projects/pc',
           name: 'pc-dashboard',
           component: () => import('../views/PcDashboardView.vue'),

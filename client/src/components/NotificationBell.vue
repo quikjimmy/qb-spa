@@ -163,6 +163,9 @@ const typeIcon: Record<string, string> = {
   // Deeper amber than generic `warning` so it reads "act now" while staying
   // in the warm/actionable family, short of the alarm-red reserved for errors.
   field_late_alert: 'text-amber-600',
+  // Battery intake stuck — a deal failed to land and needs a human. Actionable,
+  // same warm amber family as the other "act now" alerts.
+  battery_intake_stuck: 'text-amber-600',
 }
 
 onMounted(() => {

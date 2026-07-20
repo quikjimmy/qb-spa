@@ -17,6 +17,7 @@ import { addersRouter } from './routes/adders'
 import { attachmentsRouter } from './routes/attachments'
 import { notesRouter } from './routes/notes'
 import { intakeRouter } from './routes/intake'
+import { batteryIntakeRouter } from './routes/battery-intake'
 import { retentionRouter } from './routes/retention'
 import { ptoAnalyticsRouter } from './routes/pto-analytics'
 import { ptoCacheRouter } from './routes/pto-cache'
@@ -44,6 +45,7 @@ import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
 import { startUnreadSmsNotifier } from './lib/unreadSmsNotifier'
 import { startPredictedLatePoller } from './lib/predictedLatePoller'
+import { startBatteryStuckNotifier } from './lib/batteryStuckNotifier'
 import { startDialpadEventMirror } from './lib/dialpadEventMirror'
 import { startProjectCacheScheduler } from './routes/projects'
 import { startTicketCacheScheduler } from './routes/tickets'
@@ -119,6 +121,7 @@ app.use('/api/adders', authenticate, addersRouter)
 app.use('/api/attachments', authenticate, referralAgentScope, attachmentsRouter)
 app.use('/api/notes', authenticate, referralAgentScope, notesRouter)
 app.use('/api/intake', authenticate, denyReferralAgent, intakeRouter)
+app.use('/api/battery-intake', authenticate, denyReferralAgent, batteryIntakeRouter)
 app.use('/api/retention', authenticate, referralAgentScope, retentionRouter)
 app.use('/api/analytics/pto', authenticate, denyReferralAgent, ptoAnalyticsRouter)
 app.use('/api/pto', authenticate, denyReferralAgent, ptoCacheRouter)
@@ -195,6 +198,7 @@ app.listen(PORT, '0.0.0.0', () => {
   try { startMessageReminders() } catch (e) { console.error('[startup] message reminders failed:', e) }
   try { startUnreadSmsNotifier() } catch (e) { console.error('[startup] unread sms notifier failed:', e) }
   try { startPredictedLatePoller() } catch (e) { console.error('[startup] predicted-late poller failed:', e) }
+  try { startBatteryStuckNotifier() } catch (e) { console.error('[startup] battery-stuck notifier failed:', e) }
   try { startArrivyUsersScheduler() } catch (e) { console.error('[startup] arrivy users scheduler failed:', e) }
   try { startFeedbackTriageScheduler() } catch (e) { console.error('[startup] feedback triage scheduler failed:', e) }
 })
