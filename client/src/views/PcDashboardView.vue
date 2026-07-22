@@ -15,6 +15,7 @@ import DataFreshness from '@/components/DataFreshness.vue'
 import { parseMessageBody, bodyHasImage } from '@/lib/smsBody'
 import { fmtDate as fmtLocalDate, localTodayIso, localDateKey, shiftLocalDays, userTz, localDayBoundsToUtc } from '@/lib/dates'
 import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
+import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
 import { use } from 'echarts/core'
@@ -213,6 +214,10 @@ interface UpcomingTask {
   task_type_label: string
   system_size_kw: number
   battery_only: boolean
+  state: string
+  sales_office: string
+  lender: string
+  closer: string
   scheduled_at: string
   crew_names: string
   status: 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
@@ -249,6 +254,14 @@ const groupBy = ref<GroupMode>('time')
 type StatusFilter = 'scheduled' | 'enroute' | 'onsite' | 'submitted' | 'late'
 const filterType = ref<string | null>(null)
 const filterStatus = ref<StatusFilter | null>(null)
+
+// Standard dimension filters for the field-activity list. Distinct from the
+// outreach tab's fState/fLender (which refetch server-side) — these are
+// field-activity-only, client-side, narrowing the loaded list in place.
+const faState = ref('')
+const faOffice = ref('')
+const faLender = ref('')
+const faCloser = ref('')
 
 const WINDOW_CHIPS: Array<{ k: WindowKey; l: string }> = [
   { k: 'yesterday', l: 'Yesterday' },
@@ -664,9 +677,36 @@ const filteredTasks = computed<UpcomingTask[]>(() => {
   return upcomingTasks.value.filter(t => {
     if (filterType.value && t.task_type_key !== filterType.value) return false
     if (filterStatus.value && !statusMatches(t, filterStatus.value)) return false
+    if (faState.value && t.state !== faState.value) return false
+    if (faOffice.value && t.sales_office !== faOffice.value) return false
+    if (faLender.value && t.lender !== faLender.value) return false
+    if (faCloser.value && t.closer !== faCloser.value) return false
     return true
   })
 })
+
+// Distinct, sorted option lists for the dimension filters, derived from the
+// loaded window's tasks (blank values dropped).
+function distinctVals(pick: (t: UpcomingTask) => string): string[] {
+  return [...new Set(upcomingTasks.value.map(pick).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+}
+const fieldFilterDefs = computed<FilterDef[]>(() => [
+  { key: 'state',        placeholder: 'State',   options: distinctVals(t => t.state),        value: faState.value },
+  { key: 'sales_office', placeholder: 'Office',  options: distinctVals(t => t.sales_office), value: faOffice.value },
+  { key: 'lender',       placeholder: 'Lender',  options: distinctVals(t => t.lender),        value: faLender.value },
+  { key: 'closer',       placeholder: 'Closer',  options: distinctVals(t => t.closer),        value: faCloser.value },
+])
+const fieldFilterActive = computed(() => !!(faState.value || faOffice.value || faLender.value || faCloser.value))
+function setFieldFilter(key: string, value: string): void {
+  const v = value === '__all__' ? '' : value
+  if (key === 'state') faState.value = v
+  else if (key === 'sales_office') faOffice.value = v
+  else if (key === 'lender') faLender.value = v
+  else if (key === 'closer') faCloser.value = v
+}
+function resetFieldFilters(): void {
+  faState.value = ''; faOffice.value = ''; faLender.value = ''; faCloser.value = ''
+}
 
 // Hour-of-day bucket key for a task. Includes date prefix so multi-day
 // windows separate same-hour tasks across different days.
@@ -724,6 +764,7 @@ function toggleStatusFilter(key: StatusFilter): void {
 function clearFilters(): void {
   filterType.value = null
   filterStatus.value = null
+  resetFieldFilters()
 }
 
 interface StatusTile { key: StatusFilter; label: string; count: number; iconKey: UpcomingTask['status']; tone: 'neutral' | 'progress' | 'done' | 'alert' }
@@ -1692,6 +1733,15 @@ watch([viewMode, fCoordinator], () => {
         </label>
         <p v-if="!customFrom || !customTo" class="text-[10.5px] text-muted-foreground/70">Pick a start and end date to load.</p>
       </div>
+
+      <!-- Standard dimension filters (State / Office / Lender / Closer).
+           Options derived from the loaded window; narrows the list in place. -->
+      <MilestoneFilterBar
+        :filters="fieldFilterDefs"
+        :extra-active="fieldFilterActive"
+        @update="setFieldFilter"
+        @reset="resetFieldFilters"
+      />
 
       <!-- Summary — type tiles and status tiles as parallel KPI rows,
            each tile is an independent click-to-filter. Active tile is

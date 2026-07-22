@@ -4,7 +4,7 @@ import db from '../db'
 import { isAppActive } from '../lib/activity'
 import { decorateCommsItems } from '../lib/callerAttribution'
 import { toaForProjects } from './toa'
-import { F, QB, SELECT_FIELDS, qbQuery, fieldValue, type QbRecord } from './field'
+import { F, QB, SELECT_FIELDS, qbQuery, fieldValue, fetchCancelledTaskRids, type QbRecord } from './field'
 
 const router = Router()
 
@@ -899,16 +899,16 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   const deadPlaceholders = DEAD_STATUSES.map(() => '?').join(',')
   const rows = coordinator
     ? db.prepare(
-        `SELECT record_id, customer_name, coordinator, system_size_kw
+        `SELECT record_id, customer_name, coordinator, system_size_kw, state, sales_office, lender, closer
            FROM project_cache
           WHERE coordinator = ?
             AND (status IS NULL OR status NOT IN (${deadPlaceholders}))`
-      ).all(coordinator, ...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null }>
+      ).all(coordinator, ...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null; state: string | null; sales_office: string | null; lender: string | null; closer: string | null }>
     : db.prepare(
-        `SELECT record_id, customer_name, coordinator, system_size_kw
+        `SELECT record_id, customer_name, coordinator, system_size_kw, state, sales_office, lender, closer
            FROM project_cache
           WHERE status IS NULL OR status NOT IN (${deadPlaceholders})`
-      ).all(...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null }>
+      ).all(...DEAD_STATUSES) as Array<{ record_id: number; customer_name: string; coordinator: string; system_size_kw: number | null; state: string | null; sales_office: string | null; lender: string | null; closer: string | null }>
 
   if (rows.length === 0) { res.json({ tasks: [], window: { fromIso, toIso } }); return }
 
@@ -918,10 +918,10 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   const batteryRids = new Set(
     (db.prepare('SELECT project_rid FROM battery_project').all() as Array<{ project_rid: number }>).map(r => r.project_rid)
   )
-  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number; battery_only: boolean }>()
+  const projectMeta = new Map<string, { customer_name: string; project_coordinator: string; system_size_kw: number; battery_only: boolean; state: string; sales_office: string; lender: string; closer: string }>()
   for (const r of rows) {
     const batteryOnly = r.system_size_kw != null && Number(r.system_size_kw) < 1 && batteryRids.has(Number(r.record_id))
-    projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0, battery_only: batteryOnly })
+    projectMeta.set(String(r.record_id), { customer_name: r.customer_name, project_coordinator: r.coordinator, system_size_kw: Number(r.system_size_kw) || 0, battery_only: batteryOnly, state: r.state || '', sales_office: r.sales_office || '', lender: r.lender || '', closer: r.closer || '' })
   }
 
   // ONE QB call: date window only, then filter in-memory against the PC
@@ -998,9 +998,17 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
   }
   collected = [...byMergeKey.values()]
 
+  // Authoritative cancel signal comes from the Arrivy task LOG, not the task
+  // row's status field (which goes stale when an in-flight task is cancelled) —
+  // otherwise a cancelled install falls through to 'scheduled' and the client
+  // wrongly badges it LATE. Checked per task RID for the rows we're showing.
+  const cancelledTaskRids = await fetchCancelledTaskRids(
+    collected.map(rec => fieldValue(rec, 3) as string | number),
+  ).catch(() => new Set<string>())
+
   // Pre-normalize each row so the PC client doesn't have to know QB shape.
   // Status classification mirrors getTaskStatus() in FieldDashboardView.vue,
-  // minus the task-log cancel detection (covered by row substring match).
+  // now including the task-log cancel detection (not just the row substring).
   type StatusKey = 'submitted' | 'notsubmitted' | 'overdue' | 'cancelled' | 'onsite' | 'enroute' | 'scheduled'
   function classify(rec: QbRecord): { status: StatusKey; label: string } {
     const arrivyStatus = String(fieldValue(rec, F.taskStatus) || '').toLowerCase()
@@ -1009,7 +1017,9 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
     const enrouteDt = fieldValue(rec, F.enrouteStatus)
     const isArrivyComplete = /\bcomplete\b/i.test(arrivyStatus)
     const isOverdue = /\boverdue\b/i.test(arrivyStatus)
+    const taskRid = Math.trunc(Number(fieldValue(rec, 3)))
     const isCancelled = /cancel|exception|notdone|not\s*done/i.test(arrivyStatus)
+      || (Number.isFinite(taskRid) && cancelledTaskRids.has(String(taskRid)))
     if (isCancelled) return { status: 'cancelled', label: 'Cancelled' }
     if (isArrivyComplete && !submittedDt) return { status: 'notsubmitted', label: 'Not Submitted' }
     if (submittedDt) return { status: 'submitted', label: 'Submitted' }
@@ -1071,6 +1081,10 @@ router.get('/upcoming-tasks', async (req: Request, res: Response): Promise<void>
       task_type_label: tt.label,
       system_size_kw: meta?.system_size_kw || 0,
       battery_only: meta?.battery_only || false,
+      state: meta?.state || '',
+      sales_office: meta?.sales_office || '',
+      lender: meta?.lender || '',
+      closer: meta?.closer || '',
       scheduled_at: String(fieldValue(rec, F.scheduledDateTime) || ''),
       crew_names: crewNames(rec),
       status: c.status,

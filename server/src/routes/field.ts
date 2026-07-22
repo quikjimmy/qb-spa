@@ -83,6 +83,36 @@ export async function qbQuery(tableId: string, where: string, select: number[], 
   return json.data || []
 }
 
+// Detection-only cancel check for a set of Arrivy task RIDs: returns the subset
+// that carry a TASK_STATUS cancel/exception/not-done LOG event. The task row's
+// own status field (fid 85) goes stale when an in-flight task is cancelled, so
+// the LOG is the source of truth (same rule /tasks and /cancellations use).
+// Filters the log by task RID (not a timestamp window) — precise to the tasks
+// on screen and robust to when the cancel was logged. Returns canonical integer
+// strings (the log's relatedTask can come back as "5768.0" vs the row's "5768").
+export async function fetchCancelledTaskRids(taskRids: Array<string | number>): Promise<Set<string>> {
+  const cancelled = new Set<string>()
+  const ids = [...new Set(taskRids.map(r => Math.trunc(Number(r))).filter(n => Number.isFinite(n) && n > 0))]
+  if (ids.length === 0) return cancelled
+  for (const batch of chunk(ids, 90)) {
+    const orClause = batch.map(id => `{'${LOG_F.relatedTask}'.EX.'${id}'}`).join('OR')
+    const logs = await qbQuery(
+      QB.arrivyTaskLogTable,
+      `(${orClause})AND{'${LOG_F.eventType}'.EX.'TASK_STATUS'}`,
+      [LOG_F.relatedTask, LOG_F.statusSubType],
+      { options: { top: 1000 } },
+    ).catch(() => [] as QbRecord[])
+    for (const log of logs) {
+      const sub = String(log[String(LOG_F.statusSubType)]?.value || '').toUpperCase()
+      if (/CANCEL|EXCEPTION|NOT.?DONE/i.test(sub)) {
+        const n = Math.trunc(Number(log[String(LOG_F.relatedTask)]?.value))
+        if (Number.isFinite(n) && n > 0) cancelled.add(String(n))
+      }
+    }
+  }
+  return cancelled
+}
+
 export function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))

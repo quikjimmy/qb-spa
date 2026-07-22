@@ -24,6 +24,7 @@ import ProjectChatSheet from '@/components/chat/ProjectChatSheet.vue'
 import NoteComposer from '@/components/project-detail/NoteComposer.vue'
 import TicketDetailSheet, { type TicketRow as FullTicketRow } from '@/components/tickets/TicketDetailSheet.vue'
 import { computeStripSteps, computeTransits, type StripStep } from '@/lib/milestoneStrip'
+import type { ArrivyStatusKey } from '@/lib/arrivyStatus'
 
 interface ProjectRow {
   record_id: number
@@ -59,6 +60,9 @@ interface ProjectRow {
   ntp_submitted?: string | null
   ntp_approved?: string | null
   m1_status?: string | null
+  arrivy_survey_status?: ArrivyStatusKey | null
+  arrivy_install_status?: ArrivyStatusKey | null
+  arrivy_inspection_status?: ArrivyStatusKey | null
   [k: string]: unknown
 }
 
@@ -141,12 +145,44 @@ function onOpenChange(v: boolean) {
   emit('update:open', v)
 }
 
-// Build the milestone strip from the project row directly — avoids a
-// fetch since the parent table already has every column the strip
-// needs from project_cache.
+// Arrivy cancellations aren't on the project_cache row the parent passes in,
+// so the strip's cancelled (red) state can't fire from props alone. Pull the
+// bulk cancellation map (same source ProjectsView uses) and inject
+// arrivy_*_status='cancelled' for this project. Module-level 60s cache so
+// clicking through several projects doesn't refetch the map each time.
+type CancelFlags = { survey?: boolean; install?: boolean; inspection?: boolean }
+// 60s cache of the bulk cancellation map, shared across drawer opens in this
+// dialog instance so clicking through projects doesn't refetch it each time.
+let _cancelCache: { at: number; data: Record<string, CancelFlags> } | null = null
+async function loadCancellationsMap(token: string | null | undefined): Promise<Record<string, CancelFlags>> {
+  if (_cancelCache && Date.now() - _cancelCache.at < 60_000) return _cancelCache.data
+  const res = await fetch('/api/field/cancellations?days=60', { headers: { Authorization: `Bearer ${token}` } })
+  const data: Record<string, CancelFlags> = res.ok ? ((await res.json()).byProject || {}) : {}
+  _cancelCache = { at: Date.now(), data }
+  return data
+}
+const cancelFlags = ref<CancelFlags>({})
+watch(() => props.project?.record_id, async (rid) => {
+  cancelFlags.value = {}
+  if (!rid) return
+  try {
+    const map = await loadCancellationsMap(auth.token)
+    cancelFlags.value = map[String(rid)] || {}
+  } catch { /* leave empty → strip falls back to non-cancelled */ }
+}, { immediate: true })
+
+// Build the milestone strip from the project row, overlaying Arrivy
+// cancellation. The parent table already has every other column the strip
+// needs from project_cache, so no per-project fetch beyond the cached map.
 const stripSteps = computed<StripStep[]>(() => {
   if (!props.project) return []
-  return computeStripSteps(props.project)
+  const f = cancelFlags.value
+  return computeStripSteps({
+    ...props.project,
+    arrivy_survey_status:     f.survey     ? 'cancelled' : props.project.arrivy_survey_status,
+    arrivy_install_status:    f.install    ? 'cancelled' : props.project.arrivy_install_status,
+    arrivy_inspection_status: f.inspection ? 'cancelled' : props.project.arrivy_inspection_status,
+  })
 })
 const transits = computed(() => props.project ? computeTransits(props.project) : [])
 
