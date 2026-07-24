@@ -40,6 +40,7 @@ import { dialpadRouter } from './routes/dialpad'
 import { dialpadWebhookRouter } from './routes/dialpad-webhooks'
 import { arrivyWebhookRouter, arrivyWebhookAdminRouter } from './routes/arrivy-webhooks'
 import { fieldRouter } from './routes/field'
+import { fieldOpsRouter } from './routes/field-ops'
 import { authenticate, requireRole, requireViewPermission } from './middleware/auth'
 import { startAgentScheduler } from './agents/scheduler'
 import { startMessageReminders } from './lib/messageReminders'
@@ -145,6 +146,7 @@ app.use('/api/agent-lab', authenticate, agentLabRouter)
 app.use('/api/agent-approvals', authenticate, agentApprovalsRouter)
 app.use('/api/dialpad', authenticate, denyReferralAgent, dialpadRouter)
 app.use('/api/field', authenticate, referralAgentFieldScope, fieldRouter)
+app.use('/api/field-ops', authenticate, denyReferralAgent, fieldOpsRouter)
 
 // Admin routes — require JWT + admin role
 app.use('/api/admin', authenticate, requireRole('admin'), adminRouter)

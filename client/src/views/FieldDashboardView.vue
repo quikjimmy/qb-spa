@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import FieldPerformance from '@/components/FieldPerformance.vue'
+import FieldOverview from '@/components/FieldOverview.vue'
 import DataFreshness from '@/components/DataFreshness.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
@@ -67,8 +68,8 @@ const lateLoaded = ref(false)
 // ─── Filters / state ──
 type Preset = 'today' | 'yesterday' | 'week' | 'month' | '30days'
 const preset = ref<Preset>('today')
-type Tab = 'leaderboard' | 'activity' | 'performance'
-const tab = ref<Tab>('leaderboard')
+type Tab = 'overview' | 'leaderboard' | 'activity' | 'performance'
+const tab = ref<Tab>('overview')
 const searchTerm = ref('')
 
 // Drill-down state — when set, replaces the main view with grouped task cards.
@@ -656,13 +657,18 @@ watch(preset, load)
 
       <!-- Tabs -->
       <div class="flex border-b border-border">
-        <button v-for="t in [{ k: 'leaderboard', l: 'Leaderboard' }, { k: 'activity', l: 'Activity Feed' }, { k: 'performance', l: 'Performance' }] as Array<{ k: Tab; l: string }>" :key="t.k"
+        <button v-for="t in [{ k: 'overview', l: 'Overview' }, { k: 'leaderboard', l: 'Leaderboard' }, { k: 'activity', l: 'Activity Feed' }, { k: 'performance', l: 'Performance' }] as Array<{ k: Tab; l: string }>" :key="t.k"
           class="flex-1 py-2.5 px-4 text-sm font-medium border-b-2 transition-colors"
           :class="tab === t.k ? 'border-foreground text-foreground' : 'border-transparent text-muted-foreground'"
           @click="tab = t.k"
         >{{ t.l }}</button>
       </div>
 
+      <!-- Overview tab — self-contained (own fetches); independent of the Arrivy
+           task load so it renders even if the leaderboard/activity data is slow. -->
+      <FieldOverview v-if="tab === 'overview'" />
+
+      <template v-else>
       <div v-if="loading" class="rounded-xl border bg-card p-10 text-center text-sm text-muted-foreground">Loading field data…</div>
       <div v-else-if="errorMsg" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{{ errorMsg }}</div>
 
@@ -755,6 +761,7 @@ watch(preset, load)
       <!-- Performance tab — install volume + cycle-time analytics from project_cache -->
       <template v-else-if="tab === 'performance'">
         <FieldPerformance />
+      </template>
       </template>
     </template>
 

@@ -138,7 +138,7 @@ const BUCKET_ORDER: Record<Milestone, string[]> = {
 // ignored so an unset filter is a no-op. Lender uses the same
 // '— Unassigned' bucket the lender pivot uses so the chip choice maps
 // 1:1 to the lender row.
-interface DashFilters { state?: string; closer?: string; lender?: string; status?: string }
+export interface DashFilters { state?: string; closer?: string; lender?: string; status?: string }
 function filterClauses(f: DashFilters): { sql: string; params: string[] } {
   const parts: string[] = []
   const params: string[] = []
@@ -159,7 +159,7 @@ function parseFilters(req: Request): DashFilters {
   return { state: pick('state'), closer: pick('closer'), lender: pick('lender'), status: pick('status') }
 }
 
-function bucketSummary(key: string, filters: DashFilters = {}): { count: number; expectedAmount: number } {
+export function bucketSummary(key: string, filters: DashFilters = {}): { count: number; expectedAmount: number } {
   const def = BUCKETS[key]
   if (!def) return { count: 0, expectedAmount: 0 }
   const fc = filterClauses(filters)
@@ -168,6 +168,21 @@ function bucketSummary(key: string, filters: DashFilters = {}): { count: number;
     FROM project_cache ${BASE_WHERE} AND ${def.where}${fc.sql}
   `).get(...fc.params) as { count: number; expected: number }
   return { count: row.count, expectedAmount: row.expected }
+}
+
+// The individual project rows behind a bucket — same scope/definition as
+// bucketSummary. statusCol is the milestone status shown per row.
+export function bucketRows(key: string, statusCol: 'm2_status' | 'm3_status', filters: DashFilters = {}, limit = 300): Array<{ customer: string; state: string; status: string; lender: string; installDate: string }> {
+  const def = BUCKETS[key]
+  if (!def) return []
+  const fc = filterClauses(filters)
+  return db.prepare(`
+    SELECT COALESCE(customer_name,'') AS customer, COALESCE(state,'') AS state,
+           COALESCE(${statusCol},'') AS status, COALESCE(lender,'') AS lender,
+           COALESCE(substr(install_completed,1,10),'') AS installDate
+    FROM project_cache ${BASE_WHERE} AND ${def.where}${fc.sql}
+    ORDER BY customer_name LIMIT ?
+  `).all(...fc.params, limit) as Array<{ customer: string; state: string; status: string; lender: string; installDate: string }>
 }
 
 function lenderBreakdown(milestone: Milestone, filters: DashFilters = {}) {
