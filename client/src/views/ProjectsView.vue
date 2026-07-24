@@ -14,6 +14,8 @@ import DataFreshness from '@/components/DataFreshness.vue'
 import TicketGlance from '@/components/project-detail/TicketGlance.vue'
 import TicketComposer from '@/components/tickets/TicketComposer.vue'
 import BatteryOnlyBadge from '@/components/BatteryOnlyBadge.vue'
+import ProjectsMap from '@/components/ProjectsMap.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { useTicketBuckets } from '@/composables/useTicketBuckets'
 
 const auth = useAuthStore()
@@ -215,14 +217,10 @@ async function loadCancellations() {
   } catch { /* non-fatal */ }
 }
 
-async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
-  // silent: don't flip the loading skeleton (background refresh from polling).
-  // markNew: tag rows that weren't in the previous render so the template
-  // animates them in. Only set by the freshness poller — manual filter
-  // changes would otherwise paint everything as "new".
-  if (!opts?.silent) loading.value = true
-  const previousIds = opts?.markNew ? new Set(projects.value.map(p => p.record_id)) : null
-  const params = new URLSearchParams({ limit: '100' })
+// Current filter set as query params — shared by the list fetch and the map
+// fetch so both apply identical filters.
+function buildFilterParams(): URLSearchParams {
+  const params = new URLSearchParams()
   if (search.value.trim()) params.set('q', search.value.trim())
   if (showFavorites.value) params.set('favorites', '1')
   if (showBatteryOnly.value) params.set('battery_only', '1')
@@ -264,6 +262,18 @@ async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
       }
     }
   }
+  return params
+}
+
+async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
+  // silent: don't flip the loading skeleton (background refresh from polling).
+  // markNew: tag rows that weren't in the previous render so the template
+  // animates them in. Only set by the freshness poller — manual filter
+  // changes would otherwise paint everything as "new".
+  if (!opts?.silent) loading.value = true
+  const previousIds = opts?.markNew ? new Set(projects.value.map(p => p.record_id)) : null
+  const params = buildFilterParams()
+  params.set('limit', '100')
   try {
     const res = await fetch(`/api/projects?${params}`, { headers: hdrs() })
     const data = await res.json()
@@ -281,6 +291,108 @@ async function loadProjects(opts?: { silent?: boolean; markNew?: boolean }) {
       }
     }
   } finally { loading.value = false }
+}
+
+// ─── Map of the filtered projects (Leaflet) ─────────────────
+interface MapPoint { record_id: number; customer_name: string; customer_address: string; status: string; lat: number; lng: number; battery_only: number; problems: string[]; scheduled: string[]; inFilter?: boolean }
+const mapOpen = ref(false)
+const mapFiltersOpen = ref(false)
+const mapLoading = ref(false)
+const mapPoints = ref<MapPoint[]>([])
+const mapMeta = ref<{ plotted: number; total: number; missingCoords: number; capped: boolean }>({ plotted: 0, total: 0, missingCoords: 0, capped: false })
+
+// Map overlay categories. Problems match the exact records the dashboards show
+// (funding Not-Ready, PTO stale, INSPX failed); scheduled = an inspection/install
+// today or tomorrow — the "do it while you're nearby" opportunity.
+const PROBLEM_DEFS: Array<{ key: string; label: string }> = [
+  { key: 'm2_funds', label: 'M2 Unable to Request' },
+  { key: 'm3_funds', label: 'M3 Unable to Request' },
+  { key: 'pto', label: 'PTO Blocked' },
+  { key: 'inspx', label: 'Failed INSPX' },
+]
+const SCHEDULED_DEFS: Array<{ key: string; label: string }> = [
+  { key: 'insp_soon', label: 'Inspection soon' },
+  { key: 'install_soon', label: 'Install soon' },
+]
+const OVERLAY_LABEL: Record<string, string> = Object.fromEntries([...PROBLEM_DEFS, ...SCHEDULED_DEFS].map(p => [p.key, p.label]))
+const PROBLEM_KEYS = new Set(PROBLEM_DEFS.map(p => p.key))
+const activeOverlays = ref<Set<string>>(new Set([...PROBLEM_DEFS, ...SCHEDULED_DEFS].map(p => p.key)))
+const overlayOnly = ref(false)
+function toggleOverlay(key: string) {
+  const s = new Set(activeOverlays.value)
+  if (s.has(key)) s.delete(key); else s.add(key)
+  activeOverlays.value = s
+}
+const overlayCounts = computed(() => {
+  const c: Record<string, number> = {}
+  for (const p of mapPoints.value) for (const k of [...p.problems, ...p.scheduled]) c[k] = (c[k] || 0) + 1
+  return c
+})
+// Points handed to the map. A point shows if it's in the page filter OR it has an
+// active-category problem/scheduled flag. "Overlay only" hides the in-filter
+// healthy points, leaving just the problem + scheduled projects.
+const mapDisplayPoints = computed(() => {
+  const active = activeOverlays.value
+  return mapPoints.value
+    .map(p => {
+      const probs = p.problems.filter(k => active.has(k))
+      const sched = p.scheduled.filter(k => active.has(k))
+      return {
+        ...p,
+        problemActive: probs.length > 0, problemText: probs.map(k => OVERLAY_LABEL[k] || k).join(', '),
+        scheduledActive: sched.length > 0, scheduledText: sched.map(k => OVERLAY_LABEL[k] || k).join(', '),
+      }
+    })
+    .filter(p => overlayOnly.value ? (p.problemActive || p.scheduledActive) : (p.inFilter || p.problemActive || p.scheduledActive))
+})
+const mapOverlayShownCount = computed(() => mapPoints.value.filter(p => [...p.problems, ...p.scheduled].some(k => activeOverlays.value.has(k))).length)
+
+async function reloadMapData() {
+  mapLoading.value = true
+  try {
+    // Two layers, UNIONED: the page-filtered projects, PLUS every problem OR
+    // scheduled-soon project regardless of the page filters (so filtering to
+    // preInstall still shows all M2-unable-to-request and every inspection/install
+    // scheduled today/tomorrow).
+    const [baseRes, ovRes] = await Promise.all([
+      fetch(`/api/projects/geo?${buildFilterParams()}`, { headers: hdrs() }),
+      fetch(`/api/projects/geo?overlay=1`, { headers: hdrs() }),
+    ])
+    const base = baseRes.ok ? await baseRes.json() : { points: [], plotted: 0, total: 0, missingCoords: 0, capped: false }
+    const ov = ovRes.ok ? await ovRes.json() : { points: [] }
+    const byId = new Map<number, MapPoint>()
+    for (const p of (base.points ?? []) as MapPoint[]) byId.set(p.record_id, { ...p, inFilter: true })
+    for (const p of (ov.points ?? []) as MapPoint[]) {
+      const e = byId.get(p.record_id)
+      if (e) { e.problems = p.problems; e.scheduled = p.scheduled } // already in filter — keep its flags
+      else byId.set(p.record_id, { ...p, inFilter: false })         // overlay project outside the filter
+    }
+    mapPoints.value = [...byId.values()]
+    mapMeta.value = { plotted: base.plotted ?? 0, total: base.total ?? 0, missingCoords: base.missingCoords ?? 0, capped: !!base.capped }
+  } finally { mapLoading.value = false }
+}
+function openMap() { mapOpen.value = true; reloadMapData() }
+// Overlay projects (problem or scheduled) outside the current page filter.
+const mapOverlayCount = computed(() => mapPoints.value.filter(p => !p.inFilter).length)
+// Re-fetch the map (base layer) as the shared filters/KPI change while it's open.
+let mapReloadTimer: ReturnType<typeof setTimeout> | null = null
+watch([f, activeKpi, showBatteryOnly], () => {
+  if (!mapOpen.value) return
+  if (mapReloadTimer) clearTimeout(mapReloadTimer)
+  mapReloadTimer = setTimeout(() => reloadMapData(), 300)
+}, { deep: true })
+
+// Shared project snapshot drawer — opened from a map pin.
+type PeekRow = Record<string, unknown> & { record_id: number; customer_name: string }
+const selectedPeekProject = ref<PeekRow | null>(null)
+async function openProjectPeek(rid: number) {
+  if (!Number.isFinite(rid) || rid <= 0) return
+  try {
+    const res = await fetch(`/api/projects/${rid}?live=0`, { headers: hdrs() })
+    if (!res.ok) return
+    const d = await res.json() as { project?: PeekRow }
+    if (d.project) selectedPeekProject.value = d.project
+  } catch { /* silent */ }
 }
 
 // ─── Freshness polling ──────────────────────────────────────
@@ -630,6 +742,9 @@ onBeforeUnmount(() => {
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
         <span v-if="drawerFilterCount > 0" class="absolute -top-1 -right-1 size-4 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center font-bold">{{ drawerFilterCount }}</span>
       </button>
+      <button v-if="!auth.isReferralAgent" class="inline-flex items-center justify-center rounded-md border size-8 shrink-0 transition-colors hover:bg-muted cursor-pointer" @click="openMap" title="Map view">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+      </button>
       <button v-if="hasFilters" class="text-xs text-muted-foreground hover:text-foreground shrink-0" @click="clearFilters">Clear</button>
     </div>
 
@@ -943,6 +1058,115 @@ onBeforeUnmount(() => {
       :project-rid="ticketProject?.rid ?? null"
       :project-name="ticketProject?.name ?? null"
       @created="loadTicketBuckets"
+    />
+
+    <!-- Map of the filtered projects. z-[45]: above the app shell/header (z-40)
+         but below the project drawer Sheet (z-50) so a clicked pin's drawer
+         slides out over the map. -->
+    <div v-if="mapOpen" class="fixed inset-0 z-[45] flex flex-col bg-background">
+      <div class="flex items-start justify-between gap-3 px-3 sm:px-4 py-2.5 border-b shrink-0">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-x-2 gap-y-1 flex-wrap">
+            <p class="text-sm font-bold shrink-0">Project Map</p>
+            <span v-if="overlayOnly" class="text-[11px] text-amber-600 font-medium">· overlay only</span>
+            <template v-else>
+              <span v-if="!activeChips.length" class="text-[11px] text-muted-foreground">· all projects</span>
+              <span v-for="c in activeChips" :key="c.key" class="text-[10px] rounded-full bg-muted px-2 py-0.5 text-foreground/80 whitespace-nowrap">{{ c.label }}</span>
+            </template>
+          </div>
+          <p class="text-[11px] text-muted-foreground tabular-nums mt-1">
+            <template v-if="overlayOnly">{{ mapOverlayShownCount }} problem / scheduled project{{ mapOverlayShownCount === 1 ? '' : 's' }}</template>
+            <template v-else>{{ mapMeta.plotted }} in filter · {{ mapOverlayShownCount }} overlaid<span v-if="mapOverlayCount" class="text-amber-600"> (+{{ mapOverlayCount }} outside filter)</span></template>
+            <span v-if="mapMeta.capped" class="text-amber-600"> · filter capped at {{ mapMeta.plotted }}</span>
+            <span v-if="mapMeta.missingCoords > 0" class="text-amber-600"> · {{ mapMeta.missingCoords }} without coordinates</span>
+          </p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button class="inline-flex items-center gap-1 rounded-md border px-2.5 h-8 text-xs transition-colors cursor-pointer" :class="mapFiltersOpen || activeChips.length ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted'" @click="mapFiltersOpen = !mapFiltersOpen">
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            Filters
+          </button>
+          <button class="inline-flex items-center gap-1 rounded-md border px-2.5 h-8 text-xs hover:bg-muted transition-colors cursor-pointer" @click="mapOpen = false">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Close
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI stage tiles (shared with the projects list) — click to filter the map by pipeline stage. -->
+      <div v-if="!auth.isReferralAgent" class="flex gap-2 overflow-x-auto no-scrollbar px-3 sm:px-4 py-2 border-b shrink-0">
+        <button v-for="chip in [
+          { key: 'preInstall', label: 'Pre-Inst', count: kpi.preInstall.count, kw: kpi.preInstall.kw, color: 'text-blue-600', bar: 'bg-blue-500' },
+          { key: 'hold', label: 'Hold ' + kpi.hold.pct + '%', count: kpi.hold.count, kw: kpi.hold.kw, color: 'text-amber-600', bar: 'bg-amber-400' },
+          { key: 'futureInstall', label: 'F. Install', count: kpi.futureInstall.count, kw: kpi.futureInstall.kw, color: 'text-teal-600', bar: 'bg-teal-500' },
+          { key: 'wip', label: 'WIP', count: kpi.wip.count, kw: kpi.wip.kw, color: 'text-violet-600', bar: 'bg-violet-500' },
+          { key: 'needInspx', label: 'Need INSPX', count: kpi.needInspx.count, kw: kpi.needInspx.kw, color: 'text-orange-600', bar: 'bg-orange-500' },
+          { key: 'needPto', label: 'Need PTO', count: kpi.needPto.count, kw: kpi.needPto.kw, color: 'text-emerald-600', bar: 'bg-emerald-500' },
+        ]" :key="chip.key" class="flex-none rounded-xl px-3 py-1.5 w-[100px] text-left transition-all active:scale-[0.97] cursor-pointer" :class="activeKpi === chip.key ? 'bg-card shadow-md ring-1 ring-primary/30' : 'bg-card/60 hover:bg-card'" @click="setKpiFilter(chip.key)">
+          <div class="h-[3px] rounded-full mb-1" :class="chip.bar" />
+          <p class="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground truncate">{{ chip.label }}</p>
+          <p><span class="text-base font-extrabold" :class="chip.color">{{ chip.count }}</span><span class="text-[9px] font-bold" :class="chip.color"> / {{ Math.round(chip.kw).toLocaleString() }} kW</span></p>
+        </button>
+      </div>
+
+      <!-- Collapsible filter panel (shared page filters). -->
+      <div v-if="mapFiltersOpen" class="px-3 sm:px-4 py-2.5 border-b shrink-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 bg-card/40">
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">State</Label>
+          <Select :model-value="f.state || '__all__'" @update:model-value="(v: string) => setFilter('state', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All states" /></SelectTrigger><SelectContent><SelectItem value="__all__">All states</SelectItem><SelectItem v-for="s in filters.states" :key="s.value" :value="s.value">{{ s.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">Office</Label>
+          <Select :model-value="f.office || '__all__'" @update:model-value="(v: string) => setFilter('office', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All offices" /></SelectTrigger><SelectContent><SelectItem value="__all__">All offices</SelectItem><SelectItem v-for="o in filters.offices" :key="o.value" :value="o.value">{{ o.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">PC</Label>
+          <Select :model-value="f.coordinator || '__all__'" @update:model-value="(v: string) => setFilter('coordinator', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All PCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All PCs</SelectItem><SelectItem v-for="c in filters.coordinators" :key="c.value" :value="c.value">{{ c.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">Closer</Label>
+          <Select :model-value="f.closer || '__all__'" @update:model-value="(v: string) => setFilter('closer', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All closers" /></SelectTrigger><SelectContent><SelectItem value="__all__">All closers</SelectItem><SelectItem v-for="c in filters.closers" :key="c.value" :value="c.value">{{ c.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">Lender</Label>
+          <Select :model-value="f.lender || '__all__'" @update:model-value="(v: string) => setFilter('lender', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All lenders" /></SelectTrigger><SelectContent><SelectItem value="__all__">All lenders</SelectItem><SelectItem v-for="l in filters.lenders" :key="l.value" :value="l.value">{{ l.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">EPC</Label>
+          <Select :model-value="f.epc || '__all__'" @update:model-value="(v: string) => setFilter('epc', v)"><SelectTrigger class="h-8 text-xs"><SelectValue placeholder="All EPCs" /></SelectTrigger><SelectContent><SelectItem value="__all__">All EPCs</SelectItem><SelectItem v-for="e in filters.epcs" :key="e.value" :value="e.value">{{ e.value }}</SelectItem></SelectContent></Select></div>
+        <div class="space-y-1 col-span-2"><Label class="text-[9px] uppercase tracking-widest text-muted-foreground font-semibold">Date</Label>
+          <div class="flex items-center gap-1">
+            <Select :model-value="f.dateField" @update:model-value="(v: string) => { f.dateField = v }"><SelectTrigger class="h-8 text-[11px] w-auto min-w-[100px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem v-for="d in dateFieldOptions" :key="d.value" :value="d.value">{{ d.label }}</SelectItem></SelectContent></Select>
+            <Input v-model="f.dateFrom" type="date" class="h-8 w-[120px] text-[11px]" />
+            <Input v-model="f.dateTo" type="date" class="h-8 w-[120px] text-[11px]" />
+            <button v-if="f.dateFrom || f.dateTo" class="text-[11px] text-muted-foreground hover:text-foreground" @click="f.dateFrom = ''; f.dateTo = ''">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overlay: problems (amber) + scheduled-soon (green). "Overlay only" hides healthy pins. -->
+      <div class="flex items-center gap-1.5 flex-wrap px-3 sm:px-4 py-2 border-b shrink-0 bg-card/40 overflow-x-auto no-scrollbar">
+        <button class="inline-flex items-center gap-1.5 rounded-full border px-2.5 h-7 text-[11px] font-medium cursor-pointer transition-colors shrink-0" :class="overlayOnly ? 'bg-amber-500 text-white border-amber-500' : 'hover:bg-muted'" @click="overlayOnly = !overlayOnly">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Overlay only <span class="tabular-nums opacity-80">{{ mapOverlayShownCount }}</span>
+        </button>
+        <span class="text-[10px] text-muted-foreground shrink-0 ml-1">Problems:</span>
+        <button v-for="pd in PROBLEM_DEFS" :key="pd.key"
+          class="inline-flex items-center gap-1 rounded-full border px-2 h-6 text-[10.5px] font-medium cursor-pointer transition-colors shrink-0"
+          :class="activeOverlays.has(pd.key) ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800' : 'text-muted-foreground border-transparent hover:bg-muted opacity-70'"
+          @click="toggleOverlay(pd.key)">
+          {{ pd.label }}<span class="tabular-nums opacity-70">{{ overlayCounts[pd.key] || 0 }}</span>
+        </button>
+        <span class="text-[10px] text-muted-foreground shrink-0 ml-1">Scheduled:</span>
+        <button v-for="sd in SCHEDULED_DEFS" :key="sd.key"
+          class="inline-flex items-center gap-1 rounded-full border px-2 h-6 text-[10.5px] font-medium cursor-pointer transition-colors shrink-0"
+          :class="activeOverlays.has(sd.key) ? 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' : 'text-muted-foreground border-transparent hover:bg-muted opacity-70'"
+          @click="toggleOverlay(sd.key)">
+          {{ sd.label }}<span class="tabular-nums opacity-70">{{ overlayCounts[sd.key] || 0 }}</span>
+        </button>
+      </div>
+
+      <div class="relative flex-1 min-h-0">
+        <div v-if="mapLoading" class="absolute inset-0 z-[500] flex items-center justify-center bg-background/60 text-sm text-muted-foreground">Loading map…</div>
+        <div v-else-if="!mapPoints.length" class="absolute inset-0 z-[500] flex items-center justify-center text-sm text-muted-foreground">No projects with coordinates for these filters.</div>
+        <div v-else-if="!mapDisplayPoints.length" class="absolute inset-0 z-[500] flex items-center justify-center text-sm text-muted-foreground">No projects match the selected problems.</div>
+        <ProjectsMap :points="mapDisplayPoints" @select="openProjectPeek" />
+      </div>
+    </div>
+
+    <!-- Shared project snapshot drawer — opened from a map pin -->
+    <ProjectDetailDialog
+      :project="selectedPeekProject"
+      @update:open="(v: boolean) => { if (!v) selectedPeekProject = null }"
     />
   </div>
 </template>

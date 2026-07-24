@@ -142,6 +142,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_pc_name ON project_cache(customer_name C
     'project_number', 'max_arrivy_task_id',
     // QB formula field — days since cancel_date.
     'days_since_cancel',
+    // Geo coordinates (QB client-contact lookup) — drive the projects map.
+    'lat', 'lng',
   ]
   for (const c of FUNDING_REAL) addIfMissing(c, 'REAL')
   const FUNDING_BOOL = ['is_funded', 'm1_ready', 'm2_ready', 'm3_ready']
@@ -397,6 +399,10 @@ const fieldMap: Array<{ fid: number; col: string }> = [
   // the QB side).
   { fid: 2568, col: 'status_exclusion' },   // Status Exclusion Logic
   { fid: 2569, col: 'general_archive' },    // General Archive Logic
+
+  // Geo coordinates (lookups from the residential client contact) — projects map.
+  { fid: 2365, col: 'lat' },
+  { fid: 2366, col: 'lng' },
 ]
 
 // De-dupe: fid 5 appears twice in fieldMap (name + email columns) and
@@ -426,6 +432,8 @@ const NUMERIC_AMOUNT_COLS = new Set([
   'project_number', 'max_arrivy_task_id',
   // QB formula field — integer days
   'days_since_cancel',
+  // Geo coordinates → store as numbers for the map.
+  'lat', 'lng',
 ])
 // Boolean columns (true/false from QB checkboxes) → 0/1.
 const BOOLEAN_COLS = new Set([
@@ -1442,6 +1450,257 @@ async function refreshCache(): Promise<{ total: number; duration: number }> {
 }
 
 // ─── API Routes ──────────────────────────────────────────
+
+// ─── Geo hydration ───────────────────────────────────────────
+// QB carries lat/lng for ~all projects (a client-contact lookup). The few
+// without get a free US Census geocode from their address, cached in
+// project_geocode — a separate table so a QB refresh (which re-nulls
+// project_cache.lat/lng) never loses the geocoded value. The map COALESCEs
+// project_cache coords with this fallback.
+db.exec(`CREATE TABLE IF NOT EXISTS project_geocode (
+  record_id INTEGER PRIMARY KEY,
+  address TEXT, lat REAL, lng REAL,
+  source TEXT, geocoded_at TEXT, failed INTEGER DEFAULT 0
+)`)
+// COALESCE expressions used by /geo — project_cache coord, else the geocode fallback.
+const GEO_LAT = `COALESCE(lat, (SELECT lat FROM project_geocode g WHERE g.record_id = project_cache.record_id))`
+const GEO_LNG = `COALESCE(lng, (SELECT lng FROM project_geocode g WHERE g.record_id = project_cache.record_id))`
+
+async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const url = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(address)}&benchmark=Public_AR_Current&format=json`
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
+    if (!res.ok) return null
+    const d = await res.json() as { result?: { addressMatches?: Array<{ coordinates?: { x: number; y: number } }> } }
+    const c = d.result?.addressMatches?.[0]?.coordinates
+    if (c && Number.isFinite(c.y) && Number.isFinite(c.x)) return { lat: c.y, lng: c.x }
+    return null
+  } catch { return null }
+}
+
+let hydrating = false
+// Geocode project_cache rows that still lack coordinates. Skips already-resolved
+// rows; retries prior failures after 7 days. Serial + gently rate-limited.
+async function hydrateProjectCoords(limit = 100): Promise<{ attempted: number; geocoded: number; failed: number }> {
+  if (hydrating) return { attempted: 0, geocoded: 0, failed: 0 }
+  hydrating = true
+  try {
+    const rows = db.prepare(`
+      SELECT pc.record_id AS rid, pc.customer_address AS addr
+      FROM project_cache pc
+      LEFT JOIN project_geocode g ON g.record_id = pc.record_id
+      WHERE (pc.lat IS NULL OR pc.lng IS NULL)
+        AND pc.customer_address IS NOT NULL AND pc.customer_address != ''
+        AND (g.record_id IS NULL OR (g.lat IS NULL AND (g.geocoded_at IS NULL OR g.geocoded_at < datetime('now','-7 days'))))
+      LIMIT ?
+    `).all(limit) as Array<{ rid: number; addr: string }>
+    const upsert = db.prepare(`
+      INSERT INTO project_geocode (record_id, address, lat, lng, source, geocoded_at, failed)
+      VALUES (?, ?, ?, ?, 'census', datetime('now'), ?)
+      ON CONFLICT(record_id) DO UPDATE SET
+        address=excluded.address, lat=excluded.lat, lng=excluded.lng,
+        source=excluded.source, geocoded_at=excluded.geocoded_at, failed=excluded.failed`)
+    let geocoded = 0, failed = 0
+    for (const r of rows) {
+      const c = await geocodeAddress(r.addr)
+      if (c) { upsert.run(r.rid, r.addr, c.lat, c.lng, 0); geocoded++ }
+      else { upsert.run(r.rid, r.addr, null, null, 1); failed++ }
+      await new Promise(resolve => setTimeout(resolve, 120)) // polite to the free Census service
+    }
+    return { attempted: rows.length, geocoded, failed }
+  } finally { hydrating = false }
+}
+
+// Build the same WHERE/params the list route (router.get('/') below) applies,
+// so the /geo map endpoint filters identically. KEEP IN SYNC with the inline
+// filter block in router.get('/') — this mirrors it verbatim (favorites, q,
+// status, dimensions, dates, referral gating, pipeline shortcuts).
+function buildProjectWhere(req: Request): { where: string; params: unknown[] } {
+  const userId = req.user!.userId
+  const referral = isReferralAgent(req)
+  const q = (req.query['q'] as string || '').trim().toLowerCase()
+  const statusList = (req.query['status'] as string || '').split(',').map(s => s.trim()).filter(Boolean)
+  const statusMode = req.query['status_mode'] === 'exclude' ? 'exclude' : 'include'
+  const office = req.query['office'] as string | undefined
+  const coordinator = req.query['coordinator'] as string | undefined
+  const state = req.query['state'] as string | undefined
+  const closer = req.query['closer'] as string | undefined
+  const epc = req.query['epc'] as string | undefined
+  const lender = req.query['lender'] as string | undefined
+  const salesFrom = req.query['sales_from'] as string | undefined
+  const salesTo = req.query['sales_to'] as string | undefined
+  const surveyFrom = req.query['survey_from'] as string | undefined
+  const surveyTo = req.query['survey_to'] as string | undefined
+  const installFrom = req.query['install_from'] as string | undefined
+  const installTo = req.query['install_to'] as string | undefined
+  const installDoneFrom = req.query['install_done_from'] as string | undefined
+  const installDoneTo = req.query['install_done_to'] as string | undefined
+  const permitSubFrom = req.query['permit_sub_from'] as string | undefined
+  const permitSubTo = req.query['permit_sub_to'] as string | undefined
+  const permitApprFrom = req.query['permit_appr_from'] as string | undefined
+  const permitApprTo = req.query['permit_appr_to'] as string | undefined
+  const inspectionFrom = req.query['inspection_from'] as string | undefined
+  const inspectionTo = req.query['inspection_to'] as string | undefined
+  const ptoFrom = req.query['pto_from'] as string | undefined
+  const ptoTo = req.query['pto_to'] as string | undefined
+  const pipeline = req.query['pipeline'] as string | undefined
+  const favoritesOnly = req.query['favorites'] === '1'
+  const batteryOnly = req.query['battery_only'] === '1'
+
+  let where = 'WHERE 1=1 AND (test_project IS NULL OR test_project = 0)'
+  const params: unknown[] = []
+
+  if (favoritesOnly) {
+    const favIds = (db.prepare('SELECT project_id FROM favorites WHERE user_id = ?').all(userId) as Array<{ project_id: number }>).map(f => f.project_id)
+    if (favIds.length === 0) where += ' AND 1=0'
+    else { where += ` AND record_id IN (${favIds.map(() => '?').join(',')})`; params.push(...favIds) }
+  }
+  if (q) {
+    where += ` AND (
+      LOWER(customer_name) LIKE ? OR
+      LOWER(customer_address) LIKE ? OR
+      LOWER(email) LIKE ? OR
+      REPLACE(REPLACE(phone, '-', ''), ' ', '') LIKE ? OR
+      CAST(record_id AS TEXT) LIKE ?
+    )`
+    const like = `%${q}%`
+    const phoneLike = `%${q.replace(/[-\s()]/g, '')}%`
+    params.push(like, like, like, phoneLike, like)
+  }
+  if (statusList.length > 0 && !referral) {
+    const ph = statusList.map(() => '?').join(',')
+    where += statusMode === 'exclude' ? ` AND status NOT IN (${ph})` : ` AND status IN (${ph})`
+    params.push(...statusList)
+  }
+  if (office) { where += ' AND sales_office = ?'; params.push(office) }
+  if (coordinator) { where += ' AND coordinator = ?'; params.push(coordinator) }
+  if (state) { where += ' AND state = ?'; params.push(state) }
+  if (closer) { where += ' AND closer = ?'; params.push(closer) }
+  if (lender) { where += ' AND lender = ?'; params.push(lender) }
+  if (epc) { where += ' AND epc = ?'; params.push(epc) }
+  if (batteryOnly) { where += ' AND system_size_kw < 1 AND record_id IN (SELECT project_rid FROM battery_project)' }
+  if (salesFrom) { where += " AND sales_date >= ?"; params.push(salesFrom) }
+  if (salesTo) { where += " AND sales_date <= ?"; params.push(salesTo) }
+  if (surveyFrom) { where += " AND survey_scheduled >= ?"; params.push(surveyFrom) }
+  if (surveyTo) { where += " AND survey_scheduled <= ?"; params.push(surveyTo) }
+  if (installFrom) { where += " AND install_scheduled >= ?"; params.push(installFrom) }
+  if (installTo) { where += " AND install_scheduled <= ?"; params.push(installTo) }
+  if (installDoneFrom) { where += " AND install_completed >= ?"; params.push(installDoneFrom) }
+  if (installDoneTo) { where += " AND install_completed <= ?"; params.push(installDoneTo) }
+  if (permitSubFrom) { where += " AND permit_submitted >= ?"; params.push(permitSubFrom) }
+  if (permitSubTo) { where += " AND permit_submitted <= ?"; params.push(permitSubTo) }
+  if (permitApprFrom) { where += " AND permit_approved >= ?"; params.push(permitApprFrom) }
+  if (permitApprTo) { where += " AND permit_approved <= ?"; params.push(permitApprTo) }
+  if (inspectionFrom) { where += " AND inspection_scheduled >= ?"; params.push(inspectionFrom) }
+  if (inspectionTo) { where += " AND inspection_scheduled <= ?"; params.push(inspectionTo) }
+  if (ptoFrom && !referral) { where += " AND pto_approved >= ?"; params.push(ptoFrom) }
+  if (ptoTo && !referral) { where += " AND pto_approved <= ?"; params.push(ptoTo) }
+  if (referral) { where += ` AND ${activationWhere()}` }
+
+  const today = todayIso()
+  const hasV = (col: string) => `(${col} IS NOT NULL AND ${col} != '' AND ${col} != '0')`
+  const noV = (col: string) => `(${col} IS NULL OR ${col} = '' OR ${col} = '0')`
+  if (pipeline === 'preInstall') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${noV('install_scheduled')} AND ${noV('install_completed')}`
+  } else if (pipeline === 'hold') {
+    where += ` AND LOWER(status) LIKE '%hold%' AND ${noV('install_scheduled')}`
+  } else if (pipeline === 'futureInstall') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled >= '${today}' AND ${noV('install_completed')}`
+  } else if (pipeline === 'wip') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_scheduled')} AND install_scheduled < '${today}' AND ${noV('install_completed')}`
+  } else if (pipeline === 'needInspx') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('install_completed')} AND ${noV('inspection_passed')}`
+  } else if (pipeline === 'needPto') {
+    where += ` AND (LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%') AND ${hasV('inspection_passed')} AND ${noV('pto_approved')}`
+  }
+  return { where, params }
+}
+
+// Filtered projects with coordinates, for the map. Honors the exact same
+// filters as the list. Only rows with lat+lng are returned; `missingCoords`
+// reports how many matched the filter but have no coordinates yet.
+// Defined before '/:id' so "geo" isn't swallowed as a record id.
+// Field-actionable problem flags (space-joined; split client-side). Each uses
+// the SAME definition the corresponding dashboard uses, so a project flagged
+// here is the exact record shown there:
+//   m2_funds / m3_funds — funding "Not Ready" bucket (funding.ts M2:notReady /
+//                          M3:notReady) within its BASE_WHERE scope.
+//   pto  — PTO dashboard "stale" bucket: submitted, not approved, 30+ days.
+//   inspx — INSPX dashboard "failed" bucket: has an inspx fail date, not passed.
+// Built per-request because the PTO rule needs today's date.
+function buildProblemsSql(): string {
+  const today = todayIso()
+  const has = (c: string) => `(${c} IS NOT NULL AND ${c} != '' AND ${c} != '0')`
+  const noV = (c: string) => `(${c} IS NULL OR ${c} = '' OR ${c} = '0')`
+  const FUND = `epc = 'Kin Home' AND (test_project IS NULL OR test_project = 0) AND (is_funded IS NULL OR is_funded != 1) AND (status_exclusion IS NULL OR status_exclusion != 1) AND (general_archive IS NULL OR general_archive != 1)`
+  const LIVE = `(LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%' OR LOWER(status) LIKE '%complete%')`
+  return `TRIM(
+    (CASE WHEN ${FUND} AND m2_status = 'Not Ready for M2' THEN 'm2_funds ' ELSE '' END) ||
+    (CASE WHEN ${FUND} AND m3_status = 'Not Ready for M3' THEN 'm3_funds ' ELSE '' END) ||
+    (CASE WHEN ${LIVE} AND ${has('pto_submitted')} AND ${noV('pto_approved')} AND JULIANDAY('${today}') - JULIANDAY(pto_submitted) >= 30 THEN 'pto ' ELSE '' END) ||
+    (CASE WHEN ${LIVE} AND ${has('inspx_fail_date')} AND ${noV('inspection_passed')} THEN 'inspx ' ELSE '' END)
+  )`
+}
+
+// Scheduled-soon flags: an inspection or install scheduled today or tomorrow, on
+// a live project. Drives the "do it while you're nearby" overlay.
+function buildScheduledSql(): string {
+  const today = todayIso()
+  const d = new Date(`${today}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)
+  const tomorrow = d.toISOString().slice(0, 10)
+  const LIVE = `(LOWER(status) = 'active' OR LOWER(status) LIKE '%hold%')`
+  return `TRIM(
+    (CASE WHEN ${LIVE} AND substr(inspection_scheduled,1,10) IN ('${today}','${tomorrow}') THEN 'insp_soon ' ELSE '' END) ||
+    (CASE WHEN ${LIVE} AND substr(install_scheduled,1,10) IN ('${today}','${tomorrow}') THEN 'install_soon ' ELSE '' END)
+  )`
+}
+
+router.get('/geo', (req: Request, res: Response): void => {
+  const PROBLEMS = buildProblemsSql()
+  const SCHEDULED = buildScheduledSql()
+  // overlay=1 → the opportunity layer, INDEPENDENT of the page's list filters:
+  // every project with a field-actionable problem OR scheduled soon (a crew
+  // nearby can act on any of them, whatever the list is filtered to). Otherwise
+  // the map honors the page filters exactly.
+  let where: string, params: unknown[]
+  if (req.query['overlay'] === '1') {
+    where = `WHERE (test_project IS NULL OR test_project = 0)${isReferralAgent(req) ? ` AND ${activationWhere()}` : ''} AND (${PROBLEMS} != '' OR ${SCHEDULED} != '')`
+    params = []
+  } else {
+    ({ where, params } = buildProjectWhere(req))
+  }
+  const CAP = 5000
+  const rows = db.prepare(`
+    SELECT record_id, customer_name, customer_address, status,
+      ${GEO_LAT} AS lat, ${GEO_LNG} AS lng,
+      (system_size_kw < 1 AND record_id IN (SELECT project_rid FROM battery_project)) AS battery_only,
+      ${PROBLEMS} AS problems_str, ${SCHEDULED} AS scheduled_str
+    FROM project_cache
+    ${where} AND ${GEO_LAT} IS NOT NULL AND ${GEO_LNG} IS NOT NULL
+    ORDER BY ((${PROBLEMS} != '') OR (${SCHEDULED} != '')) DESC, record_id DESC
+    LIMIT ${CAP}
+  `).all(...params) as Array<{ record_id: number; customer_name: string; customer_address: string; status: string; lat: number; lng: number; battery_only: number; problems_str: string | null; scheduled_str: string | null }>
+  const points = rows.map(r => ({
+    record_id: r.record_id, customer_name: r.customer_name, customer_address: r.customer_address,
+    status: r.status, lat: r.lat, lng: r.lng, battery_only: r.battery_only,
+    problems: (r.problems_str || '').split(' ').filter(Boolean),
+    scheduled: (r.scheduled_str || '').split(' ').filter(Boolean),
+  }))
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM project_cache ${where}`).get(...params) as { n: number }).n
+  const withCoords = (db.prepare(`SELECT COUNT(*) AS n FROM project_cache ${where} AND ${GEO_LAT} IS NOT NULL AND ${GEO_LNG} IS NOT NULL`).get(...params) as { n: number }).n
+  res.json({ points, plotted: points.length, total, withCoords, missingCoords: total - withCoords, capped: withCoords > points.length })
+  // Lazy self-heal: geocode a few still-missing rows in the background.
+  if (total - withCoords > 0) void hydrateProjectCoords(20)
+})
+
+// Manual coordinate hydration — geocode project_cache rows still missing lat/lng.
+// Admin-only; also runs lazily from /geo and can be scheduled.
+router.post('/hydrate-coords', async (req: Request, res: Response): Promise<void> => {
+  if (!req.user?.roles.includes('admin')) { res.status(403).json({ error: 'Admin only' }); return }
+  const limit = Math.min(parseInt(req.query['limit'] as string) || 500, 2000)
+  const result = await hydrateProjectCoords(limit)
+  res.json(result)
+})
 
 // Get projects from cache with search + filters
 router.get('/', (req: Request, res: Response): void => {
