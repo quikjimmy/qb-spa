@@ -147,7 +147,7 @@ async function fetchArrivyFor(ridSet: Set<string>): Promise<Map<string, AT>> {
   return arrivy
 }
 
-interface P { crew: string; customer: string; installDate: string; kw: number; batteryOnly: boolean; passed: boolean; failedOpen: boolean; firstTime: boolean; daysI2I: number | null; permitAtInstall: boolean; ptoApproved: boolean; ptoStatus: string; rolls: number; oneTouch: boolean; onRoute: boolean; onSite: boolean; submitted: boolean; techComplete: boolean; rtr: '' | 'Pass' | 'Fail' | 'Coach' }
+interface P { recordId: number; crew: string; customer: string; installDate: string; kw: number; batteryOnly: boolean; passed: boolean; failedOpen: boolean; firstTime: boolean; daysI2I: number | null; permitAtInstall: boolean; ptoApproved: boolean; ptoStatus: string; rolls: number; oneTouch: boolean; onRoute: boolean; onSite: boolean; submitted: boolean; techComplete: boolean; rtr: '' | 'Pass' | 'Fail' | 'Coach' }
 function toProject(r: CohortRow, a: AT | undefined): P {
   const crew = (a?.crew || '').trim() || 'Unassigned'
   const post = a?.post ?? []
@@ -163,7 +163,7 @@ function toProject(r: CohortRow, a: AT | undefined): P {
   const oneTouch = post.filter(t => !/inspection/i.test(t)).length === 0 // only inspections (or nothing) = 1-touch
   const ptoApproved = !!(r.pto_approved && r.pto_approved.trim())
   const ptoStatus = ptoApproved ? 'Approved' : (r.pto_submitted && r.pto_submitted.trim()) ? 'Submitted' : 'None'
-  return { crew, customer: r.customer_name || '', installDate: r.install_completed.slice(0, 10), kw: Number(r.system_size_kw) || 0, batteryOnly: !!r.battery_only, passed, failedOpen, firstTime, daysI2I, permitAtInstall, ptoApproved, ptoStatus, rolls: post.length, oneTouch, onRoute: !!a?.onRoute, onSite: !!a?.onSite, submitted: !!a?.submitted, techComplete: !!a?.techComplete, rtr: a?.rtr ?? '' }
+  return { recordId: r.record_id, crew, customer: r.customer_name || '', installDate: r.install_completed.slice(0, 10), kw: Number(r.system_size_kw) || 0, batteryOnly: !!r.battery_only, passed, failedOpen, firstTime, daysI2I, permitAtInstall, ptoApproved, ptoStatus, rolls: post.length, oneTouch, onRoute: !!a?.onRoute, onSite: !!a?.onSite, submitted: !!a?.submitted, techComplete: !!a?.techComplete, rtr: a?.rtr ?? '' }
 }
 
 // Cohort-wide headline metrics (also computed per weekly bucket by /trend).
@@ -382,7 +382,7 @@ router.get('/overview', async (req: Request, res: Response): Promise<void> => {
     ) => {
       const gaps: number[] = []
       let fieldReached = 0, requested = 0, openCount = 0, cantSubmitCount = 0, delayedCount = 0
-      type Row = { customer: string; state: string; installDate: string; days: number; status: string; resolved: boolean }
+      type Row = { recordId: number; customer: string; state: string; installDate: string; days: number; status: string; resolved: boolean }
       const delayed: Row[] = []
       const open: Row[] = [] // milestone reached, not yet requested, not formally Not-Ready
       for (const r of cohort) {
@@ -393,7 +393,7 @@ router.get('/overview', async (req: Request, res: Response): Promise<void> => {
         const reached = !!mDate
         if (reached) fieldReached++
         const req = (requestedDate(r) || '').trim()
-        const base = { customer: r.customer_name || '', state: (r.state || '').trim(), installDate: r.install_completed.slice(0, 10) }
+        const base = { recordId: r.record_id, customer: r.customer_name || '', state: (r.state || '').trim(), installDate: r.install_completed.slice(0, 10) }
         let isDelayed = false, days = 0, resolved = false
         if (req) {
           requested++
@@ -430,7 +430,7 @@ router.get('/overview', async (req: Request, res: Response): Promise<void> => {
 
     // ── Per-project rows for the crew drill-down ──
     const projectsOut = projects.map(p => ({
-      crew: p.crew, type: crewType(p.crew), customer: p.customer, installDate: p.installDate, kw: p.kw,
+      recordId: p.recordId, crew: p.crew, type: crewType(p.crew), customer: p.customer, installDate: p.installDate, kw: p.kw,
       passed: p.passed, firstTime: p.firstTime, daysI2I: p.daysI2I, permitAtInstall: p.permitAtInstall, batteryOnly: p.batteryOnly, rolls: p.rolls, oneTouch: p.oneTouch, pto: p.ptoStatus,
     }))
 

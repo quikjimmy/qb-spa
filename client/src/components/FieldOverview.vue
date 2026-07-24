@@ -9,6 +9,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import MilestoneFilterBar, { type FilterDef } from '@/components/milestone/MilestoneFilterBar.vue'
 import MarkdownMessage from '@/components/chat/MarkdownMessage.vue'
+import ProjectDetailDialog from '@/components/milestone/ProjectDetailDialog.vue'
 import { renderMarkdown } from '@/lib/markdown'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -27,14 +28,14 @@ interface Crew {
 }
 type CrewTotals = Omit<Crew, 'crew' | 'type' | 'techCompletePct' | 'oneTouchRate'>
 interface SegMetrics { installs: number; kw: number; firstTimeRate: number; avgRolls: number; avgDaysI2I: number; ptoRate: number }
-interface Proj { crew: string; type: string; customer: string; installDate: string; kw: number; passed: boolean; firstTime: boolean; daysI2I: number | null; rolls: number; oneTouch: boolean; pto: string }
-interface FundRow { customer: string; state: string; installDate: string; days: number; status: string; resolved: boolean }
+interface Proj { recordId: number; crew: string; type: string; customer: string; installDate: string; kw: number; passed: boolean; firstTime: boolean; daysI2I: number | null; rolls: number; oneTouch: boolean; pto: string }
+interface FundRow { recordId: number; customer: string; state: string; installDate: string; days: number; status: string; resolved: boolean }
 interface FundDelay {
   cohortSize: number; fieldReached: number; requested: number; avgGapDays: number
   openCount: number; cantSubmitCount: number; delayRate: number; delayedCount: number
   delayed: FundRow[]
   open: FundRow[]
-  notReady: Array<{ customer: string; state: string; status: string; lender: string; installDate: string }>
+  notReady: Array<{ recordId: number; customer: string; state: string; status: string; lender: string; installDate: string }>
 }
 interface Overview {
   from: string; to: string
@@ -180,6 +181,19 @@ const METHODOLOGY = [
 // emerald (high/mature). Emerald here signals data completeness, not KPI value.
 function maturityTone(pct: number) { return pct < 25 ? 'text-rose-600' : pct < 50 ? 'text-amber-600' : 'text-emerald-600' }
 
+// ── Project drawer (shared ProjectDetailDialog) — click any listed project ──
+type PeekRow = Record<string, unknown> & { record_id: number; customer_name: string }
+const selectedPeekProject = ref<PeekRow | null>(null)
+async function openProjectPeek(rid: number) {
+  if (!Number.isFinite(rid) || rid <= 0) return
+  try {
+    const res = await fetch(`/api/projects/${rid}?live=0`, { headers: { Authorization: `Bearer ${auth.token}` } })
+    if (!res.ok) return
+    const d = await res.json() as { project?: PeekRow }
+    if (d.project) selectedPeekProject.value = d.project
+  } catch { /* silent — row stays clickable for retry */ }
+}
+
 // ── Crew drill-down ──
 const selectedCrew = ref<string | null>(null)
 function toggleCrew(c: string) { selectedCrew.value = selectedCrew.value === c ? null : c }
@@ -253,7 +267,7 @@ function toggleDrill(m: string, kind: DrillKind) {
 }
 function drillActive(m: string, kind: DrillKind) { return fundingDrill.value?.m === m && fundingDrill.value.kind === kind }
 const DRILL_LABEL: Record<DrillKind, string> = { delay: 'Delayed installs', open: 'Open — awaiting request', notReady: 'Not Ready — all active' }
-function drillRows(col: { m: string; d: FundDelay }): Array<{ customer: string; state: string; installDate?: string; days?: number; status: string; resolved?: boolean; lender?: string }> {
+function drillRows(col: { m: string; d: FundDelay }): Array<{ recordId: number; customer: string; state: string; installDate?: string; days?: number; status: string; resolved?: boolean; lender?: string }> {
   if (fundingDrill.value?.m !== col.m) return []
   const k = fundingDrill.value.kind
   return k === 'delay' ? col.d.delayed : k === 'open' ? col.d.open : col.d.notReady
@@ -822,7 +836,7 @@ const trendOptionLarge = computed(() => {
               </thead>
               <tbody class="divide-y">
                 <tr v-for="(p, i) in crewProjects" :key="i" class="hover:bg-muted/30">
-                  <td class="sticky left-0 z-10 bg-card border-r border-border/50 px-3 py-1.5 font-medium whitespace-nowrap">{{ p.customer || '—' }}</td>
+                  <td class="sticky left-0 z-10 bg-card border-r border-border/50 px-3 py-1.5 whitespace-nowrap"><button type="button" class="font-medium text-left hover:text-primary hover:underline cursor-pointer" @click.stop="openProjectPeek(p.recordId)">{{ p.customer || '—' }}</button></td>
                   <td class="px-2 py-1.5 tabular-nums text-muted-foreground whitespace-nowrap">{{ p.installDate }}</td>
                   <td class="px-2 py-1.5 text-right tabular-nums">{{ p.kw }}</td>
                   <td class="px-2 py-1.5 text-center">{{ !p.passed ? '—' : p.firstTime ? '✓' : '↺' }}</td>
@@ -893,7 +907,7 @@ const trendOptionLarge = computed(() => {
                   </thead>
                   <tbody class="divide-y">
                     <tr v-for="(r, i) in drillRows(col)" :key="i" :class="r.resolved ? 'opacity-60' : ''">
-                      <td class="sticky left-0 z-10 bg-card border-r border-border/50 px-2 py-1 font-medium whitespace-nowrap">{{ r.customer || '—' }}<span v-if="r.state" class="text-muted-foreground font-normal"> · {{ r.state }}</span></td>
+                      <td class="sticky left-0 z-10 bg-card border-r border-border/50 px-2 py-1 whitespace-nowrap"><button type="button" class="font-medium text-left hover:text-primary hover:underline cursor-pointer" @click="openProjectPeek(r.recordId)">{{ r.customer || '—' }}</button><span v-if="r.state" class="text-muted-foreground font-normal"> · {{ r.state }}</span></td>
                       <template v-if="fundingDrill.kind === 'notReady'"><td class="px-2 py-1 text-muted-foreground whitespace-nowrap">{{ r.lender || '—' }}</td></template>
                       <template v-else>
                         <td class="px-2 py-1 tabular-nums text-muted-foreground whitespace-nowrap">{{ r.installDate }}</td>
@@ -1003,6 +1017,12 @@ const trendOptionLarge = computed(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- Shared project snapshot drawer — opens when any listed project is clicked -->
+    <ProjectDetailDialog
+      :project="selectedPeekProject"
+      @update:open="(v: boolean) => { if (!v) selectedPeekProject = null }"
+    />
   </div>
 </template>
 

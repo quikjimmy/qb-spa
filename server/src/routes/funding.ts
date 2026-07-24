@@ -172,17 +172,17 @@ export function bucketSummary(key: string, filters: DashFilters = {}): { count: 
 
 // The individual project rows behind a bucket — same scope/definition as
 // bucketSummary. statusCol is the milestone status shown per row.
-export function bucketRows(key: string, statusCol: 'm2_status' | 'm3_status', filters: DashFilters = {}, limit = 300): Array<{ customer: string; state: string; status: string; lender: string; installDate: string }> {
+export function bucketRows(key: string, statusCol: 'm2_status' | 'm3_status', filters: DashFilters = {}, limit = 300): Array<{ recordId: number; customer: string; state: string; status: string; lender: string; installDate: string }> {
   const def = BUCKETS[key]
   if (!def) return []
   const fc = filterClauses(filters)
   return db.prepare(`
-    SELECT COALESCE(customer_name,'') AS customer, COALESCE(state,'') AS state,
+    SELECT record_id AS recordId, COALESCE(customer_name,'') AS customer, COALESCE(state,'') AS state,
            COALESCE(${statusCol},'') AS status, COALESCE(lender,'') AS lender,
            COALESCE(substr(install_completed,1,10),'') AS installDate
     FROM project_cache ${BASE_WHERE} AND ${def.where}${fc.sql}
     ORDER BY customer_name LIMIT ?
-  `).all(...fc.params, limit) as Array<{ customer: string; state: string; status: string; lender: string; installDate: string }>
+  `).all(...fc.params, limit) as Array<{ recordId: number; customer: string; state: string; status: string; lender: string; installDate: string }>
 }
 
 function lenderBreakdown(milestone: Milestone, filters: DashFilters = {}) {
