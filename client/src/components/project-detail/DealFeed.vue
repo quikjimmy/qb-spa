@@ -200,7 +200,7 @@ function decorate(it: FeedRow): Decoration {
           type="button"
           class="rounded-full px-3 py-1 font-medium text-[11.5px] whitespace-nowrap shrink-0 transition-colors cursor-pointer border"
           :class="activeMulti.has(f.id)
-            ? 'bg-teal-700 text-white border-teal-700'
+            ? 'bg-slate-800 text-white border-slate-800'
             : 'bg-white text-slate-500 border-slate-200 hover:text-slate-900 hover:bg-slate-50'"
           :aria-pressed="activeMulti.has(f.id)"
           @click="toggleMulti(f.id)"
@@ -217,7 +217,7 @@ function decorate(it: FeedRow): Decoration {
           :key="f.id"
           type="button"
           class="rounded-full px-3 py-1 font-medium text-[11.5px] whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-          :class="filter === f.id ? 'bg-teal-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'"
+          :class="filter === f.id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'"
           @click="filter = f.id"
         >{{ f.label }}</button>
       </template>

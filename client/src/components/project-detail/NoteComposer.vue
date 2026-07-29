@@ -539,7 +539,7 @@ async function post() {
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium cursor-pointer transition-colors"
-          :class="notifyPm ? 'bg-teal-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'"
+          :class="notifyPm ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'"
           :aria-pressed="notifyPm"
           @click="notifyPm = !notifyPm"
         >
@@ -549,7 +549,7 @@ async function post() {
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium cursor-pointer transition-colors"
-          :class="notifyRep ? 'bg-teal-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'"
+          :class="notifyRep ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'"
           :aria-pressed="notifyRep"
           @click="toggleNotifyRep"
         >
