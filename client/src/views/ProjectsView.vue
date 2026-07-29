@@ -685,7 +685,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="grid gap-2 sm:gap-3">
+  <div class="grid grid-cols-1 min-w-0 gap-2 sm:gap-3">
     <!-- Header (sticky so count stays visible on scroll) -->
     <div class="sticky top-0 z-20 bg-background flex items-center justify-between gap-3 -mx-3 px-3 sm:-mx-6 sm:px-6 py-2">
       <div class="flex flex-col gap-0.5 min-w-0">
