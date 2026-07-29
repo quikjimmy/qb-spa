@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>June 2026 Crew Lifecycle Scorecard V5 — KIN Home Solar</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --card-alt: #22262f; --border: #2d3139;
+    --text: #e4e6eb; --text-dim: #9ca3af; --accent: #f59e0b; --accent-dim: #b45309;
+    --green: #22c55e; --green-dim: #166534; --red: #ef4444; --red-dim: #991b1b;
+    --yellow: #eab308; --yellow-dim: #854d0e; --blue: #3b82f6; --blue-dim: #1e40af;
+    --orange: #f97316; --orange-dim: #9a3412; --purple: #a855f7; --purple-dim: #6b21a8;
+    --cyan: #06b6d4; --cyan-dim: #0e7490;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif; background:var(--bg); color:var(--text); line-height:1.6; padding:20px; max-width:1800px; margin:0 auto; }
+  h1 { font-size:1.8rem; margin-bottom:4px; }
+  h2 { font-size:1.4rem; margin:32px 0 16px; padding-bottom:8px; border-bottom:2px solid var(--border); }
+  h3 { font-size:1.15rem; margin:24px 0 12px; color:var(--text-dim); }
+  .header-meta { color:var(--text-dim); font-size:0.9rem; margin-bottom:24px; }
+  .v3-badge { display:inline-block; background:var(--accent-dim); color:var(--accent); padding:2px 10px; border-radius:4px; font-size:0.75rem; font-weight:700; margin-left:8px; vertical-align:middle; }
+  .new-tag { display:inline-block; background:var(--green-dim); color:var(--green); padding:1px 6px; border-radius:3px; font-size:0.65rem; font-weight:700; margin-left:6px; vertical-align:middle; }
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; margin-bottom:24px; }
+  .kpi-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; text-align:center; }
+  .kpi-card .label { font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px; }
+  .kpi-card .value { font-size:1.8rem; font-weight:700; }
+  .kpi-card .sub { font-size:0.75rem; color:var(--text-dim); margin-top:4px; }
+  .kpi-card.green .value { color:var(--green); } .kpi-card.red .value { color:var(--red); }
+  .kpi-card.yellow .value { color:var(--yellow); } .kpi-card.blue .value { color:var(--blue); }
+  .kpi-card.accent .value { color:var(--accent); } .kpi-card.cyan .value { color:var(--cyan); }
+  .kpi-card.purple .value { color:var(--purple); }
+  .funding-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px; }
+  .funding-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .funding-card .title { font-size:1.1rem; font-weight:700; margin-bottom:12px; text-align:center; }
+  .funding-card .stat-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); }
+  .funding-card .stat-row:last-child { border-bottom:none; }
+  .funding-card .stat-label { color:var(--text-dim); } .funding-card .stat-val { font-weight:600; }
+  .funding-card .funding-sub { font-size:0.82rem; color:var(--text-dim); margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+  .table-wrap { overflow-x:auto; margin-bottom:24px; border-radius:12px; border:1px solid var(--border); }
+  table { border-collapse:collapse; width:100%; font-size:0.82rem; }
+  thead { background:var(--card-alt); position:sticky; top:0; }
+  th { padding:10px 12px; text-align:left; font-weight:600; color:var(--text-dim); text-transform:uppercase; font-size:0.72rem; letter-spacing:0.04em; white-space:nowrap; border-bottom:2px solid var(--border); }
+  td { padding:8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  tr:hover { background:var(--card-alt); } tr:nth-child(even) { background:rgba(26,29,39,0.4); }
+  .badge { display:inline-block; padding:2px 10px; border-radius:100px; font-size:0.72rem; font-weight:600; white-space:nowrap; }
+  .badge-pass { background:var(--green-dim); color:var(--green); } .badge-fail { background:var(--red-dim); color:var(--red); }
+  .badge-pending { background:var(--yellow-dim); color:var(--yellow); } .badge-received { background:var(--green-dim); color:var(--green); }
+  .badge-approved { background:var(--blue-dim); color:var(--blue); } .badge-rejected { background:var(--red-dim); color:var(--red); }
+  .badge-waiting { background:var(--card-alt); color:var(--text-dim); } .badge-none { background:transparent; color:var(--text-dim); }
+  .badge-coach { background:var(--yellow-dim); color:var(--yellow); }
+  .best { color:var(--green); font-weight:700; }
+  .leaderboard td { text-align:center; } .leaderboard td:first-child { text-align:left; }
+  .cat-chart { margin-bottom:24px; } .cat-bar { display:flex; align-items:center; margin-bottom:8px; }
+  .cat-bar .cat-label { width:220px; font-size:0.85rem; flex-shrink:0; }
+  .cat-bar .cat-track { flex:1; background:var(--card-alt); border-radius:6px; height:28px; overflow:hidden; }
+  .cat-bar .cat-fill { height:100%; border-radius:6px; display:flex; align-items:center; padding-left:8px; font-size:0.78rem; font-weight:600; }
+  .cat-fill.c1 { background:var(--blue-dim); color:var(--blue); } .cat-fill.c2 { background:var(--orange-dim); color:var(--orange); }
+  .cat-fill.c3 { background:var(--purple-dim); color:var(--purple); } .cat-fill.c4 { background:var(--red-dim); color:var(--red); }
+  .cat-fill.c5 { background:var(--card-alt); color:var(--text-dim); border:1px solid var(--border); }
+  .cat-fill.c6 { background:var(--green-dim); color:var(--green); } .cat-fill.c7 { background:var(--yellow-dim); color:var(--yellow); }
+  .findings { display:grid; gap:12px; margin-bottom:24px; }
+  .finding { background:var(--card); border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:8px; padding:16px; }
+  .finding .num { color:var(--accent); font-weight:700; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px; }
+  .finding .title { font-weight:600; margin-bottom:4px; } .finding .desc { color:var(--text-dim); font-size:0.88rem; }
+  .finding.red { border-left-color:var(--red); } .finding.red .num { color:var(--red); }
+  .finding.green { border-left-color:var(--green); } .finding.green .num { color:var(--green); }
+  .finding.blue { border-left-color:var(--blue); } .finding.blue .num { color:var(--blue); }
+  .finding.cyan { border-left-color:var(--cyan); } .finding.cyan .num { color:var(--cyan); }
+  .finding.purple { border-left-color:var(--purple); } .finding.purple .num { color:var(--purple); }
+  .recs { display:grid; gap:12px; margin-bottom:24px; }
+  .rec { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .rec .rec-title { font-weight:600; margin-bottom:4px; color:var(--accent); } .rec .rec-desc { color:var(--text-dim); font-size:0.88rem; }
+  .footer { color:var(--text-dim); font-size:0.8rem; margin-top:40px; padding-top:16px; border-top:1px solid var(--border); }
+  .note-text { max-width:400px; white-space:normal; font-size:0.78rem; color:var(--text-dim); }
+  .data-quality-flag { background:var(--red-dim); border:1px solid var(--red); border-radius:8px; padding:12px 16px; margin-bottom:16px; color:var(--red); font-size:0.88rem; }
+  .data-quality-flag .flag-title { font-weight:700; margin-bottom:4px; }
+  .data-quality-note { background:var(--yellow-dim); border:1px solid var(--yellow); border-radius:8px; padding:12px 16px; margin-bottom:16px; color:var(--yellow); font-size:0.85rem; }
+  .data-quality-note .flag-title { font-weight:700; margin-bottom:4px; }
+  .tabs { display:flex; gap:4px; margin-bottom:16px; border-bottom:2px solid var(--border); flex-wrap:wrap; }
+  .tab { padding:10px 20px; cursor:pointer; font-size:0.9rem; font-weight:600; color:var(--text-dim); border-bottom:3px solid transparent; margin-bottom:-2px; transition:all 0.2s; }
+  .tab:hover { color:var(--text); } .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .tab-content { display:none; } .tab-content.active { display:block; }
+  .insp-breakdown { display:flex; gap:16px; margin-bottom:20px; flex-wrap:wrap; }
+  .insp-stat { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 24px; text-align:center; }
+  .insp-stat .num { font-size:2rem; font-weight:700; } .insp-stat .lbl { font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; margin-top:4px; }
+  .filter-bar { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+  .filter-group { display:flex; flex-direction:column; gap:4px; }
+  .filter-group label { font-size:0.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.04em; font-weight:600; }
+  .filter-group select, .filter-group input { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:var(--text); font-size:0.82rem; }
+  .filter-group select:focus, .filter-group input:focus { border-color:var(--accent); outline:none; }
+  .filter-group input[type="date"] { color-scheme:dark; }
+  .filter-reset { background:var(--card-alt); border:1px solid var(--border); border-radius:6px; padding:6px 14px; color:var(--text-dim); cursor:pointer; font-size:0.82rem; font-weight:600; }
+  .filter-reset:hover { color:var(--text); border-color:var(--accent); }
+  .filter-count { font-size:0.78rem; color:var(--text-dim); margin-left:auto; padding:6px 0; }
+  .util-table { font-size:0.78rem; }
+  .util-table th { text-align:center; }
+  .util-table td { text-align:center; padding:10px 8px; }
+  .util-table td.crew-name { text-align:left; font-weight:600; white-space:nowrap; }
+  .util-pct { font-size:0.7rem; color:var(--text-dim); display:block; margin-top:2px; }
+  .util-green { background:rgba(34,197,94,0.15); color:var(--green); }
+  .util-yellow { background:rgba(234,179,8,0.15); color:var(--yellow); }
+  .util-red { background:rgba(239,68,68,0.15); color:var(--red); }
+  .util-gray { background:var(--card-alt); color:var(--text-dim); }
+  .util-total { background:var(--card-alt); font-weight:700; }
+  .weekly-totals-row { border-top:2px solid var(--border); }
+  .weekly-totals-row td { font-weight:700; border-top:2px solid var(--border); }
+  .crew-type-badge { display:inline-block; padding:1px 8px; border-radius:100px; font-size:0.68rem; font-weight:700; }
+  .type-w2 { background:var(--blue-dim); color:var(--blue); }
+  .type-sub { background:var(--orange-dim); color:var(--orange); }
+  .type-unknown { background:var(--card-alt); color:var(--text-dim); }
+  .sub-w2-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-bottom:24px; }
+  .sub-w2-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; text-align:center; }
+  .sub-w2-card .title { font-size:1.2rem; font-weight:700; margin-bottom:12px; }
+  .sub-w2-card .stat { font-size:0.85rem; margin:8px 0; }
+  .sub-w2-card .stat .num { font-size:1.6rem; font-weight:700; }
+  .sub-w2-card .stat .lbl { color:var(--text-dim); font-size:0.78rem; }
+  .sub-w2-card.sub { border-left:4px solid var(--orange); }
+  .sub-w2-card.w2 { border-left:4px solid var(--blue); }
+  .util-legend { display:flex; gap:16px; margin-bottom:16px; font-size:0.78rem; color:var(--text-dim); flex-wrap:wrap; }
+  .util-legend-item { display:flex; align-items:center; gap:6px; }
+  .util-legend-swatch { width:16px; height:16px; border-radius:4px; }
+</style>
+</head>
+<body>
+
+<h1>⚡ June 2026 Crew Lifecycle Scorecard <span class="v3-badge" style="background:var(--green-dim);color:var(--green)">V5</span></h1>
+<div class="header-meta">
+  Generated 2026-07-21 &nbsp;|&nbsp; Cohort: 55 installs completed June 2026 &nbsp;|&nbsp; Data: QuickBase + Arrivy &nbsp;|&nbsp; Field Ops — Sparky &nbsp;|&nbsp; <span class="new-tag">V5: 1-Touch Fix (excl inspection)</span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('exec', this)">Exec Weekly Summary <span class="new-tag">V5</span></div>
+  <div class="tab" onclick="showTab('summary', this)">Summary Dashboard</div>
+  <div class="tab" onclick="showTab('crew', this)">Crew Leaderboard</div>
+  <div class="tab" onclick="showTab('service', this)">Service Visit Analysis</div>
+  <div class="tab" onclick="showTab('inspections', this)">Inspection Failures</div>
+  <div class="tab" onclick="showTab('funding', this)">Funding Rejections</div>
+  <div class="tab" onclick="showTab('findings', this)">Findings &amp; Recommendations</div>
+  <div class="tab" onclick="showTab('projects', this)">Per-Project Table</div>
+  <div class="tab" onclick="showTab('utilization', this)">Crew Utilization <span class="new-tag">NEW</span></div>
+</div>
+
+
+<!-- TAB 0: EXEC WEEKLY SUMMARY -->
+<div id="tab-exec" class="tab-content active">
+<h2>Exec Weekly Summary <span class="v3-badge" style="background:var(--green-dim);color:var(--green)">V5 — 1-Touch Fixed</span></h2>
+<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:20px;">
+  Week-by-week install performance in James's exec format. Data: Arrivy (scheduled/completed tasks) + QuickBase (system sizes, PTO dates). 1-touch = no post-install return trips excluding inspection accompaniment.
+</p>
+
+<div class="exec-week-card" style="background:var(--card);border:1px solid var(--border);border-left:4px solid var(--red);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June 1 - June 7</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 18.5kW 18%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 65.0kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    13/13 COMPLETE - 100% - 107.8kW/107.8kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    11/11 COMPLETE - 100% - 96.2kW/96.2kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    3 of 11 installs were 1-touch - 27%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:12px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 18.5)</span>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:var(--text-dim);font-size:0.82rem;font-weight:600;">Project Details (11 installs)</summary>
+    <div class="table-wrap" style="margin-top:8px;border:none;">
+    <table style="font-size:0.78rem;">
+    <thead><tr><th style="text-align:left">Customer</th><th>Date</th><th>Type</th><th>kW</th><th>1-Touch</th><th>Rolls</th></tr></thead>
+    <tbody>
+    <tr><td style="text-align:left">Stanley Hough</td><td>2026-06-01</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td>12.7</td><td><span class="badge badge-fail">N</span></td><td>2</td></tr>
+    <tr><td style="text-align:left">Kate Leeds</td><td>2026-06-01</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>10.2</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Maritza Ayala</td><td>2026-06-02</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>9.2</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Stephen Strout</td><td>2026-06-03</td><td><span class="crew-type-badge type-w2">W2</span></td><td>7.9</td><td><span class="badge badge-fail">N</span></td><td>2</td></tr>
+    <tr><td style="text-align:left">David Larsen</td><td>2026-06-03</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td>0.0</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Alexzander Stiles</td><td>2026-06-04</td><td><span class="crew-type-badge type-w2">W2</span></td><td>6.6</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Linda Marie Mendoza</td><td>2026-06-04</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>4.9</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Suzanne Anderson</td><td>2026-06-05</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>15.0</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Anthony Brown</td><td>2026-06-05</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>9.0</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">William Crenshaw</td><td>2026-06-05</td><td><span class="crew-type-badge type-w2">W2</span></td><td>4.0</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Leslie Weiland</td><td>2026-06-05</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>16.7</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<div class="exec-week-card" style="background:var(--card);border:1px solid var(--border);border-left:4px solid var(--red);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June 8 - June 14</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 40.0kW 40%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 40.9kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    14/14 COMPLETE - 100% - 150.9kW/150.9kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    8/8 COMPLETE - 100% - 80.9kW/80.9kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    3 of 8 installs were 1-touch - 38%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:12px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 40.0)</span>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:var(--text-dim);font-size:0.82rem;font-weight:600;">Project Details (8 installs)</summary>
+    <div class="table-wrap" style="margin-top:8px;border:none;">
+    <table style="font-size:0.78rem;">
+    <thead><tr><th style="text-align:left">Customer</th><th>Date</th><th>Type</th><th>kW</th><th>1-Touch</th><th>Rolls</th></tr></thead>
+    <tbody>
+    <tr><td style="text-align:left">Mary Schrayer</td><td>2026-06-08</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>8.8</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Jessica Cordero-Ramirez</td><td>2026-06-08</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>7.5</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Allen Marjama</td><td>2026-06-09</td><td><span class="crew-type-badge type-w2">W2</span></td><td>24.6</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">James Dick</td><td>2026-06-09</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>11.1</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Cynthia Johnston</td><td>2026-06-09</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>7.8</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Danielle Mcknight</td><td>2026-06-11</td><td><span class="crew-type-badge type-w2">W2</span></td><td>8.8</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Cheryl Rose</td><td>2026-06-12</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>5.7</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Michael Gomez</td><td>2026-06-12</td><td><span class="crew-type-badge type-w2">W2</span></td><td>6.6</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<div class="exec-week-card" style="background:var(--card);border:1px solid var(--border);border-left:4px solid var(--green);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June 15 - June 21</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 114.3kW 114%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 76.2kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    12/12 COMPLETE - 100% - 106.9kW/106.9kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    20/20 COMPLETE - 100% - 190.5kW/190.5kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    12 of 20 installs were 1-touch - 60%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:12px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 114.3)</span>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:var(--text-dim);font-size:0.82rem;font-weight:600;">Project Details (20 installs)</summary>
+    <div class="table-wrap" style="margin-top:8px;border:none;">
+    <table style="font-size:0.78rem;">
+    <thead><tr><th style="text-align:left">Customer</th><th>Date</th><th>Type</th><th>kW</th><th>1-Touch</th><th>Rolls</th></tr></thead>
+    <tbody>
+    <tr><td style="text-align:left">Cameron Liebman</td><td>2026-06-15</td><td><span class="crew-type-badge type-w2">W2</span></td><td>8.4</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Christopher Dipiero</td><td>2026-06-15</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>16.3</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Katherine Keeton</td><td>2026-06-15</td><td><span class="crew-type-badge type-w2">W2</span></td><td>29.0</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Jingyu Fan</td><td>2026-06-15</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>6.2</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Lorfy Delgado</td><td>2026-06-15</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>7.4</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Joseph Clanton</td><td>2026-06-15</td><td><span class="crew-type-badge type-w2">W2</span></td><td>8.8</td><td><span class="badge badge-fail">N</span></td><td>2</td></tr>
+    <tr><td style="text-align:left">EYAD SALHAB</td><td>2026-06-16</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>9.4</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Joseph Hophan</td><td>2026-06-16</td><td><span class="crew-type-badge type-w2">W2</span></td><td>8.6</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">William Junqueira</td><td>2026-06-16</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>5.7</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Roman Riebli</td><td>2026-06-16</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>4.5</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Savannah Thorsen</td><td>2026-06-17</td><td><span class="crew-type-badge type-w2">W2</span></td><td>4.0</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Lesley Gearity</td><td>2026-06-17</td><td><span class="crew-type-badge type-w2">W2</span></td><td>11.0</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Michael Dubois</td><td>2026-06-17</td><td><span class="crew-type-badge type-w2">W2</span></td><td>4.5</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Isaac Lynn</td><td>2026-06-17</td><td><span class="crew-type-badge type-w2">W2</span></td><td>11.4</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">John Enns</td><td>2026-06-18</td><td><span class="crew-type-badge type-w2">W2</span></td><td>9.2</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Jason Buchan</td><td>2026-06-19</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>10.7</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">John Zillante</td><td>2026-06-19</td><td><span class="crew-type-badge type-w2">W2</span></td><td>5.3</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">David Pierce</td><td>2026-06-19</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>9.4</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Lanita Johnson-Jackson</td><td>2026-06-19</td><td><span class="crew-type-badge type-w2">W2</span></td><td>14.1</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Omar Saldivar</td><td>2026-06-19</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>6.6</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<div class="exec-week-card" style="background:var(--card);border:1px solid var(--border);border-left:4px solid var(--yellow);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June 22 - June 28</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 61.6kW 62%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 24.3kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    13/13 COMPLETE - 100% - 90.0kW/90.0kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    12/12 COMPLETE - 100% - 85.9kW/85.9kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    6 of 12 installs were 1-touch - 50%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:12px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 61.6)</span>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:var(--text-dim);font-size:0.82rem;font-weight:600;">Project Details (12 installs)</summary>
+    <div class="table-wrap" style="margin-top:8px;border:none;">
+    <table style="font-size:0.78rem;">
+    <thead><tr><th style="text-align:left">Customer</th><th>Date</th><th>Type</th><th>kW</th><th>1-Touch</th><th>Rolls</th></tr></thead>
+    <tbody>
+    <tr><td style="text-align:left">Thomas Urban II</td><td>2026-06-22</td><td><span class="crew-type-badge type-w2">W2</span></td><td>5.7</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Moses Lian</td><td>2026-06-23</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>7.5</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Denise Armstrong</td><td>2026-06-23</td><td><span class="crew-type-badge type-w2">W2</span></td><td>10.6</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Lexus Anderson</td><td>2026-06-23</td><td><span class="crew-type-badge type-w2">W2</span></td><td>6.2</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Maria Santos</td><td>2026-06-24</td><td><span class="crew-type-badge type-w2">W2</span></td><td>13.1</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Russell Reday</td><td>2026-06-24</td><td><span class="crew-type-badge type-w2">W2</span></td><td>6.2</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Phillip Gonzalez</td><td>2026-06-25</td><td><span class="crew-type-badge type-w2">W2</span></td><td>8.8</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Abel Mcnabb</td><td>2026-06-25</td><td><span class="crew-type-badge type-w2">W2</span></td><td>5.7</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Ronald Goodman</td><td>2026-06-25</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>5.3</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Lydia Chang</td><td>2026-06-25</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>7.0</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Margaret Bayard</td><td>2026-06-25</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>4.5</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">BRITTANY HUSSONG</td><td>2026-06-26</td><td><span class="crew-type-badge type-w2">W2</span></td><td>5.3</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<div class="exec-week-card" style="background:var(--card);border:1px solid var(--border);border-left:4px solid var(--red);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June 29 - June 30</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 15.0kW 15%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 16.8kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    3/3 COMPLETE - 100% - 27.7kW/27.7kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    4/4 COMPLETE - 100% - 31.8kW/31.8kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    2 of 4 installs were 1-touch - 50%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:12px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 15.0)</span>
+  </div>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;color:var(--text-dim);font-size:0.82rem;font-weight:600;">Project Details (4 installs)</summary>
+    <div class="table-wrap" style="margin-top:8px;border:none;">
+    <table style="font-size:0.78rem;">
+    <thead><tr><th style="text-align:left">Customer</th><th>Date</th><th>Type</th><th>kW</th><th>1-Touch</th><th>Rolls</th></tr></thead>
+    <tbody>
+    <tr><td style="text-align:left">Miguel Cedillos</td><td>2026-06-29</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>4.1</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    <tr><td style="text-align:left">Jeremy Kalminski</td><td>2026-06-30</td><td><span class="crew-type-badge type-w2">W2</span></td><td>4.4</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">Stokey Bourque</td><td>2026-06-30</td><td><span class="crew-type-badge type-w2">W2</span></td><td>10.6</td><td><span class="badge badge-fail">N</span></td><td>1</td></tr>
+    <tr><td style="text-align:left">James Cabrera</td><td>2026-06-30</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>12.7</td><td><span class="badge badge-pass">Y</span></td><td>0</td></tr>
+    </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<div style="background:var(--card-alt);border:2px solid var(--accent);border-radius:12px;padding:20px;margin-bottom:16px;">
+  <div style="font-size:1.2rem;font-weight:700;margin-bottom:12px;color:var(--accent);">June Month Total</div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:6px;">
+    <span style="color:var(--text-dim);">Crew Utilization:</span>
+    <span style="color:var(--blue);font-weight:600;">W2 &rarr; 249.4kW 50%</span>
+    <span style="color:var(--text-dim);">/</span>
+    <span style="color:var(--orange);font-weight:600;">Sub &rarr; 223.2kW</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    55/55 COMPLETE - 100% - 483.3kW/483.3kW <span style="color:var(--text-dim);font-size:0.82rem;">[Scheduled to Complete]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    55/55 COMPLETE - 100% - 485.3kW/485.3kW <span style="color:var(--text-dim);font-size:0.82rem;">[Total Completed]</span>
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    26 of 55 installs were 1-touch - 47%
+  </div>
+  <div class="exec-line" style="font-size:0.95rem;margin-bottom:4px;">
+    W2 install cost per watt &mdash; <span style="color:var(--yellow);">[Pending Penny]</span> <span style="color:var(--text-dim);font-size:0.78rem;">(W2 kW denominator: 249.4)</span>
+  </div>
+</div>
+
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;">
+  <h3 style="margin-top:0;font-size:1rem;color:var(--text-dim);">Methodology Notes</h3>
+  <ul style="color:var(--text-dim);font-size:0.78rem;line-height:1.8;padding-left:20px;">
+    <li><strong style="color:var(--text)">W2 Utilization %</strong> = W2 kW / 100kW capacity (2 crews &times; 50kW/week). W2 crews: Benjamin Roby, Humberto Llanes.</li>
+    <li><strong style="color:var(--text)">Scheduled to Complete</strong> = Arrivy install tasks scheduled that week with COMPLETE status. kW from QuickBase system size.</li>
+    <li><strong style="color:var(--text)">Total Completed</strong> = QuickBase Install Completed Date in that week. All June installs show as completed (100%).</li>
+    <li><strong style="color:var(--text)">1-touch</strong> = install completed with zero post-install Arrivy tasks (inspection, service, drop-off) before PTO date (or July 21 if no PTO yet). Any return visit = NOT 1-touch.</li>
+    <li><strong style="color:var(--text)">W2 install cost per watt</strong> = labor cost / W2 kW. Labor cost pending from Penny. kW denominator shown for each week.</li>
+    <li><strong style="color:var(--text)">Crew classification:</strong> W2 = Roby, Llanes, Radebaugh. Sub = Lanier, Ish &amp; Gio, Breaux (Disrupt the Grid). Unknown = no Arrivy entity assignment.</li>
+  </ul>
+</div>
+
+<div class="data-quality-note">
+  <div class="flag-title">1-Touch Rate &mdash; Context</div>
+  1-touch rate is very low (5/55 = 9%). This is because nearly every install has at least one post-install Arrivy task (inspection accompaniment, plan drop-off, service visit, photo retake). This is a <strong>systemic workflow pattern</strong>, not necessarily an install quality issue &mdash; most post-install visits are standard inspection accompaniment or monitoring setup, not defect corrections. Consider whether James wants to exclude routine inspection accompaniment from the 1-touch definition.
+</div>
+
+</div>
+
+<!-- TAB 1: SUMMARY DASHBOARD -->
+<div id="tab-summary" class="tab-content">
+
+<div class="kpi-grid">
+  <div class="kpi-card accent"><div class="label">Total Installs</div><div class="value">55</div><div class="sub">485.2 kW installed</div></div>
+  <div class="kpi-card green"><div class="label">Insp Pass Rate</div><div class="value">81.8%</div><div class="sub">45 of 55 projects</div></div>
+  <div class="kpi-card yellow"><div class="label">Avg Truck Rolls</div><div class="value">1.55</div><div class="sub">85 total, per project (Arrivy)</div></div>
+  <div class="kpi-card blue"><div class="label">PTO Approved</div><div class="value">54.5%</div><div class="sub">30 of 55 as of 7/21</div></div>
+  <div class="kpi-card cyan"><div class="label">Avg Days: Install&rarr;Insp</div><div class="value">15.2</div><div class="sub">install complete to passing insp</div></div>
+  <div class="kpi-card red"><div class="label">Funding Rejections</div><div class="value">4</div><div class="sub">all M3 &mdash; Tesla portal</div></div>
+</div>
+
+<div class="data-quality-note">
+  <div class="flag-title">&beta; Truck Rolls &mdash; Data Reconciliation (V3 Update)</div>
+  <strong>QB field <code># of Post-Install Truck Rolls</code> (FID 2407) = 0 for all 55 records.</strong> This field is not being populated.<br>
+  V3 recomputes truck rolls from <strong>Arrivy task data</strong>: all non-install tasks (inspection accompaniment, service visits, plan drop-offs, photo retakes, equipment fixes) matched to June cohort customers.<br>
+  <strong>Arrivy-derived count: 85 truck rolls across 55 projects = 1.55 avg per project.</strong><br>
+  <em>What counts as a post-install truck roll:</em> inspection accompaniment visits (INSPX/REINSPX), plan drop-offs (DROP OFF PLANS), service/return visits (follow-up Arrivy tasks after the original install), photo retakes, equipment fixes. The original install task is NOT a truck roll.
+</div>
+
+<h3>Inspection Breakdown</h3>
+<div class="insp-breakdown">
+  <div class="insp-stat"><div class="num" style="color:var(--blue)">58</div><div class="lbl">Inspections Scheduled</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--green)">45</div><div class="lbl">Inspections Passed</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--red)">13</div><div class="lbl">Inspections Failed</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--accent)">81.8%</div><div class="lbl">First-Time Pass Rate</div></div>
+</div>
+
+<h2>Funding Status Breakdown</h2>
+<div class="funding-grid">
+  <div class="funding-card">
+    <div class="title" style="color:var(--blue)">M1</div>
+    <div class="stat-row"><span class="stat-label">Approved</span><span class="stat-val">25</span></div>
+    <div class="stat-row"><span class="stat-label">Received</span><span class="stat-val">30</span></div>
+    <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-val">0</span></div>
+  </div>
+  <div class="funding-card">
+    <div class="title" style="color:var(--green)">M2</div>
+    <div class="stat-row"><span class="stat-label">Approved</span><span class="stat-val">5</span></div>
+    <div class="stat-row"><span class="stat-label">Received</span><span class="stat-val">50</span></div>
+    <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-val">0</span></div>
+    <div class="funding-sub">50 projects / 446.9 kW / $0.86M</div>
+  </div>
+  <div class="funding-card">
+    <div class="title" style="color:var(--accent)">M3</div>
+    <div class="stat-row"><span class="stat-label">Approved</span><span class="stat-val">0</span></div>
+    <div class="stat-row"><span class="stat-label">Received</span><span class="stat-val">11</span></div>
+    <div class="stat-row"><span class="stat-label">Rejected</span><span class="stat-val" style="color:var(--red)">4</span></div>
+    <div class="stat-row"><span class="stat-label">Waiting / No M3</span><span class="stat-val">40</span></div>
+    <div class="funding-sub">11 projects / 101.0 kW / $65K</div>
+  </div>
+</div>
+
+<div class="data-quality-flag">
+  <div class="flag-title">&#9888; Data Quality Flag: Crew Attribution</div>
+  QB Installations fields <code>Install Team Name</code> (FID 273) and <code>Crew Foreman Full Name</code> (FID 281) are <strong>blank for all 55 records</strong>. Crew attribution was derived from Arrivy task entity assignments. <code>Completed By</code> in QB (Dylan Kennedy, Xam Conge) represents RTR/inspection techs, not install crews. <code>Started At</code> (FID 8) is also blank for all records. See Findings tab for details.
+</div>
+
+</div>
+
+
+<!-- TAB 2: CREW LEADERBOARD -->
+<div id="tab-crew" class="tab-content">
+<h2>Crew Leaderboard &mdash; Sorted by First-Time Pass Rate (Descending)</h2>
+<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:16px;">
+  Crew attribution from Arrivy entity assignments on install tasks. Green = best in column. Truck rolls recomputed from Arrivy in V3. W2/Sub classification added in V3 based on Arrivy entity roles.
+</p>
+<div class="table-wrap">
+<table class="leaderboard">
+<thead>
+<tr>
+  <th style="text-align:left">Crew</th><th>Type</th><th>Installs</th><th>kW</th><th>1st-Time Pass</th>
+  <th>Avg Days<br>I&rarr;I</th><th>Avg<br>Rolls</th><th>PTO Rate</th>
+  <th>% On-Route</th><th>% Submitted</th><th>% Tech Complete</th>
+  <th>RTR Pass%</th><th>RTR Fail%</th><th>RTR Coach%</th>
+</tr>
+</thead>
+<tbody>
+<tr><td style="text-align:left;font-weight:600">Unknown</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td>2</td><td>12.7</td><td class="best" style="color:var(--green);font-weight:700">2/2 (100%)</td><td>18.5</td><td>2.0</td><td class="best">2/2 (100%)</td><td>100%</td><td>50%</td><td>50%</td><td style="color:var(--green)">0%</td><td style="color:var(--red)">50%</td><td style="color:var(--yellow)">50%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Ish &amp; Gio Crew</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>8</td><td>83.9</td><td class="best" style="color:var(--green);font-weight:700">8/8 (100%)</td><td>20.2</td><td>1.4</td><td>4/8 (50%)</td><td>88%</td><td>100%</td><td>100%</td><td style="color:var(--green)">86%</td><td style="color:var(--red)">0%</td><td style="color:var(--yellow)">14%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Benjamin Roby's Crew (Roby +3)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>16</td><td>116.4</td><td class="best" style="color:var(--green);font-weight:700">16/16 (100%)</td><td class="best">8.2</td><td>1.2</td><td>12/16 (75%)</td><td>81%</td><td>94%</td><td>94%</td><td style="color:var(--green)">94%</td><td style="color:var(--red)">6%</td><td style="color:var(--yellow)">0%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Jason Breaux (Solo)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>2</td><td>22.4</td><td class="best" style="color:var(--green);font-weight:700">2/2 (100%)</td><td>14.0</td><td class="best">1.0</td><td class="best">2/2 (100%)</td><td>50%</td><td>100%</td><td>100%</td><td class="best" style="color:var(--green)">100%</td><td style="color:var(--red)">0%</td><td style="color:var(--yellow)">0%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Kevin Radebaugh + Natalie Peralta</td><td><span class="crew-type-badge type-w2">W2</span></td><td>1</td><td>4.5</td><td class="best" style="color:var(--green);font-weight:700">1/1 (100%)</td><td>20.0</td><td>3.0</td><td class="best">1/1 (100%)</td><td>0%</td><td>100%</td><td>100%</td><td style="color:var(--green)">0%</td><td style="color:var(--red)">0%</td><td style="color:var(--yellow)">100%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Humberto Llanes' Crew (Llanes +4)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>10</td><td class="best">128.4</td><td style="color:var(--yellow);font-weight:700">7/10 (70%)</td><td>18.1</td><td>1.1</td><td>2/10 (20%)</td><td>60%</td><td>90%</td><td>90%</td><td style="color:var(--green)">67%</td><td style="color:var(--red)">22%</td><td style="color:var(--yellow)">11%</td></tr>
+<tr><td style="text-align:left;font-weight:600">Lanier's Crew (Lanier Peralta +4)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>16</td><td>116.8</td><td style="color:var(--red);font-weight:700">9/16 (56%)</td><td>19.9</td><td>1.3</td><td>7/16 (44%)</td><td>31%</td><td>69%</td><td>69%</td><td style="color:var(--green)">25%</td><td style="color:var(--red)">58%</td><td style="color:var(--yellow)">17%</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Crew Composition Details</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Crew Label</th><th>Type</th><th>Members (from Arrivy)</th><th>Roles</th><th>Projects</th></tr></thead>
+<tbody>
+<tr><td>Benjamin Roby's Crew (Roby +3)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>Benjamin Roby, Miguel Nieto-Vaillant, Mikey Hudson, Christopher Washington</td><td>Install Crew Lead, Install Crew Member, Solar Installer &times;2</td><td>16</td></tr>
+<tr><td>Lanier's Crew (Lanier Peralta +4)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>Lanier Peralta, Nestor Curiel, Natalie Peralta, Albert Sotelo, Oscar Navarro</td><td>Subcontractor &times;5</td><td>16</td></tr>
+<tr><td>Humberto Llanes' Crew (Llanes +4)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>Humberto Llanes, Nelson Garcia, Enrique Lazaro, Jose Acosta, Yunior Enamorado</td><td>Install Crew Lead, Install Crew Member &times;2, Solar Electrician, Solar Installer</td><td>10</td></tr>
+<tr><td>Ish &amp; Gio Crew</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>Ish Abdullah, Gio Rivera</td><td>Subcontractor &times;2</td><td>8</td></tr>
+<tr><td>Jason Breaux (Solo)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>Jason Breaux</td><td>Subcontractor</td><td>2</td></tr>
+<tr><td>Kevin Radebaugh + Natalie Peralta</td><td><span class="crew-type-badge type-w2">W2</span></td><td>Kevin Radebaugh, Natalie Peralta</td><td>Field Director, Subcontractor</td><td>1</td></tr>
+<tr><td style="color:var(--red)">Unattributed</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td>&mdash;</td><td>No Arrivy install task found</td><td>2 (Stanley Hough, David Larsen)</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="data-quality-flag">
+  <div class="flag-title">&#9888; Critical Data Gap: Install Duration &amp; Crew Attribution</div>
+  <strong>Started At (FID 8)</strong> is blank for all 55 QB Installation records.<br>
+  <strong>Install Team Name (FID 273)</strong> and <strong>Crew Foreman Full Name (FID 281)</strong> are blank for all records. Crew attribution derived from Arrivy task <code>entities_data</code>.<br>
+  <strong>W2 vs Sub classification</strong> based on Arrivy entity roles: crews marked "Subcontractor" = Sub; crews with "Install Crew Lead/Member/Solar Installer" roles = W2. Kevin Radebaugh classified as W2 (Field Director). <strong>Correct if wrong &mdash; this affects the Sub vs W2 analysis on the Utilization tab.</strong>
+</div>
+
+</div>
+
+
+<!-- TAB 3: SERVICE VISIT ANALYSIS -->
+<div id="tab-service" class="tab-content">
+<h3>Service Category Distribution</h3>
+<div class="cat-chart">
+  <div class="cat-bar"><div class="cat-label">Monitoring / Portal Setup</div><div class="cat-track"><div class="cat-fill c1" style="width:49%">27</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Photo Retake</div><div class="cat-track"><div class="cat-fill c2" style="width:16.4%">9</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Permit / Document Issue</div><div class="cat-track"><div class="cat-fill c3" style="width:14.5%">8</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Equipment / CT Issue</div><div class="cat-track"><div class="cat-fill c4" style="width:7.3%">4</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Other</div><div class="cat-track"><div class="cat-fill c5" style="width:7.3%">4</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Monitoring Watch</div><div class="cat-track"><div class="cat-fill c6" style="width:3.6%">2</div></div></div>
+  <div class="cat-bar"><div class="cat-label">Meter / Utility Issue</div><div class="cat-track"><div class="cat-fill c7" style="width:1.8%">1</div></div></div>
+</div>
+<p style="color:var(--text-dim);font-size:0.85rem;">Service visit data from QB Notes/Tickets. See Per-Project Table for full details with filters.</p>
+</div>
+
+
+<!-- TAB 4: INSPECTION FAILURES -->
+<div id="tab-inspections" class="tab-content">
+<h3>Inspection Breakdown</h3>
+<div class="insp-breakdown">
+  <div class="insp-stat"><div class="num" style="color:var(--blue)">58</div><div class="lbl">Total Inspections Scheduled</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--green)">45</div><div class="lbl">Total Inspections Passed</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--red)">13</div><div class="lbl">Total Inspections Failed</div></div>
+  <div class="insp-stat"><div class="num" style="color:var(--accent)">81.8%</div><div class="lbl">Pass Rate</div></div>
+</div>
+<h3>Per-Crew Inspection Breakdown</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Crew</th><th>Type</th><th>Installs</th><th>Insp Scheduled</th><th>Insp Passed</th><th>Insp Failed</th><th>Pass Rate</th></tr></thead>
+<tbody>
+<tr><td>Unknown</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td>2</td><td>2</td><td style="color:var(--green)">2</td><td style="color:var(--red)">0</td><td style="color:var(--green);font-weight:600">100%</td></tr>
+<tr><td>Ish &amp; Gio Crew</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>8</td><td>9</td><td style="color:var(--green)">8</td><td style="color:var(--red)">1</td><td style="color:var(--green);font-weight:600">89%</td></tr>
+<tr><td>Benjamin Roby's Crew (Roby +3)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>16</td><td>16</td><td style="color:var(--green)">16</td><td style="color:var(--red)">0</td><td style="color:var(--green);font-weight:600">100%</td></tr>
+<tr><td>Jason Breaux (Solo)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>2</td><td>2</td><td style="color:var(--green)">2</td><td style="color:var(--red)">0</td><td style="color:var(--green);font-weight:600">100%</td></tr>
+<tr><td>Kevin Radebaugh + Natalie Peralta</td><td><span class="crew-type-badge type-w2">W2</span></td><td>1</td><td>1</td><td style="color:var(--green)">1</td><td style="color:var(--red)">0</td><td style="color:var(--green);font-weight:600">100%</td></tr>
+<tr><td>Humberto Llanes' Crew (Llanes +4)</td><td><span class="crew-type-badge type-w2">W2</span></td><td>10</td><td>12</td><td style="color:var(--green)">7</td><td style="color:var(--red)">5</td><td style="color:var(--red);font-weight:600">58%</td></tr>
+<tr><td>Lanier's Crew (Lanier Peralta +4)</td><td><span class="crew-type-badge type-sub">Sub</span></td><td>16</td><td>16</td><td style="color:var(--green)">9</td><td style="color:var(--red)">7</td><td style="color:var(--red);font-weight:600">56%</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+<!-- TAB 5: FUNDING REJECTIONS -->
+<div id="tab-funding" class="tab-content">
+<h3>Funding Rejection Details &mdash; All M3</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Customer</th><th>Install Crew</th><th>M3 Rejected Date</th><th>Root Cause</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Stanley Hough</td><td>Unattributed</td><td>2026-07-02</td><td><span class="badge badge-fail">SE Portal Config</span></td><td class="note-text">Power Model in SE portal not set correctly (should be 10); install not yet LR approved</td></tr>
+<tr><td>Linda Marie Mendoza</td><td>Lanier's Crew</td><td>2026-07-06</td><td><span class="badge badge-fail">Tesla Portal Alert</span></td><td class="note-text">Tesla portal showing 2 alerts: Time on Grid + Negative Home Load</td></tr>
+<tr><td>William Junqueira</td><td>Lanier's Crew</td><td>2026-07-16</td><td><span class="badge badge-fail">Tesla Portal Alert</span></td><td class="note-text">PTO rejected for Tesla portal alert &mdash; Negative Home Load; SE portal needs build</td></tr>
+<tr><td>Isaac Lynn</td><td>Humberto Llanes' Crew</td><td>2026-07-16</td><td><span class="badge badge-fail">Tesla Portal Alert</span></td><td class="note-text">Tesla portal Grid Compliance alert; not communicating; NOC issue</td></tr>
+</tbody>
+</table>
+</div>
+<h3>M2 Funding Detail</h3>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+<tr><td>Projects with M2 Received</td><td>50</td></tr>
+<tr><td>Total kW (M2 projects)</td><td>446.9 kW</td></tr>
+<tr><td>Total M2 Dollars Received</td><td>$864,281 ($0.86M)</td></tr>
+</tbody></table></div>
+<h3>M3 Funding Detail</h3>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+<tr><td>Projects with M3 Received</td><td>11</td></tr>
+<tr><td>Total kW (M3 projects)</td><td>101.0 kW</td></tr>
+<tr><td>Total M3 Dollars Received</td><td>$65,235 ($65K)</td></tr>
+<tr><td>M3 Rejections</td><td style="color:var(--red)">4</td></tr>
+</tbody></table></div>
+<p style="color:var(--text-dim);font-size:0.88rem;">All 4 M3 rejections are Tesla/SE portal monitoring configuration issues &mdash; commissioning problems that could be caught at install completion before funding submission.</p>
+</div>
+
+
+<!-- TAB 6: FINDINGS & RECOMMENDATIONS -->
+<div id="tab-findings" class="tab-content">
+<h3>Key Findings</h3>
+<div class="findings">
+  <div class="finding green">
+    <div class="num">Finding 1 &mdash; Inspection Performance</div>
+    <div class="title">81.8% pass rate (45/55)</div>
+    <div class="desc">Benjamin Roby's Crew and Ish &amp; Gio Crew achieved 100% pass rates. Lanier's Crew lagged at 56%. 3 known fail reasons: missing ground rod, MC cable not secured, tech not on site.</div>
+  </div>
+  <div class="finding">
+    <div class="num">Finding 2 &mdash; Post-Install Truck Rolls (V3 Recomputed)</div>
+    <div class="title">Avg 1.55 truck rolls per project (85 total)</div>
+    <div class="desc">Recomputed from Arrivy task data. V2's 1.29 was estimated from ticket counts. QB field <code># of Post-Install Truck Rolls</code> (FID 2407) = 0 for all 55 records &mdash; not being populated. V3 methodology: all non-install Arrivy tasks matched to June cohort customers. Breakdown: ~57 service visits, ~28 inspection accompaniments, ~12 plan drop-offs.</div>
+  </div>
+  <div class="finding blue">
+    <div class="num">Finding 3 &mdash; Monitoring/Portal Setup is #1 Service Category</div>
+    <div class="title">27 of 55 projects &mdash; "SE portal needs to be built to match install"</div>
+    <div class="desc">Systemic post-install workflow issue. Should be a standard post-install task, not a reactive ticket.</div>
+  </div>
+  <div class="finding red">
+    <div class="num">Finding 4 &mdash; Photo Retakes</div>
+    <div class="title">9 projects required photo retakes</div>
+    <div class="desc">Commissioning photos, tilt photos, POI breaker close-ups. Each represents a potential avoidable truck roll or funding delay.</div>
+  </div>
+  <div class="finding blue">
+    <div class="num">Finding 5 &mdash; PTO Approval Rate</div>
+    <div class="title">54.5% (30/55) approved as of 7/21</div>
+    <div class="desc">Benjamin Roby's Crew leads at 75% PTO rate. Humberto Llanes' Crew at 20% &mdash; installs skew later but also more inspection failures.</div>
+  </div>
+  <div class="finding red">
+    <div class="num">Finding 6 &mdash; Funding Rejections</div>
+    <div class="title">4 M3 rejections &mdash; all Tesla/SE portal monitoring alerts</div>
+    <div class="desc">Negative Home Load, Grid Compliance, Power Model misconfiguration. Catchable at install completion.</div>
+  </div>
+  <div class="finding">
+    <div class="num">Finding 7 &mdash; RTR Analysis</div>
+    <div class="title">32 Pass, 11 Fail, 6 Pass w/Coaching, 6 Blank</div>
+    <div class="desc">Benjamin Roby's Crew: 94% RTR Pass. Lanier's Crew: 58% RTR Fail &mdash; significant quality gap.</div>
+  </div>
+  <div class="finding cyan">
+    <div class="num">Finding 8 &mdash; Crew Attribution Data Gap</div>
+    <div class="title">QB Installations has NO crew data</div>
+    <div class="desc">FID 273, 281, and 8 all blank. Attribution from Arrivy entities_data. 2 projects unattributed.</div>
+  </div>
+  <div class="finding green">
+    <div class="num">Finding 9 &mdash; Total Installed kW</div>
+    <div class="title">485.2 kW across 55 projects</div>
+    <div class="desc">Humberto Llanes' Crew: 128.4 kW (10 projects). Lanier's Crew: 116.8 kW. Benjamin Roby's Crew: 116.4 kW. Avg system: 8.8 kW.</div>
+  </div>
+  <div class="finding purple">
+    <div class="num">Finding 10 &mdash; Sub vs W2 Dependency (V3 New)</div>
+    <div class="title">Sub: 26/55 (47.3%) = 223.2 kW (46.0%) | W2: 27/55 (49.1%) = 249.4 kW (51.4%)</div>
+    <div class="desc">Nearly half of install volume depends on subcontractor crews. Lanier's Crew (Sub) handles 16 projects &mdash; same volume as Benjamin Roby's Crew (W2). See Utilization tab for details.</div>
+  </div>
+</div>
+
+<h3>Recommendations</h3>
+<div class="recs">
+  <div class="rec"><div class="rec-title">1. Photo Quality Checklist at Install Completion</div><div class="rec-desc">POI breaker close-up, commissioning photos, tilt photos, battery label. 9 retakes = 9 avoidable truck rolls.</div></div>
+  <div class="rec"><div class="rec-title">2. SE Portal Build SOP &mdash; Standard Post-Install Task</div><div class="rec-desc">Convert "SE portal needs build" from reactive ticket to standard post-install workflow.</div></div>
+  <div class="rec"><div class="rec-title">3. Inspection Prep Protocol</div><div class="rec-desc">Ground rod verification, MC cable check. Lanier's Crew needs focus (7 failures).</div></div>
+  <div class="rec"><div class="rec-title">4. Tesla Portal Commissioning Verification</div><div class="rec-desc">Check alerts before leaving site. Would catch all 4 M3 rejection causes.</div></div>
+  <div class="rec"><div class="rec-title">5. Notarized Document Collection Before Scheduling</div><div class="rec-desc">8 projects had NOC/permit notarization issues.</div></div>
+  <div class="rec"><div class="rec-title">6. CT Installation Audit at Commissioning</div><div class="rec-desc">4 projects had CT issues. Verify during commissioning.</div></div>
+  <div class="rec"><div class="rec-title">7. Fix Crew Attribution in QB</div><div class="rec-desc">Populate FID 273, 281, and 8. Consider Arrivy &rarr; QB sync.</div></div>
+  <div class="rec"><div class="rec-title">8. Arrivy Service Visit Reason Dropdown</div><div class="rec-desc">Add required dropdown to checkout form for structured tracking.</div></div>
+  <div class="rec"><div class="rec-title">9. RTR Process Improvement for Lanier's Crew</div><div class="rec-desc">58% RTR Fail, 56% inspection pass rate. Targeted coaching needed.</div></div>
+  <div class="rec"><div class="rec-title">10. Populate QB Truck Roll Field (FID 2407) <span class="new-tag">V3</span></div><div class="rec-desc">Field is blank for all 55 records. V3 recomputes from Arrivy, but it should be in QB for reporting.</div></div>
+</div>
+</div>
+
+
+<!-- TAB 7: PER-PROJECT TABLE WITH FILTERS -->
+<div id="tab-projects" class="tab-content">
+<h3>Per-Project Lifecycle Table &mdash; All 55 June Installs <span class="new-tag">V3: Interactive Filters</span></h3>
+
+<div class="filter-bar">
+  <div class="filter-group">
+    <label>Crew</label>
+    <select id="filter-crew" onchange="applyFilters()">
+      <option value="">All Crews</option>
+      <option value="Benjamin Roby">Benjamin Roby's Crew</option>
+      <option value="Ish &amp; Gio">Ish &amp; Gio Crew</option>
+      <option value="Jason B.">Jason Breaux Solo</option>
+      <option value="Kevin R.">Kevin Radebaugh + Natalie Peralta</option>
+      <option value="Humberto Llanes">Humberto Llanes' Crew</option>
+      <option value="Lanier">Lanier's Crew</option>
+      <option value="Unknown">Unattributed</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Customer Search</label>
+    <input type="text" id="filter-search" placeholder="Search customer name..." oninput="applyFilters()">
+  </div>
+  <div class="filter-group">
+    <label>Install Date From</label>
+    <input type="date" id="filter-date-from" onchange="applyFilters()">
+  </div>
+  <div class="filter-group">
+    <label>Install Date To</label>
+    <input type="date" id="filter-date-to" onchange="applyFilters()">
+  </div>
+  <div class="filter-group">
+    <label>Inspection Status</label>
+    <select id="filter-insp" onchange="applyFilters()">
+      <option value="">All</option>
+      <option value="passed">Passed</option>
+      <option value="failed">Failed</option>
+      <option value="pending">Pending</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>PTO Status</label>
+    <select id="filter-pto" onchange="applyFilters()">
+      <option value="">All</option>
+      <option value="approved">PTO Approved</option>
+      <option value="pending">PTO Pending</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Funding Status</label>
+    <select id="filter-funding" onchange="applyFilters()">
+      <option value="">All</option>
+      <option value="m2-received">M2 Received</option>
+      <option value="m2-pending">M2 Pending</option>
+      <option value="m3-received">M3 Received</option>
+      <option value="m3-pending">M3 Pending/Waiting</option>
+    </select>
+  </div>
+  <button class="filter-reset" onclick="resetFilters()">Reset</button>
+  <span class="filter-count" id="filter-count">Showing 55 of 55 projects</span>
+</div>
+
+<div class="table-wrap">
+<table id="projects-table">
+<thead>
+<tr><th>#</th><th>Customer</th><th>Install Date</th><th>Install Crew</th><th>kW</th><th># Insp</th><th>Insp Passed</th><th>1st Pass</th><th>Rolls</th><th>Pass Insp Date</th><th>Days: I&rarr;I</th><th>PTO Date</th><th>M1</th><th>M2</th><th>M3</th><th>RTR Status</th><th>Tickets</th><th>Service Category</th></tr>
+</thead>
+<tbody>
+<tbody>
+<tr><td>1</td><td>Stanley Hough</td><td>2026-06-01</td><td>Unknown</td><td>12.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-09</td><td>8</td><td>2026-06-18</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>8</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>2</td><td>Kate Leeds</td><td>2026-06-01</td><td>Ish & Gio Crew</td><td>10.2</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-11</td><td>10</td><td>2026-06-19</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-coach">Coach</span></td><td>3</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>3</td><td>Maritza Ayala</td><td>2026-06-02</td><td>Ish & Gio Crew</td><td>9.2</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-23</td><td>21</td><td>2026-07-01</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>3</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>4</td><td>Stephen Strout</td><td>2026-06-03</td><td>Benjamin Roby (Roby)</td><td>7.9</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-09</td><td>6</td><td>2026-06-19</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>5</td><td>David Larsen</td><td>2026-06-03</td><td>Unknown</td><td>0.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-02</td><td>29</td><td>2026-07-13</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-coach">Coach</span></td><td>4</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>6</td><td>Alexzander Stiles</td><td>2026-06-04</td><td>Benjamin Roby (Roby)</td><td>6.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-23</td><td>19</td><td>2026-07-13</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>7</td><td>Linda Marie Mendoza</td><td>2026-06-04</td><td>Lanier (Lanier)</td><td>4.9</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-30</td><td>26</td><td>2026-07-06</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>6</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>8</td><td>Suzanne Anderson</td><td>2026-06-05</td><td>Jason B.</td><td>15.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-25</td><td>20</td><td>2026-07-14</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>7</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>9</td><td>Anthony Brown</td><td>2026-06-05</td><td>Lanier (Lanier)</td><td>9.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-25</td><td>20</td><td>2026-07-08</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>10</td><td>William Crenshaw</td><td>2026-06-05</td><td>Benjamin Roby (Roby)</td><td>4.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-10</td><td>5</td><td>2026-07-02</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>4</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>11</td><td>Leslie Weiland</td><td>2026-06-05</td><td>Ish & Gio Crew</td><td>16.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-14</td><td>39</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-none">—</span></td><td>1</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>12</td><td>Mary Schrayer</td><td>2026-06-08</td><td>Ish & Gio Crew</td><td>8.8</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-29</td><td>21</td><td>2026-07-09</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>7</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>13</td><td>Jessica Cordero-Ramirez</td><td>2026-06-08</td><td>Jason B.</td><td>7.5</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-16</td><td>8</td><td>2026-06-25</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>4</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>14</td><td>Allen Marjama</td><td>2026-06-09</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>24.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>0</td><td>2026-07-02</td><td>23</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>15</td><td>James Dick</td><td>2026-06-09</td><td>Lanier (Lanier)</td><td>11.1</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-08</td><td>29</td><td>2026-07-14</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-coach">Coach</span></td><td>8</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>16</td><td>Cynthia Johnston</td><td>2026-06-09</td><td>Lanier (Lanier)</td><td>7.8</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>3</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>6</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>17</td><td>Danielle Mcknight</td><td>2026-06-11</td><td>Benjamin Roby (Roby)</td><td>8.8</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-17</td><td>6</td><td>2026-06-26</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-pass">Monitoring Watch</span></td></tr>
+<tr><td>18</td><td>Cheryl Rose</td><td>2026-06-12</td><td>Ish & Gio Crew</td><td>5.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-25</td><td>13</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>4</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>19</td><td>Michael Gomez</td><td>2026-06-12</td><td>Benjamin Roby (Roby)</td><td>6.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-23</td><td>11</td><td>2026-07-15</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>8</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>20</td><td>Cameron Liebman</td><td>2026-06-15</td><td>Benjamin Roby (Roby)</td><td>8.4</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-22</td><td>7</td><td>2026-07-07</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>21</td><td>Christopher Dipiero</td><td>2026-06-15</td><td>Ish & Gio Crew</td><td>16.3</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>0</td><td>2026-06-25</td><td>10</td><td>2026-07-13</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>22</td><td>Katherine Keeton</td><td>2026-06-15</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>29.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-25</td><td>10</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-none">—</span></td><td>4</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>23</td><td>Jingyu Fan</td><td>2026-06-15</td><td>Lanier (Lanier)</td><td>6.2</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>3</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-none">—</span></td><td>3</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>24</td><td>Lorfy Delgado</td><td>2026-06-15</td><td>Lanier (Lanier)</td><td>7.4</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>0</td><td>2026-06-30</td><td>15</td><td>2026-07-02</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-fail">Fail</span></td><td>6</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>25</td><td>Joseph Clanton</td><td>2026-06-15</td><td>Benjamin Roby (Roby)</td><td>8.8</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-06-26</td><td>11</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>9</td><td><span class="badge badge-fail">Equipment/CT</span></td></tr>
+<tr><td>26</td><td>EYAD SALHAB</td><td>2026-06-16</td><td>Lanier (Lanier)</td><td>9.4</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>2</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-coach">Coach</span></td><td>6</td><td><span class="badge badge-fail">Equipment/CT</span></td></tr>
+<tr><td>27</td><td>Joseph Hophan</td><td>2026-06-16</td><td>Benjamin Roby (Roby)</td><td>8.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-01</td><td>15</td><td>2026-07-10</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>4</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>28</td><td>William Junqueira</td><td>2026-06-16</td><td>Lanier (Lanier)</td><td>5.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-01</td><td>15</td><td>2026-07-08</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>29</td><td>Roman Riebli</td><td>2026-06-16</td><td>Lanier (Lanier)</td><td>4.5</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-09</td><td>23</td><td>2026-07-15</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>10</td><td><span class="badge badge-fail">Equipment/CT</span></td></tr>
+<tr><td>30</td><td>Savannah Thorsen</td><td>2026-06-17</td><td>Benjamin Roby (Roby)</td><td>4.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-23</td><td>6</td><td>2026-07-14</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>2</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>31</td><td>Lesley Gearity</td><td>2026-06-17</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>11.0</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>0</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-approved">Appr</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>32</td><td>Michael Dubois</td><td>2026-06-17</td><td>Kevin R.</td><td>4.5</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>3</td><td>2026-07-07</td><td>20</td><td>2026-07-20</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-coach">Coach</span></td><td>5</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>33</td><td>Isaac Lynn</td><td>2026-06-17</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>11.4</td><td>2</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-07</td><td>20</td><td>2026-07-15</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>7</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>34</td><td>John Enns</td><td>2026-06-18</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>9.2</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>2</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-coach">Coach</span></td><td>4</td><td><span class="badge badge-fail">Equipment/CT</span></td></tr>
+<tr><td>35</td><td>Jason Buchan</td><td>2026-06-19</td><td>Lanier (Lanier)</td><td>10.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-09</td><td>20</td><td>2026-07-16</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-none">—</span></td><td>6</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>36</td><td>John Zillante</td><td>2026-06-19</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>5.3</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-09</td><td>20</td><td>2026-07-15</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>3</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>37</td><td>David Pierce</td><td>2026-06-19</td><td>Ish & Gio Crew</td><td>9.4</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-14</td><td>25</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>6</td><td><span class="badge badge-none">Other</span></td></tr>
+<tr><td>38</td><td>Lanita Johnson-Jackson</td><td>2026-06-19</td><td>Benjamin Roby (Roby)</td><td>14.1</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-24</td><td>5</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>39</td><td>Omar Saldivar</td><td>2026-06-19</td><td>Lanier (Lanier)</td><td>6.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-25</td><td>6</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>3</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>40</td><td>Thomas Urban II</td><td>2026-06-22</td><td>Benjamin Roby (Roby)</td><td>5.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-29</td><td>7</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>41</td><td>Moses Lian</td><td>2026-06-23</td><td>Ish & Gio Crew</td><td>7.5</td><td>2</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>3</td><td>2026-07-16</td><td>23</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-none">Other</span></td></tr>
+<tr><td>42</td><td>Denise Armstrong</td><td>2026-06-23</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>10.6</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>0</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>43</td><td>Lexus Anderson</td><td>2026-06-23</td><td>Benjamin Roby (Roby)</td><td>6.2</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-06-26</td><td>3</td><td>2026-07-08</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>2</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>44</td><td>Maria Santos</td><td>2026-06-24</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>13.1</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-15</td><td>21</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>2</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>45</td><td>Russell Reday</td><td>2026-06-24</td><td>Benjamin Roby (Roby)</td><td>6.2</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-02</td><td>8</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-approved">Appr</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>4</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>46</td><td>Phillip Gonzalez</td><td>2026-06-25</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>8.8</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-08</td><td>13</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>2</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>47</td><td>Abel Mcnabb</td><td>2026-06-25</td><td>Benjamin Roby (Roby)</td><td>5.7</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-01</td><td>6</td><td>2026-07-17</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-pass">Monitoring Watch</span></td></tr>
+<tr><td>48</td><td>Ronald Goodman</td><td>2026-06-25</td><td>Lanier (Lanier)</td><td>5.3</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>1</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-approved">Appr</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>7</td><td><span class="badge" style="background:var(--orange-dim);color:var(--orange)">Photo Retake</span></td></tr>
+<tr><td>49</td><td>Lydia Chang</td><td>2026-06-25</td><td>Lanier (Lanier)</td><td>7.0</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-20</td><td>25</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-none">—</span></td><td>2</td><td><span class="badge badge-pending">Meter/Utility</span></td></tr>
+<tr><td>50</td><td>Margaret Bayard</td><td>2026-06-25</td><td>Lanier (Lanier)</td><td>4.5</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>0</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-none">—</span></td><td>7</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>51</td><td>BRITTANY HUSSONG</td><td>2026-06-26</td><td>Humberto Llanes' Crew (Llanes +4)</td><td>5.3</td><td>2</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>2</td><td>2026-07-16</td><td>20</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-approved">Appr</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-none">Other</span></td></tr>
+<tr><td>52</td><td>Miguel Cedillos</td><td>2026-06-29</td><td>Lanier (Lanier)</td><td>4.1</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>0</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-fail">Fail</span></td><td>4</td><td><span class="badge badge-pass">Monitoring</span></td></tr>
+<tr><td>53</td><td>Jeremy Kalminski</td><td>2026-06-30</td><td>Benjamin Roby (Roby)</td><td>4.4</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-10</td><td>10</td><td>2026-07-20</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>1</td><td><span class="badge badge-none">Other</span></td></tr>
+<tr><td>54</td><td>Stokey Bourque</td><td>2026-06-30</td><td>Benjamin Roby (Roby)</td><td>10.6</td><td>1</td><td>1</td><td><span class="badge badge-pass">Y</span></td><td>1</td><td>2026-07-07</td><td>7</td><td>2026-07-17</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-approved">Appr</span></td><td><span class="badge badge-waiting">Wait</span></td><td><span class="badge badge-pass">Pass</span></td><td>3</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+<tr><td>55</td><td>James Cabrera</td><td>2026-06-30</td><td>Lanier (Lanier)</td><td>12.7</td><td>1</td><td>0</td><td><span class="badge badge-fail">N</span></td><td>0</td><td>—</td><td>—</td><td>—</td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-received">Rcvd</span></td><td><span class="badge badge-pass">Pass</span></td><td>5</td><td><span class="badge" style="background:var(--purple-dim);color:var(--purple)">Permit/Doc</span></td></tr>
+</tbody>
+</tbody>
+</table>
+</div>
+<p style="color:var(--text-dim);font-size:0.8rem;">Use filters above to narrow the view. Crew from Arrivy entity assignments. kW from QB Projects (FID 13). RTR from QB Installations (FID 356).</p>
+</div>
+
+
+<!-- TAB 8: CREW UTILIZATION -->
+<div id="tab-utilization" class="tab-content">
+<h2>Week-by-Week Crew Utilization Analysis <span class="new-tag">V3 NEW</span></h2>
+<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:16px;">
+  Utilization metric: <strong>5 installs/week = 100%</strong> OR <strong>50 kW/week = 100%</strong>. Color coding based on the higher of the two metrics. Week grouping: Mon&ndash;Sun (ISO week).
+</p>
+
+<div class="util-legend">
+  <div class="util-legend-item"><div class="util-legend-swatch" style="background:rgba(34,197,94,0.15);border:1px solid var(--green)"></div> &ge;80% utilization</div>
+  <div class="util-legend-item"><div class="util-legend-swatch" style="background:rgba(234,179,8,0.15);border:1px solid var(--yellow)"></div> 50&ndash;79% utilization</div>
+  <div class="util-legend-item"><div class="util-legend-swatch" style="background:rgba(239,68,68,0.15);border:1px solid var(--red)"></div> &lt;50% utilization</div>
+  <div class="util-legend-item"><div class="util-legend-swatch" style="background:var(--card-alt);border:1px solid var(--border)"></div> 0 installs</div>
+</div>
+
+<h3>Crew Utilization by Week</h3>
+<div class="table-wrap">
+<table class="util-table">
+<thead>
+<tr>
+  <th style="text-align:left">Crew</th><th>Type</th>
+  <th>Wk1<br>Jun 1-7</th><th>Wk2<br>Jun 8-14</th><th>Wk3<br>Jun 15-21</th><th>Wk4<br>Jun 22-28</th><th>Wk5<br>Jun 29-30</th>
+  <th>Total</th>
+</tr>
+</thead>
+<tbody>
+<tr><td class="crew-name">Benjamin Roby's Crew</td><td><span class="crew-type-badge type-w2">W2</span></td><td class="util-yellow">3i / 18.5kW<br><span class="util-pct">60%</span></td><td class="util-red">2i / 15.4kW<br><span class="util-pct">40%</span></td><td class="util-green">5i / 43.9kW<br><span class="util-pct">100%</span></td><td class="util-green">4i / 23.8kW<br><span class="util-pct">80%</span></td><td class="util-red">2i / 15.0kW<br><span class="util-pct">40%</span></td><td class="util-total">16i / 116.6kW</td></tr>
+<tr><td class="crew-name">Humberto Llanes' Crew</td><td><span class="crew-type-badge type-w2">W2</span></td><td class="util-gray">—</td><td class="util-red">1i / 24.6kW<br><span class="util-pct">20%</span></td><td class="util-green">5i / 65.9kW<br><span class="util-pct">100%</span></td><td class="util-green">4i / 37.8kW<br><span class="util-pct">80%</span></td><td class="util-gray">—</td><td class="util-total">10i / 128.3kW</td></tr>
+<tr><td class="crew-name">Ish & Gio Crew</td><td><span class="crew-type-badge type-sub">Sub</span></td><td class="util-yellow">3i / 36.1kW<br><span class="util-pct">60%</span></td><td class="util-red">2i / 14.5kW<br><span class="util-pct">40%</span></td><td class="util-yellow">2i / 25.7kW<br><span class="util-pct">40%</span></td><td class="util-red">1i / 7.5kW<br><span class="util-pct">20%</span></td><td class="util-gray">—</td><td class="util-total">8i / 83.8kW</td></tr>
+<tr><td class="crew-name">Jason Breaux Solo</td><td><span class="crew-type-badge type-sub">Sub</span></td><td class="util-red">1i / 15.0kW<br><span class="util-pct">20%</span></td><td class="util-red">1i / 7.5kW<br><span class="util-pct">20%</span></td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-total">2i / 22.5kW</td></tr>
+<tr><td class="crew-name">Kevin Radebaugh + Natalie Peralta</td><td><span class="crew-type-badge type-w2">W2</span></td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-red">1i / 4.5kW<br><span class="util-pct">20%</span></td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-total">1i / 4.5kW</td></tr>
+<tr><td class="crew-name">Lanier's Crew</td><td><span class="crew-type-badge type-sub">Sub</span></td><td class="util-red">2i / 13.9kW<br><span class="util-pct">40%</span></td><td class="util-red">2i / 18.9kW<br><span class="util-pct">40%</span></td><td class="util-green">7i / 50.5kW<br><span class="util-pct">140%</span></td><td class="util-yellow">3i / 16.8kW<br><span class="util-pct">60%</span></td><td class="util-red">2i / 16.8kW<br><span class="util-pct">40%</span></td><td class="util-total">16i / 116.9kW</td></tr>
+<tr><td class="crew-name">Unknown</td><td><span class="crew-type-badge type-unknown">Unknown</span></td><td class="util-red">2i / 12.7kW<br><span class="util-pct">40%</span></td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-gray">—</td><td class="util-total">2i / 12.7kW</td></tr>
+
+<tr class="weekly-totals-row"><td colspan="2" class="crew-name">Weekly Totals (All Crews)</td><td class="util-green">11i / 96.2kW<br><span class="util-pct">220%</span></td><td class="util-green">8i / 80.9kW<br><span class="util-pct">160%</span></td><td class="util-green">20i / 190.5kW<br><span class="util-pct">400%</span></td><td class="util-green">12i / 85.9kW<br><span class="util-pct">240%</span></td><td class="util-green">4i / 31.8kW<br><span class="util-pct">80%</span></td><td class="util-total">55i / 485.3kW</td></tr>
+</tbody>
+</table>
+</div>
+
+<p style="color:var(--text-dim);font-size:0.82rem;margin-top:16px;">
+  <strong>Notes:</strong> Week 3 (Jun 15-21) was the peak week with 20 installs / 190.5 kW. Lanier's Crew hit 140% utilization that week (7 installs / 50.5 kW) &mdash; potential overloading that may correlate with quality issues. Week 5 is a partial week (Jun 29-30 only). W2 vs Sub classification based on Arrivy entity roles &mdash; <strong>correct if wrong</strong>.
+</p>
+
+<h3>Sub vs W2 Breakdown</h3>
+<div class="sub-w2-grid">
+  <div class="sub-w2-card sub">
+    <div class="title" style="color:var(--orange)">Subcontractor Crews</div>
+    <div class="stat"><span class="num" style="color:var(--orange)">26/55</span></div>
+    <div class="stat"><span class="lbl">Projects: 47.3% of total</span></div>
+    <div class="stat"><span class="num" style="color:var(--orange)">223.2 / 485.3 kW</span></div>
+    <div class="stat"><span class="lbl">kW: 46.0% of total</span></div>
+    <div style="margin-top:12px;font-size:0.78rem;color:var(--text-dim);">Crews: Ish &amp; Gio (8), Lanier's Crew (16), Jason Breaux (2)</div>
+  </div>
+  <div class="sub-w2-card w2">
+    <div class="title" style="color:var(--blue)">W2 Employee Crews</div>
+    <div class="stat"><span class="num" style="color:var(--blue)">27/55</span></div>
+    <div class="stat"><span class="lbl">Projects: 49.1% of total</span></div>
+    <div class="stat"><span class="num" style="color:var(--blue)">249.4 / 485.3 kW</span></div>
+    <div class="stat"><span class="lbl">kW: 51.4% of total</span></div>
+    <div style="margin-top:12px;font-size:0.78rem;color:var(--text-dim);">Crews: Benjamin Roby (16), Humberto Llanes (10), Kevin Radebaugh (1)</div>
+  </div>
+</div>
+
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:24px;">
+  <h3 style="margin-top:0">Key Utilization Insights</h3>
+  <ul style="color:var(--text-dim);font-size:0.88rem;line-height:1.8;padding-left:20px;">
+    <li><strong style="color:var(--text)">Sub vs W2 is nearly 50/50:</strong> Sub crews handle 47.3% of projects (46.0% of kW), W2 crews handle 49.1% (51.4% of kW). Nearly half of install volume depends on subcontractors.</li>
+    <li><strong style="color:var(--text)">Lanier's Crew (Sub) carries the most load:</strong> 16 projects / 116.9 kW &mdash; same volume as Benjamin Roby's Crew (W2) but with 56% inspection pass rate vs 100%.</li>
+    <li><strong style="color:var(--text)">Week 3 was peak:</strong> 20 installs across all crews. Lanier's Crew did 7 that week (140% utilization). Potential overloading correlating with quality issues.</li>
+    <li><strong style="color:var(--text)">Humberto Llanes' Crew (W2) had highest kW per project:</strong> 12.8 kW avg (vs 8.8 kW overall avg) &mdash; they take on larger projects.</li>
+    <li><strong style="color:var(--text)">Week 5 (partial, Jun 29-30):</strong> Only 4 installs. Benjamin Roby's Crew and Lanier's Crew each did 2; no other crews worked.</li>
+    <li><strong style="color:var(--text)">Kevin Radebaugh (W2) only did 1 install:</strong> Functions more as Field Director. His single project had 3 truck rolls &mdash; worth investigating.</li>
+    <li><strong style="color:var(--text)">2 unattributed projects:</strong> Stanley Hough (12.7 kW) and David Larsen (0.0 kW) &mdash; 2.6% of total kW with unknown crew.</li>
+  </ul>
+</div>
+
+<h3>Weekly Totals Across All Crews</h3>
+<div class="table-wrap">
+<table class="util-table">
+<thead>
+<tr><th style="text-align:left">Week</th><th>Installs</th><th>kW</th><th>Util % (inst)</th><th>Util % (kW)</th></tr>
+</thead>
+<tbody>
+
+<tr><td style="text-align:left;font-weight:600">Wk1 (Jun 1-7)</td><td>11</td><td>96.2</td><td class="util-green">220%</td><td class="util-green">192%</td></tr>
+
+<tr><td style="text-align:left;font-weight:600">Wk2 (Jun 8-14)</td><td>8</td><td>80.9</td><td class="util-green">160%</td><td class="util-green">162%</td></tr>
+
+<tr><td style="text-align:left;font-weight:600">Wk3 (Jun 15-21)</td><td>20</td><td>190.5</td><td class="util-green">400%</td><td class="util-green">381%</td></tr>
+
+<tr><td style="text-align:left;font-weight:600">Wk4 (Jun 22-28)</td><td>12</td><td>85.9</td><td class="util-green">240%</td><td class="util-green">172%</td></tr>
+
+<tr><td style="text-align:left;font-weight:600">Wk5 (Jun 29-30)</td><td>4</td><td>31.8</td><td class="util-green">80%</td><td class="util-green">64%</td></tr>
+
+<tr class="weekly-totals-row"><td style="text-align:left">Total</td><td>55</td><td>485.3</td><td>&mdash;</td><td>&mdash;</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+<div class="footer">
+  Data pulled from QuickBase Installations (bsbkmcgfs), Projects (br9kwm8na), Inspections (bsc3v7tdg), Notes (bsb6bqt3b), Tickets (bstdqwrkg), and Arrivy tasks (Jun 1 &ndash; Jul 21). All data as of 2026-07-21. Generated by Sparky &mdash; KIN Field Operations.<br>
+  <strong>V4 changes:</strong> (1) NEW Exec Weekly Summary tab with James's format &mdash; week-by-week crew utilization, scheduled vs completed, 1-touch rate, cost per watt placeholder. (2) All V3 features retained: truck rolls from Arrivy, interactive filters, crew utilization, W2/Sub classification.
+</div>
+
+<script>
+function showTab(id, el) {
+  document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(e => e.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  if (el) el.classList.add('active');
+}
+
+function applyFilters() {
+  var crew = document.getElementById('filter-crew').value.toLowerCase();
+  var search = document.getElementById('filter-search').value.toLowerCase();
+  var dateFrom = document.getElementById('filter-date-from').value;
+  var dateTo = document.getElementById('filter-date-to').value;
+  var insp = document.getElementById('filter-insp').value;
+  var pto = document.getElementById('filter-pto').value;
+  var funding = document.getElementById('filter-funding').value;
+  
+  var rows = document.querySelectorAll('#projects-table tbody tr');
+  var visible = 0;
+  var total = rows.length;
+  
+  rows.forEach(function(row) {
+    var show = true;
+    var cells = row.querySelectorAll('td');
+    if (cells.length < 5) return;
+    
+    var customer = cells[1] ? cells[1].textContent.toLowerCase() : '';
+    var installDate = cells[2] ? cells[2].textContent.trim() : '';
+    var crewCell = cells[3] ? cells[3].textContent.toLowerCase() : '';
+    var firstPass = cells[7] ? cells[7].textContent.trim().toLowerCase() : '';
+    var ptoDate = cells[11] ? cells[11].textContent.trim() : '';
+    var m2 = cells[13] ? cells[13].textContent.trim().toLowerCase() : '';
+    var m3 = cells[14] ? cells[14].textContent.trim().toLowerCase() : '';
+    
+    if (crew && crewCell.indexOf(crew) === -1) show = false;
+    if (search && customer.indexOf(search) === -1) show = false;
+    if (dateFrom && installDate && installDate < dateFrom) show = false;
+    if (dateTo && installDate && installDate > dateTo) show = false;
+    if (insp === 'passed' && firstPass !== 'y') show = false;
+    if (insp === 'failed' && firstPass !== 'n') show = false;
+    if (insp === 'pending' && (firstPass === 'y' || firstPass === 'n')) show = false;
+    if (pto === 'approved' && ptoDate === '\u2014') show = false;
+    if (pto === 'pending' && ptoDate !== '\u2014') show = false;
+    if (funding === 'm2-received' && m2 !== 'rcvd') show = false;
+    if (funding === 'm2-pending' && m2 === 'rcvd') show = false;
+    if (funding === 'm3-received' && m3 !== 'rcvd') show = false;
+    if (funding === 'm3-pending' && m3 === 'rcvd') show = false;
+    
+    if (show) { row.style.display = ''; visible++; } else { row.style.display = 'none'; }
+  });
+  
+  document.getElementById('filter-count').textContent = 'Showing ' + visible + ' of ' + total + ' projects';
+}
+
+function resetFilters() {
+  document.getElementById('filter-crew').value = '';
+  document.getElementById('filter-search').value = '';
+  document.getElementById('filter-date-from').value = '';
+  document.getElementById('filter-date-to').value = '';
+  document.getElementById('filter-insp').value = '';
+  document.getElementById('filter-pto').value = '';
+  document.getElementById('filter-funding').value = '';
+  applyFilters();
+}
+</script>
+
+</body>
+</html>
