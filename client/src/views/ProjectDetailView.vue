@@ -974,7 +974,20 @@ const qbHref = computed(() => `https://kin.quickbase.com/db/br9kwm8na?a=dr&rid=$
             <span class="text-slate-400">By</span>
             <span class="ml-1 text-slate-600">{{ lastUpdatedBy }}</span>
           </span>
-          <span v-if="!auth.isReferralAgent" class="ml-auto">
+          <!-- PhotoGuard: opens the SHARED checkout for this job, so office
+               staff and every trade on site land in the same submission. -->
+          <span v-if="!auth.isReferralAgent" class="ml-auto flex items-center gap-3">
+            <RouterLink
+              :to="`/photoguard/form/install_checkout?project=${recordId}`"
+              class="inline-flex items-center gap-1.5 text-teal-700 hover:underline cursor-pointer"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="13" r="3" stroke="currentColor" stroke-width="1.7"/></svg>
+              Install checkout
+            </RouterLink>
+            <RouterLink
+              :to="`/photoguard/form/site_survey?project=${recordId}`"
+              class="inline-flex items-center gap-1.5 text-teal-700 hover:underline cursor-pointer"
+            >Site survey</RouterLink>
             <a
               :href="qbHref"
               target="_blank"

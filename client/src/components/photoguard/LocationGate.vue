@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// Location permission banner.
+// Compact location indicator.
 //
-// Explains why location is wanted, asks from a real tap, and — when it's been
-// denied or is unavailable — says exactly how to fix it instead of leaving a
-// dead "location off" label on screen. Capture is never blocked by this;
-// photos without location get a warning, not a rejection.
-import { computed } from 'vue'
+// Deliberately a single line, not a banner. The geofence anchors on the
+// project's own coordinates from Quickbase, so device location is a secondary
+// signal — it fills in provenance for photos whose EXIF has been stripped.
+// Getting it is worth one quiet nudge, not a card that pushes the actual work
+// off screen. Tapping expands the recovery steps, since a denial can only be
+// undone in browser/OS settings.
+import { computed, ref } from 'vue'
 import { recoverySteps, type LocationState, type Fix } from '@/lib/geolocation'
 
 const props = defineProps<{
@@ -18,111 +20,85 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'request'): void }>()
 
-// Granted with a good fix needs no banner — just a quiet confirmation line.
-const quiet = computed(() => props.state === 'granted' && !!props.fix && !props.coarse)
+const expanded = ref(false)
 
-const tone = computed(() => {
-  if (props.state === 'granted') return props.coarse ? 'amber' : 'emerald'
-  if (props.state === 'prompt') return 'sky'
-  return 'amber'
+const label = computed(() => {
+  switch (props.state) {
+    case 'granted':
+      return props.coarse
+        ? `Location rough (~${Math.round(props.fix?.accuracy ?? 0)}m)`
+        : `Location on (~${Math.round(props.fix?.accuracy ?? 0)}m)`
+    case 'prompt': return 'Location off'
+    case 'denied': return 'Location blocked'
+    case 'insecure': return 'Location unavailable on http'
+    case 'unsupported': return 'Location not supported'
+    default: return 'Location unavailable'
+  }
 })
 
-const toneClass = computed(() => ({
-  emerald: 'border-emerald-300',
-  amber: 'border-amber-300',
-  sky: 'border-sky-300',
-}[tone.value] ?? ''))
+const dotClass = computed(() => {
+  if (props.state === 'granted') return props.coarse ? 'bg-amber-500' : 'bg-emerald-500'
+  if (props.state === 'prompt') return 'bg-slate-300'
+  return 'bg-amber-500'
+})
 
-const steps = computed(() => recoverySteps())
+const textClass = computed(() => {
+  if (props.state === 'granted' && !props.coarse) return 'text-emerald-600'
+  if (props.state === 'prompt') return 'text-muted-foreground'
+  return 'text-amber-600'
+})
+
+// Only a live prompt can be resolved in-page; everything else needs settings.
+const canAsk = computed(() =>
+  props.state === 'prompt' || props.state === 'error' ||
+  (props.state === 'granted' && props.coarse))
+
+const canExplain = computed(() => props.state === 'denied' || props.state === 'insecure')
 </script>
 
 <template>
-  <!-- Happy path: one line, no nagging. -->
-  <p v-if="quiet" class="text-[11px] text-emerald-600">
-    Location on · accurate to ~{{ Math.round(fix!.accuracy) }}m
-  </p>
+  <div class="min-w-0">
+    <p class="flex flex-wrap items-center gap-1.5 text-[11px]" :class="textClass">
+      <span class="inline-block size-1.5 rounded-full flex-none" :class="dotClass" />
+      <span>{{ label }}</span>
 
-  <div v-else class="rounded-xl border bg-card p-3 min-w-0" :class="toneClass">
-    <!-- Not yet asked -->
-    <template v-if="state === 'prompt'">
-      <p class="text-sm font-medium">Turn on location</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        Photos get stamped with where they were taken, so office staff can confirm
-        the work happened at the right address — and so you're not asked to go back
-        and prove it later.
-      </p>
       <button
-        type="button" :disabled="requesting"
-        class="mt-2 px-3 py-2 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground disabled:opacity-50"
+        v-if="canAsk" type="button" :disabled="requesting"
+        class="underline underline-offset-2 font-medium disabled:opacity-50"
         @click="emit('request')"
-      >{{ requesting ? 'Asking…' : 'Enable location' }}</button>
-    </template>
+      >{{ requesting ? 'checking…' : state === 'prompt' ? 'turn on' : 'retry' }}</button>
 
-    <!-- Granted but the fix is too coarse to trust -->
-    <template v-else-if="state === 'granted' && coarse">
-      <p class="text-sm font-medium text-amber-600">Location is rough</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        Accurate to about {{ Math.round(fix?.accuracy ?? 0) }}m, which is too vague to
-        confirm you're at the property. Step outside if you can — it usually sharpens
-        within a few seconds.
-      </p>
       <button
-        type="button" :disabled="requesting"
-        class="mt-2 px-3 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
-        @click="emit('request')"
-      >{{ requesting ? 'Retrying…' : 'Try again' }}</button>
-    </template>
+        v-else-if="canExplain" type="button"
+        class="underline underline-offset-2 font-medium"
+        @click="expanded = !expanded"
+      >{{ expanded ? 'hide' : 'why?' }}</button>
 
-    <!-- Denied — the page cannot re-prompt, so give directions -->
-    <template v-else-if="state === 'denied'">
-      <p class="text-sm font-medium text-amber-600">Location is blocked</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        Your browser won't ask again, so it has to be changed in settings:
+      <span v-if="state !== 'granted'" class="text-muted-foreground">
+        · photos still upload, just unverified
+      </span>
+    </p>
+
+    <div v-if="expanded && state === 'denied'" class="mt-1.5 rounded-lg border bg-card p-2.5">
+      <p class="text-[11px] text-muted-foreground">
+        The browser won't ask again — it has to be changed in settings:
       </p>
-      <ol class="mt-1.5 grid gap-1 list-decimal list-inside">
-        <li v-for="(s, i) in steps" :key="i" class="text-[11px] text-muted-foreground">{{ s }}</li>
+      <ol class="mt-1 grid gap-0.5 list-decimal list-inside">
+        <li v-for="(s, i) in recoverySteps()" :key="i" class="text-[11px] text-muted-foreground">{{ s }}</li>
       </ol>
       <button
-        type="button" :disabled="requesting"
-        class="mt-2 px-3 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
+        type="button" class="mt-1.5 text-[11px] underline underline-offset-2 font-medium"
         @click="emit('request')"
       >Check again</button>
-      <p class="mt-1.5 text-[11px] text-muted-foreground">
-        You can keep working — photos will just be flagged as unverified.
-      </p>
-    </template>
+    </div>
 
-    <!-- http:// on a LAN IP: not a permission problem at all -->
-    <template v-else-if="state === 'insecure'">
-      <p class="text-sm font-medium text-amber-600">Location needs a secure connection</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        This page is on plain <code>http://</code>, and browsers only allow location over
-        <code>https://</code> (or on localhost). No setting will enable it here.
+    <div v-else-if="expanded && state === 'insecure'" class="mt-1.5 rounded-lg border bg-card p-2.5">
+      <p class="text-[11px] text-muted-foreground">
+        Browsers only expose location over <code>https://</code> (or localhost), and this
+        page is plain <code>http://</code> — no setting can enable it here. It works
+        normally in production. Photos taken with the camera may still carry their own
+        GPS tag; each tile shows whether it did.
       </p>
-      <p class="mt-1 text-[11px] text-muted-foreground">
-        Photos taken with the camera may still carry their own GPS tag — each tile
-        shows whether it did.
-      </p>
-    </template>
-
-    <template v-else-if="state === 'unsupported'">
-      <p class="text-sm font-medium text-amber-600">This device can't share location</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        Photos will be accepted but flagged as unverified.
-      </p>
-    </template>
-
-    <!-- Transient failure -->
-    <template v-else>
-      <p class="text-sm font-medium text-amber-600">Couldn't get your location</p>
-      <p class="mt-1 text-[12px] text-muted-foreground">
-        {{ error || 'No GPS or network fix available right now.' }}
-      </p>
-      <button
-        type="button" :disabled="requesting"
-        class="mt-2 px-3 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
-        @click="emit('request')"
-      >{{ requesting ? 'Retrying…' : 'Try again' }}</button>
-    </template>
+    </div>
   </div>
 </template>

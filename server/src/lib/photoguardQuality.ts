@@ -50,7 +50,10 @@ export interface GateIssue {
 export const MIN_MEGAPIXELS = Number(process.env['PHOTOGUARD_MIN_MP'] || 1.2)
 export const MIN_DIMENSION = Number(process.env['PHOTOGUARD_MIN_DIM'] || 800)
 export const GEOFENCE_METERS = Number(process.env['PHOTOGUARD_GEOFENCE_M'] || 300)
-export const MAX_AGE_HOURS = Number(process.env['PHOTOGUARD_MAX_AGE_H'] || 24)
+// 0 = disabled. Crews upload from the camera roll after the job — often on the
+// drive home, sometimes next morning — so photo age is recorded and shown but
+// does not block. Set PHOTOGUARD_MAX_AGE_H to re-enable the gate.
+export const MAX_AGE_HOURS = Number(process.env['PHOTOGUARD_MAX_AGE_H'] || 0)
 
 /** Great-circle distance in metres. */
 export function haversineMeters(
@@ -249,7 +252,7 @@ export function runQualityGates(meta: PhotoMetadata, ctx: GateContext): GateIssu
       issues.push({ code: 'bad_timestamp', severity: 'warn', message: 'Capture time is unreadable.' })
     } else {
       const ageH = (now.getTime() - t.getTime()) / 3_600_000
-      if (ageH > MAX_AGE_HOURS) {
+      if (MAX_AGE_HOURS > 0 && ageH > MAX_AGE_HOURS) {
         issues.push({
           code: 'stale', severity: 'fail',
           message: `Taken ${Math.round(ageH)}h ago — older than the ${MAX_AGE_HOURS}h limit for this visit.`,

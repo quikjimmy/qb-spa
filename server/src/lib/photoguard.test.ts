@@ -500,13 +500,26 @@ test('an off-site photo blocks and reports the distance', () => {
   assert.match(off?.message ?? '', /from the site address/)
 })
 
-test('a stale photo blocks; a fresh one does not', () => {
-  const old = runQualityGates({ ...GOOD, photoTimestamp: '2026-08-01T12:00:00.000Z' },
-    { source: 'camera', now: NOW })
-  assert.ok(old.some(i => i.code === 'stale' && i.severity === 'fail'))
+test('photo age does not block by default — crews upload from the camera roll later', async () => {
+  // Deliberate product decision: photos are routinely uploaded hours or days
+  // after the job (drive home, next morning), so age is recorded and shown but
+  // never rejected. The geofence carries the provenance load instead, anchored
+  // on the project's own coordinates rather than wherever the phone is.
+  const old = runQualityGates({ ...GOOD, photoTimestamp: '2026-06-01T12:00:00.000Z' },
+    { source: 'upload', now: NOW })
+  assert.equal(old.some(i => i.code === 'stale'), false)
+  assert.equal(gatesBlock(old), false)
 
-  const fresh = runQualityGates(GOOD, { source: 'camera', now: NOW })
-  assert.equal(fresh.some(i => i.code === 'stale'), false)
+  // ...but the gate is still there when PHOTOGUARD_MAX_AGE_H is set.
+  const { MAX_AGE_HOURS } = await import('./photoguardQuality')
+  assert.equal(MAX_AGE_HOURS, 0, 'disabled unless explicitly configured')
+})
+
+test('a missing capture time is still reported, just not fatal', () => {
+  const issues = runQualityGates({ ...GOOD, photoTimestamp: null }, { source: 'upload', now: NOW })
+  const t = issues.find(i => i.code === 'no_timestamp')
+  assert.equal(t?.severity, 'warn')
+  assert.equal(gatesBlock(issues), false)
 })
 
 test('a re-used image is caught as a duplicate', () => {

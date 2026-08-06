@@ -38,6 +38,8 @@ const answers = ref<Record<string, unknown>>({})
 const loc = useGeolocation()
 // Capture tiles only need the coordinate pair.
 const geo = computed(() => (loc.fix.value ? { lat: loc.fix.value.lat, lng: loc.fix.value.lng } : null))
+const contributors = ref<Array<{ name: string; photos: number; last_at: string }>>([])
+const shareCopied = ref(false)
 
 const loading = ref(true)
 const error = ref('')
@@ -97,8 +99,10 @@ async function refreshSubmission() {
   const data = await res.json() as {
     photos: PhotoRow[]
     answers: Array<{ field_hash: string; value: string | null }>
+    contributors?: Array<{ name: string; photos: number; last_at: string }>
   }
   photos.value = data.photos
+  contributors.value = data.contributors ?? []
   const next: Record<string, unknown> = {}
   for (const a of data.answers) {
     if (a.value == null) continue
@@ -170,6 +174,21 @@ watch(() => loc.fix.value, async f => {
     body: JSON.stringify({ siteLat: f.lat, siteLng: f.lng }),
   }).catch(() => { /* anchoring is best-effort */ })
 }, { immediate: true })
+
+/** A link straight to this job's shared checkout — the lead texts it to
+ *  whoever is on site, including subs who don't navigate the app. */
+async function copyJobLink() {
+  const url = new URL(window.location.href)
+  if (projectRid.value) url.searchParams.set('project', String(projectRid.value))
+  // Deliberately omits ?submission= — the server joins by project + form type,
+  // so anyone opening it lands in the same shared checkout.
+  url.searchParams.delete('submission')
+  try {
+    await navigator.clipboard.writeText(url.toString())
+    shareCopied.value = true
+    setTimeout(() => { shareCopied.value = false }, 2500)
+  } catch { /* clipboard blocked — the URL bar still works */ }
+}
 
 async function askLocation() {
   const f = await loc.request()
@@ -282,6 +301,13 @@ async function submit(force = false) {
       <p class="text-[11px] text-muted-foreground">
         {{ overall.done }} / {{ overall.total }} required photos captured
       </p>
+      <!-- Several trades share one checkout; show who's been on it. -->
+      <p v-if="contributors.length" class="text-[11px] text-muted-foreground">
+        <span class="font-medium text-foreground">On this job:</span>
+        <span v-for="(c, i) in contributors" :key="c.name">
+          {{ i ? ' · ' : ' ' }}{{ c.name }} ({{ c.photos }})
+        </span>
+      </p>
       <!-- What was sold, straight from Quickbase — so the crew can check the
            equipment on site against it, and so the AI can too. -->
       <p v-if="form?.design?.text" class="text-[11px] text-muted-foreground">
@@ -289,14 +315,21 @@ async function submit(force = false) {
       </p>
     </div>
 
-    <LocationGate
-      :state="loc.state.value"
-      :fix="loc.fix.value"
-      :error="loc.error.value"
-      :requesting="loc.requesting.value"
-      :coarse="loc.coarse.value"
-      @request="askLocation"
-    />
+    <div class="flex flex-wrap items-center justify-between gap-2 min-w-0">
+      <LocationGate
+        :state="loc.state.value"
+        :fix="loc.fix.value"
+        :error="loc.error.value"
+        :requesting="loc.requesting.value"
+        :coarse="loc.coarse.value"
+        @request="askLocation"
+      />
+      <button
+        v-if="projectRid" type="button"
+        class="flex-none px-2.5 py-1 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
+        @click="copyJobLink"
+      >{{ shareCopied ? 'Link copied' : 'Share job' }}</button>
+    </div>
 
     <p v-if="loading" class="text-sm text-muted-foreground">Loading form…</p>
 

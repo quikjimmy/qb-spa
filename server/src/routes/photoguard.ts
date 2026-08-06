@@ -167,6 +167,30 @@ function projectFor(rid: number | null | undefined): Record<string, unknown> | n
   return (row as Record<string, unknown>) ?? null
 }
 
+/**
+ * Where the job actually is.
+ *
+ * project_cache carries real coordinates for 10,554 of 10,591 projects, so the
+ * geofence anchors on the PROPERTY, not on wherever the phone happened to be
+ * when the survey was opened. That distinction matters: crews upload from the
+ * camera roll after the fact — on the drive home, or next morning — and a
+ * device-derived anchor would have measured the photo against their kitchen.
+ * The submission's own site_lat/site_lng is only a fallback for jobs with no
+ * project attached.
+ */
+function siteCoordsFor(sub: Record<string, unknown> | undefined): { lat: number | null; lng: number | null } {
+  const project = projectFor(sub?.['project_rid'] as number | null | undefined)
+  const pLat = project?.['lat'] != null ? Number(project['lat']) : NaN
+  const pLng = project?.['lng'] != null ? Number(project['lng']) : NaN
+  if (Number.isFinite(pLat) && Number.isFinite(pLng) && !(pLat === 0 && pLng === 0)) {
+    return { lat: pLat, lng: pLng }
+  }
+  return {
+    lat: sub?.['site_lat'] != null ? Number(sub['site_lat']) : null,
+    lng: sub?.['site_lng'] != null ? Number(sub['site_lng']) : null,
+  }
+}
+
 /** Photos whose bytes are already on this submission — powers duplicate detection. */
 function knownHashes(submissionId: number | null): Set<string> {
   if (!submissionId) return new Set()
@@ -402,6 +426,22 @@ photoguardRouter.post('/submissions', (req: Request, res: Response) => {
   const rid = b['projectRid'] != null ? Number(b['projectRid']) : null
   const project = projectFor(rid)
 
+  // One checkout per job, not per person. A roof tech and an electrician
+  // working the same install join the SAME submission so they fill different
+  // sections of one form and can both see what's still outstanding. Photos
+  // carry their own captured_by, so attribution survives the sharing.
+  if (rid) {
+    const existing = db.prepare(`
+      SELECT id FROM photoguard_submissions
+      WHERE project_rid = ? AND form_type = ? AND status = 'in_progress'
+      ORDER BY id LIMIT 1
+    `).get(rid, formType) as { id: number } | undefined
+    if (existing) {
+      res.status(200).json({ id: existing.id, formType, projectRid: rid, joined: true })
+      return
+    }
+  }
+
   const info = db.prepare(`
     INSERT INTO photoguard_submissions
       (form_type, project_rid, customer_name, started_by, started_by_name, site_lat, site_lng)
@@ -413,7 +453,59 @@ photoguardRouter.post('/submissions', (req: Request, res: Response) => {
     b['siteLat'] != null ? Number(b['siteLat']) : null,
     b['siteLng'] != null ? Number(b['siteLng']) : null,
   )
-  res.status(201).json({ id: info.lastInsertRowid, formType, projectRid: rid })
+  res.status(201).json({ id: info.lastInsertRowid, formType, projectRid: rid, joined: false })
+})
+
+/**
+ * Jobs scheduled around today, as one-tap entry points.
+ *
+ * Reads project_cache (already synced from Quickbase) rather than Arrivy, so
+ * the list works whether or not Arrivy is reachable. Each job reports any
+ * in-progress submission and its progress, so a second trade arriving later
+ * sees "Resume · 12/34" instead of starting a duplicate.
+ */
+photoguardRouter.get('/jobs', (req: Request, res: Response) => {
+  const days = Math.min(Math.max(Number(req.query['days'] ?? 1), 0), 30)
+  const kind = String(req.query['kind'] ?? 'install')
+  const column = kind === 'survey' ? 'survey_scheduled' : 'install_scheduled'
+  const formType: PhotoGuardFormType = kind === 'survey' ? 'site_survey' : 'install_checkout'
+
+  const rows = db.prepare(`
+    SELECT record_id, customer_name, customer_address, lat, lng,
+           ${column} AS scheduled, status, system_size_kw, coordinator
+    FROM project_cache
+    WHERE ${column} IS NOT NULL
+      AND date(${column}) BETWEEN date('now', ?) AND date('now', ?)
+    ORDER BY date(${column}), customer_name
+    LIMIT 200
+  `).all(`-${days} day`, `+${days} day`) as Array<Record<string, unknown>>
+
+  const subStmt = db.prepare(`
+    SELECT id, status,
+      (SELECT COUNT(*) FROM photoguard_photos p WHERE p.submission_id = s.id) AS photos,
+      (SELECT COUNT(DISTINCT captured_by_name) FROM photoguard_photos p WHERE p.submission_id = s.id) AS contributors
+    FROM photoguard_submissions s
+    WHERE s.project_rid = ? AND s.form_type = ?
+    ORDER BY (s.status = 'in_progress') DESC, s.id DESC LIMIT 1
+  `)
+
+  const jobs = rows.map(r => {
+    const sub = subStmt.get(r['record_id'], formType) as
+      | { id: number; status: string; photos: number; contributors: number } | undefined
+    return {
+      projectRid: r['record_id'],
+      customerName: r['customer_name'],
+      customerAddress: r['customer_address'],
+      scheduled: r['scheduled'],
+      status: r['status'],
+      systemSizeKw: r['system_size_kw'],
+      coordinator: r['coordinator'],
+      hasCoords: r['lat'] != null && r['lng'] != null,
+      formType,
+      submission: sub ?? null,
+    }
+  })
+  res.json({ kind, formType, days, jobs })
 })
 
 photoguardRouter.get('/submissions', (req: Request, res: Response) => {
@@ -441,10 +533,20 @@ photoguardRouter.get('/submissions/:id', (req: Request, res: Response) => {
   const project = projectFor(sub['project_rid'] as number | null)
   const resolved = resolveRequirements(String(sub['form_type']), project)
 
+  // Who has contributed, so the crew can see each other working.
+  const contributors = db.prepare(`
+    SELECT captured_by_name AS name, COUNT(*) AS photos, MAX(created_at) AS last_at
+    FROM photoguard_photos
+    WHERE submission_id = ? AND captured_by_name IS NOT NULL
+    GROUP BY captured_by_name ORDER BY photos DESC
+  `).all(id)
+
   res.json({
     submission: sub,
     answers,
     photos,
+    contributors,
+    site: siteCoordsFor(sub),
     design: describeDesign(project),
     requirements: Object.fromEntries(resolved),
   })
@@ -591,8 +693,8 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     source,
     deviceLat: b['lat'] ? Number(b['lat']) : null,
     deviceLng: b['lng'] ? Number(b['lng']) : null,
-    siteLat: sub?.['site_lat'] != null ? Number(sub['site_lat']) : null,
-    siteLng: sub?.['site_lng'] != null ? Number(sub['site_lng']) : null,
+    siteLat: siteCoordsFor(sub).lat,
+    siteLng: siteCoordsFor(sub).lng,
     capturedAt: b['capturedAt'] ?? null,
     knownHashes: knownHashes(submissionId),
   })

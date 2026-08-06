@@ -27,6 +27,35 @@ const toast = ref('')
 
 const coverageForm = ref<'site_survey' | 'install_checkout'>('site_survey')
 
+// ─── Today's jobs — the crew's way in ────────────────────────────────
+interface Job {
+  projectRid: number
+  customerName: string | null
+  customerAddress: string | null
+  scheduled: string
+  hasCoords: boolean
+  formType: string
+  submission: { id: number; status: string; photos: number; contributors: number } | null
+}
+const jobKind = ref<'install' | 'survey'>('install')
+const jobDays = ref(1)
+const jobs = ref<Job[]>([])
+const jobsLoading = ref(true)
+
+async function loadJobs() {
+  jobsLoading.value = true
+  try {
+    const res = await fetch(`/api/photoguard/jobs?kind=${jobKind.value}&days=${jobDays.value}`, { headers: authHeaders() })
+    jobs.value = res.ok ? (await res.json() as { jobs: Job[] }).jobs : []
+  } catch { jobs.value = [] } finally { jobsLoading.value = false }
+}
+
+function jobHref(j: Job): string {
+  // No ?submission= — the server joins by project + form type so every trade
+  // on this install lands in the same shared checkout.
+  return `/photoguard/form/${j.formType}?project=${j.projectRid}`
+}
+
 // Review drawer
 const openPhoto = ref<PhotoRow | null>(null)
 const reviewNote = ref('')
@@ -115,7 +144,7 @@ async function revalidate(id: number) {
   flash('Re-queued for validation')
 }
 
-onMounted(() => { loadAll(); loadCoverage() })
+onMounted(() => { loadAll(); loadCoverage(); loadJobs() })
 
 const { connected, onPhotoGuardEvent } = usePhotoGuardLive()
 const stopLive = onPhotoGuardEvent(evt => {
@@ -212,6 +241,60 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
               / {{ stats.totalPhotos }} photos
             </span>
           </p>
+        </div>
+      </div>
+
+      <!-- Today's jobs: one tap into the right shared checkout -->
+      <div class="grid gap-2 min-w-0">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+            {{ jobDays === 0 ? 'Today' : `Within ${jobDays}d` }} · {{ jobKind === 'install' ? 'INSTALLS' : 'SURVEYS' }}
+          </p>
+          <div class="flex items-center gap-1.5">
+            <div class="inline-flex rounded-md border overflow-hidden">
+              <button type="button" class="px-2 py-1 text-[11px] font-medium"
+                :class="jobKind === 'install' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
+                @click="jobKind = 'install'; loadJobs()">Installs</button>
+              <button type="button" class="px-2 py-1 text-[11px] font-medium"
+                :class="jobKind === 'survey' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'"
+                @click="jobKind = 'survey'; loadJobs()">Surveys</button>
+            </div>
+            <div class="flex gap-1">
+              <button v-for="d in [0, 1, 7]" :key="d" type="button"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium whitespace-nowrap"
+                :class="jobDays === d ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+                @click="jobDays = d; loadJobs()">{{ d === 0 ? 'Today' : `±${d}d` }}</button>
+            </div>
+          </div>
+        </div>
+
+        <p v-if="jobsLoading" class="text-[12px] text-muted-foreground">Loading jobs…</p>
+        <p v-else-if="!jobs.length" class="text-[12px] text-muted-foreground">
+          Nothing scheduled in this window. Widen it, or start a blank form above.
+        </p>
+
+        <div v-else class="grid gap-2 min-w-0">
+          <RouterLink
+            v-for="j in jobs" :key="j.projectRid" :to="jobHref(j)"
+            class="rounded-xl border bg-card p-3 min-w-0 hover:bg-muted transition-colors"
+          >
+            <div class="flex items-baseline justify-between gap-2 min-w-0">
+              <span class="truncate text-sm font-medium">{{ j.customerName || `Project ${j.projectRid}` }}</span>
+              <span class="flex-none text-[10px] font-semibold uppercase tracking-wider"
+                :class="j.submission ? 'text-amber-600' : 'text-sky-600'">
+                {{ j.submission ? 'Resume' : 'Start' }}
+              </span>
+            </div>
+            <p class="mt-0.5 text-[11px] text-muted-foreground truncate">
+              {{ j.customerAddress || 'No address' }}
+            </p>
+            <p class="mt-0.5 text-[10px] text-muted-foreground">
+              {{ j.scheduled }}
+              <span v-if="j.submission"> · {{ j.submission.photos }} photo(s)<span
+                v-if="j.submission.contributors > 1"> · {{ j.submission.contributors }} people</span></span>
+              <span v-if="!j.hasCoords" class="text-amber-600"> · no site coords</span>
+            </p>
+          </RouterLink>
         </div>
       </div>
 

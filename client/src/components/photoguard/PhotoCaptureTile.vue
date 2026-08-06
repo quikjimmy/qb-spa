@@ -25,6 +25,9 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'uploaded'): void }>()
 
 const busy = ref(false)
+// Batch progress for library multi-select: crews commonly shoot on the native
+// camera app and upload a stack afterwards, often from the truck.
+const batch = ref<{ done: number; total: number; failed: number } | null>(null)
 const localIssues = ref<LocalIssue[]>([])
 const uploadError = ref('')
 const frames = ref<VideoFrame[]>([])
@@ -156,10 +159,49 @@ function onPhotoPick(e: Event) {
   if (f) handleFile(f, 'camera')
   ;(e.target as HTMLInputElement).value = ''
 }
+/**
+ * Library multi-select. Uploads sequentially rather than in parallel so a
+ * phone on a patchy LTE connection doesn't stall every request at once, and
+ * so the agent sees steady progress. One bad file doesn't abort the rest.
+ */
+async function handleFiles(files: File[]) {
+  if (!files.length) return
+  busy.value = true
+  uploadError.value = ''
+  localIssues.value = []
+  setFrames([])
+  batch.value = { done: 0, total: files.length, failed: 0 }
+  const rejected: string[] = []
+  try {
+    for (const file of files) {
+      try {
+        const check = await checkPhotoLocally(file)
+        if (check.blocked) {
+          rejected.push(`${file.name}: ${check.issues.find(i => i.severity === 'fail')?.message ?? 'unusable'}`)
+          batch.value.failed++
+        } else {
+          await uploadBlob(file, file.name || 'photo.jpg', 'upload')
+        }
+      } catch (e) {
+        rejected.push(`${file.name}: ${e instanceof Error ? e.message : 'upload failed'}`)
+        batch.value.failed++
+      }
+      batch.value.done++
+    }
+    if (rejected.length) uploadError.value = rejected.slice(0, 3).join(' · ')
+  } finally {
+    busy.value = false
+    // Leave the summary up briefly so the count is readable.
+    setTimeout(() => { batch.value = null }, 4000)
+  }
+}
+
 function onUploadPick(e: Event) {
-  const f = (e.target as HTMLInputElement).files?.[0]
-  if (f) handleFile(f, 'upload')
-  ;(e.target as HTMLInputElement).value = ''
+  const input = e.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  if (files.length === 1) handleFile(files[0]!, 'upload')
+  else if (files.length > 1) handleFiles(files)
+  input.value = ''
 }
 function onVideoPick(e: Event) {
   const f = (e.target as HTMLInputElement).files?.[0]
@@ -200,6 +242,19 @@ function onVideoPick(e: Event) {
         class="flex-none text-[10px] font-bold uppercase tracking-wider"
         :class="accentText(accent)"
       >{{ stateLabel(state) }}</span>
+    </div>
+
+    <!-- Other captures on this requirement (teammates, extra angles) -->
+    <div v-if="ordered.length > 1" class="mt-2 flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
+      <a
+        v-for="p in ordered.slice(1, 9)" :key="p.id"
+        :href="p.file_path ?? '#'" target="_blank" rel="noopener"
+        class="flex-none block w-12 h-12 rounded-md overflow-hidden bg-muted"
+        :title="`${p.captured_by_name ?? 'Unknown'} · ${stateLabel(photoState(p))}`"
+      >
+        <img v-if="p.thumb_path" :src="p.thumb_path" alt="" class="w-full h-full object-cover"
+          :class="photoState(p) === 'blocked' ? 'opacity-40' : ''" />
+      </a>
     </div>
 
     <!-- Latest capture -->
@@ -248,6 +303,9 @@ function onVideoPick(e: Event) {
       <li v-for="(i, idx) in aiIssues" :key="`a${idx}`" class="text-[11px] text-rose-600">{{ i }}</li>
     </ul>
 
+    <p v-if="batch" class="mt-2 text-[11px] text-muted-foreground">
+      Uploading {{ batch.done }} / {{ batch.total }}<span v-if="batch.failed"> · {{ batch.failed }} rejected</span>
+    </p>
     <p v-if="uploadError" class="mt-2 text-[11px] text-rose-600">{{ uploadError }}</p>
 
     <!-- Video frame picker -->
@@ -291,7 +349,7 @@ function onVideoPick(e: Event) {
         type="button" :disabled="busy"
         class="px-2.5 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
         @click="uploadInput?.click()"
-      >Upload</button>
+      >From library</button>
       <span v-if="satisfied" class="self-center text-[11px] text-emerald-600 font-medium">Good to go</span>
     </div>
 
@@ -303,6 +361,6 @@ function onVideoPick(e: Event) {
       ref="videoInput" type="file" accept="video/*" capture="environment"
       class="hidden" @change="onVideoPick"
     />
-    <input ref="uploadInput" type="file" accept="image/*" class="hidden" @change="onUploadPick" />
+    <input ref="uploadInput" type="file" accept="image/*" multiple class="hidden" @change="onUploadPick" />
   </div>
 </template>
