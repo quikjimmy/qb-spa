@@ -871,3 +871,99 @@ test('the set prompt judges coverage on distinct content, not photo count', asyn
   // With no duplicates it says so rather than implying some.
   assert.match(buildSetPrompt('X', '', members, [[1], [2], [3]], null), /No near-duplicates detected/)
 })
+
+// ─── Drop-mode classification ─────────────────────────────────────────
+
+const CATALOGUE = [
+  { hash: '770', label: 'MSP (Dead-front Off)', section: 'Electrical', hints: '', collective: false, satisfied: false },
+  { hash: '792', label: 'Panel Schedule', section: 'Electrical', hints: '', collective: false, satisfied: false },
+  { hash: '650', label: 'Photos of Every Roof Plane', section: 'Roof', hints: '', collective: true, satisfied: false },
+]
+
+test('parseClassification keeps only ids that exist in the catalogue', async () => {
+  const { parseClassification } = await import('./photoguardClassify')
+  const c = parseClassification(JSON.stringify({
+    description: 'An open electrical panel.',
+    subject: 'main service panel',
+    candidates: [
+      { id: '770', confidence: 0.92, satisfies: true, reason: 'dead front is off' },
+      { id: '9999', confidence: 0.8, satisfies: true, reason: 'invented requirement' },
+      { id: '792', confidence: 0.4, satisfies: false, reason: 'schedule not readable' },
+    ],
+  }), CATALOGUE)
+
+  // A hallucinated id must be dropped, not filed against.
+  assert.equal(c?.candidates.length, 2)
+  assert.deepEqual(c?.candidates.map(x => x.hash), ['770', '792'])
+  // Labels come from the catalogue, never from the model.
+  assert.equal(c?.candidates[0]?.label, 'MSP (Dead-front Off)')
+  assert.equal(c?.unmatched, false)
+})
+
+test('parseClassification treats no usable candidate as unmatched', async () => {
+  const { parseClassification } = await import('./photoguardClassify')
+  assert.equal(parseClassification('{"candidates":[],"unmatched":true}', CATALOGUE)?.unmatched, true)
+  // Every id invented -> nothing usable left.
+  assert.equal(parseClassification('{"candidates":[{"id":"nope","confidence":0.9}]}', CATALOGUE)?.unmatched, true)
+  assert.equal(parseClassification('not json at all', CATALOGUE), null)
+})
+
+test('isAuthoredHint separates real guidance from generated boilerplate', async () => {
+  const { isAuthoredHint } = await import('./photoguardClassify')
+  // What defaultHintFor produces — restates the label, discriminates nothing.
+  assert.equal(isAuthoredHint('The photo must clearly show: Main Breaker (1 Photo). It should be in focus.'), false)
+  assert.equal(isAuthoredHint(''), false)
+  // What a reviewer writes — the thing that actually separates siblings.
+  assert.equal(isAuthoredHint('Dead front removed, busbar rating sticker readable'), true)
+})
+
+test('decideFiling suggests rather than files while auto-filing is off', async () => {
+  const { decideFiling, AUTO_FILE_ENABLED } = await import('./photoguardClassify')
+  assert.equal(AUTO_FILE_ENABLED, false, 'auto-filing must be opt-in')
+  // Even a 0.99 winner is only a suggestion by default: blind-testing showed
+  // confident picks between sibling requirements were wrong.
+  const c = {
+    description: '', subject: '', unmatched: false,
+    candidates: [{ hash: '770', label: 'MSP', confidence: 0.99, satisfies: true, reason: '' }],
+  }
+  assert.deepEqual(decideFiling(c), { hash: null, reason: 'suggest_only' })
+})
+
+test('decideFiling only auto-files a clear winner', async () => {
+  const { decideFiling } = await import('./photoguardClassify')
+  const mk = (cands: Array<[string, number]>) => ({
+    description: '', subject: '', unmatched: false,
+    candidates: cands.map(([hash, confidence]) => ({
+      hash, label: hash, confidence, satisfies: true, reason: '',
+    })),
+  })
+
+  // With auto-filing off (the default) everything is a suggestion.
+  assert.equal(decideFiling(mk([['770', 0.93], ['792', 0.2]])).reason, 'suggest_only')
+
+  // Two plausible requirements — a human decides. Filing a photo under the
+  // wrong requirement silently marks it satisfied by evidence that doesn't
+  // show it.
+  assert.equal(decideFiling(mk([['770', 0.72], ['792', 0.68]])).hash, null)
+  assert.equal(decideFiling(mk([['770', 0.55]])).hash, null)
+  assert.equal(decideFiling({ description: '', subject: '', unmatched: true, candidates: [] }).hash, null)
+})
+
+test('the classify prompt lists requirements by id and refuses forced matches', async () => {
+  const { buildClassifyPrompt } = await import('./photoguardClassify')
+  const p = buildClassifyPrompt(CATALOGUE)
+  assert.match(p, /770 \| MSP \(Dead-front Off\)/)
+  assert.match(p, /650 \| Photos of Every Roof Plane \(multi-photo\)/)
+  assert.match(p, /Electrical:/)
+  assert.match(p, /Do not force a match/)
+  assert.match(p, /a human will decide/)
+  // "matches" and "satisfies" are different questions and must stay separate.
+  assert.match(p, /can MATCH a\s+requirement but not satisfy it/)
+})
+
+test('buildClassifyPrompt marks requirements that already have photos', async () => {
+  const { buildClassifyPrompt } = await import('./photoguardClassify')
+  const p = buildClassifyPrompt([{ ...CATALOGUE[0]!, satisfied: true }, CATALOGUE[1]!])
+  assert.match(p, /MSP \(Dead-front Off\) \[already has photos\]/)
+  assert.equal(/Panel Schedule \[already has photos\]/.test(p), false)
+})

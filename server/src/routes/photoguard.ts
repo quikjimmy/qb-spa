@@ -32,6 +32,7 @@ import {
 } from '../lib/photoguardQuality'
 import { assessSets, listSetAssessments, ensureSetSchema } from '../lib/photoguardSets'
 import { ask as askAssessment, listMessages as listChat, ensureChatSchema, type ChatScope } from '../lib/photoguardChat'
+import { classifyPhoto, buildCatalogue, decideFiling, parseClassification } from '../lib/photoguardClassify'
 import {
   validatePhotoBuffer, visionConfigured, visionModel,
 } from '../lib/photoguardVision'
@@ -134,6 +135,12 @@ function ensureSchema(): void {
       -- Perceptual hash: catches the same SUBJECT reshot, which content_hash
       -- (exact bytes) never will.
       phash TEXT,
+      -- Drop-mode classification: ranked candidate requirements, and whether a
+      -- human still needs to file it.
+      classification TEXT,
+      classify_confidence REAL,
+      needs_filing INTEGER NOT NULL DEFAULT 0,
+      filed_by TEXT,
       capture_source TEXT,
       captured_by INTEGER REFERENCES users(id),
       captured_by_name TEXT,
@@ -179,7 +186,12 @@ function ensureSchema(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_hash ON photoguard_photos(content_hash)`)
   {
     const cols = db.prepare(`PRAGMA table_info(photoguard_photos)`).all() as Array<{ name: string }>
-    if (!cols.some(c => c.name === 'phash')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN phash TEXT`)
+    const has = (n: string) => cols.some(c => c.name === n)
+    if (!has('phash')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN phash TEXT`)
+    if (!has('classification')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN classification TEXT`)
+    if (!has('classify_confidence')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN classify_confidence REAL`)
+    if (!has('needs_filing')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN needs_filing INTEGER NOT NULL DEFAULT 0`)
+    if (!has('filed_by')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN filed_by TEXT`)
   }
   ensureReviewSchema()
   ensureExampleSchema()
@@ -972,6 +984,108 @@ photoguardRouter.post('/examples/harvest', (req: Request, res: Response) => {
   res.json(report)
 })
 
+// ─── Drop mode ────────────────────────────────────────────────────────
+//
+// Photos are dropped without choosing a requirement first; the app works out
+// what each one is. Filing is automatic only when one candidate clearly wins —
+// a wrong auto-file marks a requirement satisfied by evidence that doesn't
+// show it, and nobody looks again.
+
+/** What's satisfied and what's still outstanding, for the live checklist. */
+photoguardRouter.get('/outstanding/:submissionId', (req: Request, res: Response) => {
+  const id = Number(req.params['submissionId'])
+  const sub = db.prepare(`SELECT * FROM photoguard_submissions WHERE id = ?`).get(id) as
+    | Record<string, unknown> | undefined
+  if (!sub) { res.status(404).json({ error: 'Submission not found' }); return }
+
+  const formType = String(sub['form_type'])
+  const form = getForm(formType)
+  if (!form) { res.status(409).json({ error: 'Form not imported' }); return }
+
+  const resolved = resolveRequirements(formType, projectFor(sub['project_rid'] as number | null), answerMap(id))
+  const photos = db.prepare(`
+    SELECT category_hash, validation_passed, validation_status, gate_status, review_status
+    FROM photoguard_photos WHERE submission_id = ?
+  `).all(id) as Array<Record<string, unknown>>
+
+  const counts = new Map<string, { total: number; passing: number }>()
+  for (const p of photos) {
+    const h = String(p['category_hash'] ?? '')
+    if (!h) continue
+    const c = counts.get(h) ?? { total: 0, passing: 0 }
+    c.total++
+    const ok = p['review_status'] === 'approved' ||
+      (p['review_status'] == null && p['gate_status'] !== 'blocked' && p['validation_passed'] === 1)
+    if (ok) c.passing++
+    counts.set(h, c)
+  }
+
+  const titles = new Map(form.sections.map(s => [s.key, s.title]))
+  const items = form.fields
+    .filter(f => f.fieldType === 'photo')
+    .map(f => {
+      const c = counts.get(f.hash) ?? { total: 0, passing: 0 }
+      return {
+        hash: f.hash,
+        label: f.label,
+        section: titles.get(f.sectionKey) ?? f.sectionKey,
+        sectionKey: f.sectionKey,
+        required: resolved.get(f.hash)?.required ?? f.required,
+        collective: f.collective,
+        expectedCount: f.expectedCount,
+        hints: f.hints,
+        photos: c.total,
+        passing: c.passing,
+        satisfied: c.passing > 0,
+      }
+    })
+
+  const needsFiling = db.prepare(`
+    SELECT COUNT(*) AS n FROM photoguard_photos WHERE submission_id = ? AND needs_filing = 1
+  `).get(id) as { n: number }
+
+  const required = items.filter(i => i.required)
+  res.json({
+    formType,
+    items,
+    needsFiling: needsFiling.n,
+    summary: {
+      requiredTotal: required.length,
+      requiredSatisfied: required.filter(i => i.satisfied).length,
+      outstanding: required.filter(i => !i.satisfied).length,
+    },
+  })
+})
+
+/** File a photo a human has judged, or correct a wrong auto-file. */
+photoguardRouter.post('/photos/:photoId/file', (req: Request, res: Response) => {
+  const id = Number(req.params['photoId'])
+  const b = req.body as Record<string, unknown>
+  const hash = String(b['fieldHash'] ?? '').trim()
+  if (!hash) { res.status(400).json({ error: 'fieldHash is required' }); return }
+
+  const photo = db.prepare(`SELECT id, form_type FROM photoguard_photos WHERE id = ?`).get(id) as
+    | { id: number; form_type: string | null } | undefined
+  if (!photo) { res.status(404).json({ error: 'Photo not found' }); return }
+
+  const cat = findCategory(hash)
+  if (!cat) { res.status(400).json({ error: 'Unknown requirement' }); return }
+
+  db.prepare(`
+    UPDATE photoguard_photos
+    SET category_hash = ?, category_label = ?, category_section = ?,
+        required = ?, needs_filing = 0, filed_by = ?,
+        validation_status = 'pending', validation_error = NULL
+    WHERE id = ?
+  `).run(hash, cat.label, cat.sectionKey, cat.required ? 1 : 0, actorName(req), id)
+
+  // The verdict was made against a different requirement, so it has to be
+  // re-judged now we know what this photo is actually for.
+  enqueueValidation(id)
+  publishPhotoGuardEvent({ type: 'photo_added', photoId: id, status: 'filed', data: { fieldHash: hash } })
+  res.json({ ok: true, requeued: true })
+})
+
 // ─── Assessment chat ──────────────────────────────────────────────────
 //
 // Grounded in what's already been assessed. Attaches the image when the
@@ -1306,8 +1420,30 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     : undefined
   if (submissionId && !sub) { res.status(404).json({ error: 'Submission not found' }); return }
 
-  const cat = categoryHash ? findCategory(categoryHash) : null
+  let cat = categoryHash ? findCategory(categoryHash) : null
   const formType = String(b['formType'] ?? sub?.['form_type'] ?? cat?.formType ?? '')
+
+  // Drop mode: no requirement was chosen, so work out what this is.
+  let classification: Awaited<ReturnType<typeof classifyPhoto>> = null
+  let resolvedHash = categoryHash
+  let needsFiling = 0
+  if (!categoryHash && formType && visionConfigured()) {
+    const already = new Set(
+      (db.prepare(`
+        SELECT DISTINCT category_hash FROM photoguard_photos
+        WHERE submission_id = ? AND category_hash IS NOT NULL AND validation_passed = 1
+      `).all(submissionId) as Array<{ category_hash: string }>).map(r => r.category_hash),
+    )
+    try {
+      classification = await classifyPhoto(file.buffer, formType, already)
+    } catch { classification = null }
+    if (classification?.filing.hash) {
+      resolvedHash = classification.filing.hash
+      cat = findCategory(resolvedHash)
+    } else if (classification) {
+      needsFiling = 1
+    }
+  }
 
   // 1. Metadata + deterministic gates — the instant-feedback path.
   const meta = await extractMetadata(file.buffer)
@@ -1365,7 +1501,7 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     submissionId, fileId, file.originalname,
-    cat?.label ?? null, categoryHash || null, cat?.sectionKey ?? null, formType || null,
+    cat?.label ?? null, resolvedHash || null, cat?.sectionKey ?? null, formType || null,
     cat?.required ? 1 : 0,
     `/uploads/photoguard/${fileName}`,
     thumbName ? `/uploads/photoguard/thumbs/${thumbName}` : null,
@@ -1378,6 +1514,18 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
   )
   const photoId = Number(info.lastInsertRowid)
 
+  if (classification) {
+    db.prepare(`
+      UPDATE photoguard_photos
+      SET classification = ?, classify_confidence = ?, needs_filing = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(classification.classification),
+      classification.classification.candidates[0]?.confidence ?? 0,
+      needsFiling, photoId,
+    )
+  }
+
   if (submissionId) {
     db.prepare(`UPDATE photoguard_submissions SET updated_at = datetime('now') WHERE id = ?`).run(submissionId)
   }
@@ -1388,12 +1536,19 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     data: { submissionId, categoryHash, issues },
   })
 
-  // 3. Only spend a vision call on a photo that cleared the cheap gates.
-  if (!blocked) enqueueValidation(photoId)
+  // 3. Only spend a vision call on a photo that cleared the cheap gates AND
+  //    whose requirement is known — judging an unfiled photo against
+  //    "Unspecified" costs a call and answers nothing. /file re-queues it once
+  //    a human says what it's for.
+  if (!blocked && !needsFiling) enqueueValidation(photoId)
 
   res.status(201).json({
     photoId,
     fileId,
+    classification: classification?.classification ?? null,
+    filing: classification?.filing ?? null,
+    filedAs: cat ? { hash: resolvedHash, label: cat.label, section: cat.sectionKey } : null,
+    needsFiling: needsFiling === 1,
     url: `/uploads/photoguard/${fileName}`,
     thumbUrl: thumbName ? `/uploads/photoguard/thumbs/${thumbName}` : null,
     metadata: meta,
