@@ -511,7 +511,11 @@ async function submit(force = false) {
         v-for="d in docs" :key="d.recordId"
         :href="d.url ?? d.linkUrl ?? '#'" target="_blank" rel="noopener"
         class="flex-none px-2.5 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted whitespace-nowrap"
-      >📄 {{ d.type }}<span v-if="d.fileName" class="text-muted-foreground"> · {{ d.fileName.slice(0, 24) }}</span></a>
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true" class="inline-block align-[-1px] mr-1">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14 2v6h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>{{ d.type }}<span v-if="d.fileName" class="text-muted-foreground"> · {{ d.fileName.slice(0, 24) }}</span></a>
     </div>
 
     <p v-if="branchNote" class="rounded-lg border border-sky-300 bg-card p-2.5 text-[12px] text-sky-700">
@@ -639,7 +643,7 @@ async function submit(force = false) {
       <div class="flex items-center justify-between gap-2">
         <button
           type="button" :disabled="sectionIndex === 0"
-          class="px-3 py-2 rounded-full border text-[12px] font-medium bg-card hover:bg-muted disabled:opacity-40"
+          class="min-h-11 px-4 rounded-full border text-[12px] font-medium bg-card hover:bg-muted disabled:opacity-40 cursor-pointer transition-colors"
           @click="go(-1)"
         >Back</button>
         <span class="text-[11px] text-muted-foreground">
@@ -648,12 +652,12 @@ async function submit(force = false) {
         <button
           v-if="sectionIndex < groups.length - 1"
           type="button"
-          class="px-3 py-2 rounded-full border text-[12px] font-medium bg-foreground text-background border-foreground"
+          class="min-h-11 px-4 rounded-full border text-[12px] font-medium bg-foreground text-background border-foreground cursor-pointer transition-colors"
           @click="go(1)"
         >Next</button>
         <button
           v-else type="button" :disabled="submitting"
-          class="px-3 py-2 rounded-full border text-[12px] font-medium bg-foreground text-background border-foreground disabled:opacity-50"
+          class="min-h-11 px-4 rounded-full border text-[12px] font-medium bg-foreground text-background border-foreground disabled:opacity-50 cursor-pointer transition-colors"
           @click="submit(false)"
         >{{ submitting ? 'Checking…' : 'Submit' }}</button>
       </div>
@@ -748,12 +752,13 @@ async function submit(force = false) {
           <div class="mt-2 flex flex-wrap gap-1.5">
             <button
               type="button"
-              class="px-3 py-1.5 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground"
+              class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground cursor-pointer transition-colors"
               @click="jumpTo(outstanding[0]!.hash)"
             >Go to next</button>
             <button
               type="button"
-              class="px-3 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted"
+              class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
+              :aria-expanded="showChecklist"
               @click="showChecklist = !showChecklist"
             >{{ showChecklist ? 'Hide list' : `Show all ${outstanding.length}` }}</button>
           </div>

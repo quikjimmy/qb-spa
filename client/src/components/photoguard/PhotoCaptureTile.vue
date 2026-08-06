@@ -300,7 +300,7 @@ function onVideoPick(e: Event) {
         class="flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"
         @click="showExample = !showExample"
       >
-        <img :src="example.thumb" alt="" class="w-8 h-8 rounded object-cover bg-muted" />
+        <img :src="example.thumb" :alt="`Example of ${field.label}`" class="w-8 h-8 rounded object-cover bg-muted" />
         <span class="underline underline-offset-2">
           {{ showExample ? 'Hide example' : 'See example' }}
         </span>
@@ -355,7 +355,7 @@ function onVideoPick(e: Event) {
         </p>
         <p class="mt-0.5 text-[10px] text-muted-foreground">
           {{ latest.captured_by_name || 'Unknown' }}
-          <span v-if="latest.has_gps"> · GPS ✓</span>
+          <span v-if="latest.has_gps"> · GPS tagged</span>
           <span v-else> · no GPS</span>
           <span v-if="latest.capture_source === 'video_frame'"> · from video</span>
         </p>
@@ -394,12 +394,14 @@ function onVideoPick(e: Event) {
       <div class="mt-1 flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
         <button
           v-for="(f, idx) in frames" :key="idx" type="button"
-          class="flex-none w-20 text-left" :disabled="busy"
+          class="flex-none w-20 text-left cursor-pointer disabled:opacity-50" :disabled="busy"
+          :aria-label="`Use the frame at ${f.timeSeconds.toFixed(1)} seconds`"
           @click="keepFrame(f)"
         >
           <span class="block w-20 h-20 rounded-lg overflow-hidden bg-muted">
             <img
-              v-if="frameUrls[idx]" :src="frameUrls[idx]" alt=""
+              v-if="frameUrls[idx]" :src="frameUrls[idx]"
+              :alt="`Video frame at ${f.timeSeconds.toFixed(1)} seconds`"
               class="w-full h-full object-cover"
             />
           </span>
@@ -415,17 +417,20 @@ function onVideoPick(e: Event) {
     <div class="mt-2 flex flex-wrap gap-1.5">
       <button
         type="button" :disabled="busy"
-        class="px-2.5 py-1.5 rounded-full border text-[11px] font-medium transition-colors bg-foreground text-background border-foreground disabled:opacity-50"
+        class="min-h-11 px-4 rounded-full border text-[11px] font-medium transition-colors bg-foreground text-background border-foreground disabled:opacity-50 cursor-pointer"
+        :aria-label="`${latest ? 'Retake' : 'Take'} photo for ${field.label}`"
         @click="photoInput?.click()"
       >{{ busy ? 'Working…' : latest ? 'Retake' : 'Take photo' }}</button>
       <button
         type="button" :disabled="busy"
-        class="px-2.5 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
+        class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50 cursor-pointer transition-colors"
+        :aria-label="`Record video for ${field.label}`"
         @click="videoInput?.click()"
       >Video</button>
       <button
         type="button" :disabled="busy"
-        class="px-2.5 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50"
+        class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted disabled:opacity-50 cursor-pointer transition-colors"
+        :aria-label="`Choose photos from library for ${field.label}`"
         @click="uploadInput?.click()"
       >From library</button>
       <span v-if="satisfied" class="self-center text-[11px] text-emerald-600 font-medium">Good to go</span>

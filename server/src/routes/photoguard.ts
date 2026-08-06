@@ -1682,6 +1682,202 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
   }
 })
 
+// ─── On-demand single-survey pull ─────────────────────────────────────
+//
+// This is the safe way to get Arrivy data while testing: a human asks for ONE
+// survey and waits for it, instead of a sweep hitting hundreds of files. Load
+// is comparable to a person browsing the task in Arrivy, so unlike /scan it is
+// not gated on office hours — but it keeps the same pacing between downloads.
+
+interface ImportTaskResult {
+  arrivyTaskId: string
+  taskRowId: number | null
+  title: string | null
+  photosAdded: number
+  photosSkipped: number
+  queuedForValidation: number
+  error?: string
+}
+
+async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskResult> {
+  const out: ImportTaskResult = {
+    arrivyTaskId, taskRowId: null, title: null,
+    photosAdded: 0, photosSkipped: 0, queuedForValidation: 0,
+  }
+
+  const wantedFormIds = new Set(FORM_TYPES.map(ft => arrivyFormIdFor(ft)))
+  const formTypeById = new Map(FORM_TYPES.map(ft => [arrivyFormIdFor(ft), ft]))
+
+  let task: ArrivyTaskListItem
+  try {
+    task = await arrivyGet<ArrivyTaskListItem>(`/tasks/${encodeURIComponent(arrivyTaskId)}`)
+  } catch (e) {
+    out.error = e instanceof Error ? e.message : 'Could not load that task'
+    return out
+  }
+  out.title = task.title ?? null
+
+  const formRef = (task.forms ?? []).find(f => wantedFormIds.has(String(f.form_id)))
+  const formType = formTypeById.get(String(formRef?.form_id)) ?? null
+
+  db.prepare(`
+    INSERT INTO photoguard_tasks
+      (arrivy_task_id, task_title, task_type, task_status, customer_name,
+       template_name, form_id, form_title, completed_at, scanned_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(arrivy_task_id) DO UPDATE SET
+      task_status = excluded.task_status, scanned_at = datetime('now'), updated_at = datetime('now')
+  `).run(
+    arrivyTaskId, task.title ?? null, task.template_type ?? null, task.status ?? null,
+    task.customer_name ?? null, task.template_type ?? null,
+    String(formRef?.form_id ?? ''), formRef?.title ?? null, task.end_datetime ?? null,
+  )
+  const taskRow = db.prepare(`SELECT id FROM photoguard_tasks WHERE arrivy_task_id = ?`)
+    .get(arrivyTaskId) as { id: number }
+  out.taskRowId = taskRow.id
+
+  await sleep(ARRIVY_CALL_DELAY_MS)
+  let subs: ArrivySubmission[] = []
+  try {
+    subs = await arrivyGet<ArrivySubmission[]>(`/tasks/${encodeURIComponent(arrivyTaskId)}/forms`)
+  } catch (e) {
+    out.error = e instanceof Error ? e.message : 'Could not load that task\'s form submissions'
+    return out
+  }
+
+  for (const sub of subs) {
+    if (!wantedFormIds.has(String(sub.master_form_id))) continue
+    const subType = formTypeById.get(String(sub.master_form_id)) ?? formType
+    for (const comp of sub.content ?? []) {
+      if (comp.type !== 'ImageUploadComponent') continue
+      for (const f of comp.content?.files ?? []) {
+        const fileId = `arrivy_${f.file_id}`
+        if (db.prepare(`SELECT 1 FROM photoguard_photos WHERE file_id = ?`).get(fileId)) {
+          out.photosSkipped++
+          continue
+        }
+        await sleep(ARRIVY_CALL_DELAY_MS)
+        const dl = await downloadArrivyFile(f.file_path ?? '')
+        if (!dl) continue
+
+        const meta = await extractMetadata(dl)
+        const fileName = `${fileId}.jpg`
+        try { await fs.promises.writeFile(path.join(PHOTO_DIR, fileName), dl) } catch { continue }
+        let thumbName: string | null = `thumb_${fileId}.jpg`
+        try {
+          await sharp(dl).rotate().resize(480, undefined, { withoutEnlargement: true })
+            .jpeg({ quality: 78 }).toFile(path.join(THUMB_DIR, thumbName))
+        } catch { thumbName = null }
+
+        const hash = comp.hash != null ? String(comp.hash) : ''
+        const cat = hash ? findCategory(hash) : null
+        const info = db.prepare(`
+          INSERT INTO photoguard_photos (
+            task_rowid, arrivy_task_id, file_id, filename,
+            category_label, category_hash, category_section, form_type, required,
+            file_path, thumb_path, file_size, width, height,
+            has_exif, has_gps, gps_lat, gps_lng, camera_make, camera_model, photo_timestamp,
+            content_hash, capture_source, metadata_issues, gate_status, validation_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'arrivy_import', '[]', 'ok', 'pending')
+        `).run(
+          taskRow.id, arrivyTaskId, fileId, f.filename ?? null,
+          comp.content?.label ?? cat?.label ?? null, hash || null,
+          cat?.sectionKey ?? null, subType, cat?.required ? 1 : 0,
+          `/uploads/photoguard/${fileName}`,
+          thumbName ? `/uploads/photoguard/thumbs/${thumbName}` : null,
+          meta.fileSize, meta.width, meta.height,
+          meta.hasExif ? 1 : 0, meta.hasGps ? 1 : 0, meta.gpsLat, meta.gpsLng,
+          meta.cameraMake, meta.cameraModel, meta.photoTimestamp, meta.contentHash,
+        )
+        out.photosAdded++
+        enqueueValidation(Number(info.lastInsertRowid))
+        out.queuedForValidation++
+      }
+    }
+  }
+  recountTask(taskRow.id)
+  return out
+}
+
+/** Recent Arrivy surveys a tester can pick from. One list call, page 1 only —
+ *  surveys dominate it, so paging deeper isn't worth the load. */
+photoguardRouter.get('/arrivy/recent', async (req: Request, res: Response) => {
+  if (!arrivyConfigured()) { res.status(503).json({ error: 'Arrivy is not configured' }); return }
+  const days = Math.min(Math.max(Number(req.query['days'] ?? 2), 0), 14)
+  const end = new Date()
+  const start = new Date(end.getTime() - days * 86_400_000)
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+
+  try {
+    const tasks = await arrivyGet<ArrivyTaskListItem[]>(
+      `/tasks?start_date=${iso(start)}&end_date=${iso(end)}`,
+    )
+    const wanted = new Set(FORM_TYPES.map(ft => arrivyFormIdFor(ft)))
+    const imported = new Set(
+      (db.prepare(`SELECT arrivy_task_id FROM photoguard_tasks`).all() as Array<{ arrivy_task_id: string }>)
+        .map(r => r.arrivy_task_id),
+    )
+    const counts = db.prepare(`
+      SELECT arrivy_task_id AS id, COUNT(*) AS n,
+             SUM(CASE WHEN validation_passed = 1 THEN 1 ELSE 0 END) AS passed,
+             SUM(CASE WHEN validation_status != 'done' THEN 1 ELSE 0 END) AS pending
+      FROM photoguard_photos WHERE arrivy_task_id IS NOT NULL GROUP BY 1
+    `).all() as Array<{ id: string; n: number; passed: number; pending: number }>
+    const byId = new Map(counts.map(c => [c.id, c]))
+
+    const rows = tasks
+      .filter(t => (t.forms ?? []).some(f => wanted.has(String(f.form_id))))
+      .map(t => {
+        const id = String(t.id)
+        const c = byId.get(id)
+        return {
+          arrivyTaskId: id,
+          title: t.title ?? null,
+          customerName: t.customer_name ?? null,
+          status: t.status ?? null,
+          endDatetime: t.end_datetime ?? null,
+          hasFiles: (t.files?.length ?? 0) > 0,
+          imported: imported.has(id),
+          photos: c?.n ?? 0,
+          passed: c?.passed ?? 0,
+          pending: c?.pending ?? 0,
+        }
+      })
+      .sort((a, b) => String(b.endDatetime ?? '').localeCompare(String(a.endDatetime ?? '')))
+      .slice(0, 100)
+
+    res.json({ days, count: rows.length, tasks: rows })
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : 'Could not list Arrivy tasks' })
+  }
+})
+
+/** Pull one survey on demand and queue its photos for assessment. */
+photoguardRouter.post('/arrivy/import/:arrivyTaskId', async (req: Request, res: Response) => {
+  if (!arrivyConfigured()) { res.status(503).json({ error: 'Arrivy is not configured' }); return }
+  const raw = String(req.params['arrivyTaskId'] ?? '').trim()
+  // Accept a pasted Arrivy URL as well as a bare id.
+  const id = (raw.match(/(\d{6,})/)?.[1]) ?? raw
+  if (!/^\d+$/.test(id)) { res.status(400).json({ error: 'Expected an Arrivy task id' }); return }
+
+  try {
+    const result = await importSingleArrivyTask(id)
+    if (result.error) { res.status(502).json(result); return }
+    publishPhotoGuardEvent({
+      type: 'scan_complete', arrivyTaskId: id,
+      message: `Pulled ${result.photosAdded} photo(s) from Arrivy`,
+      data: { ...result },
+    })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    if (e instanceof ArrivyBackoff) {
+      res.status(429).json({ error: 'Arrivy asked us to slow down — try again shortly.' })
+      return
+    }
+    res.status(502).json({ error: e instanceof Error ? e.message : 'Import failed' })
+  }
+})
+
 /** Arrivy file paths are API-relative and need the auth headers. */
 async function downloadArrivyFile(filePath: string): Promise<Buffer | null> {
   // Throws ArrivyBackoff on 429 so the caller stops the run entirely.
