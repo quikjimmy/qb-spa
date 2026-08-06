@@ -35,6 +35,8 @@ let upsertForm: Forms['upsertForm']
 let getForm: Forms['getForm']
 let resolveRequirements: Forms['resolveRequirements']
 let ARRIVY_TYPE_MAP: Forms['ARRIVY_TYPE_MAP']
+let describeDesign: Forms['describeDesign']
+let resolveFormTokens: Forms['resolveFormTokens']
 let parseVisionResponse: Vision['parseVisionResponse']
 let buildVisionPrompt: Vision['buildVisionPrompt']
 let haversineMeters: Quality['haversineMeters']
@@ -45,7 +47,7 @@ let gatesBlock: Quality['gatesBlock']
 before(async () => {
   ({
     normalizeArrivyForm, evaluateRule, slugify, defaultHintFor,
-    upsertForm, getForm, resolveRequirements, ARRIVY_TYPE_MAP,
+    upsertForm, getForm, resolveRequirements, ARRIVY_TYPE_MAP, describeDesign, resolveFormTokens,
   } = await import('./photoguardForms'));
   ({ parseVisionResponse, buildVisionPrompt } = await import('./photoguardVision'));
   ({ haversineMeters, dmsToDecimal, runQualityGates, gatesBlock } = await import('./photoguardQuality'))
@@ -292,6 +294,76 @@ test('resolveRequirements overlays rules, and require beats optional', async () 
 })
 
 // ─── Vision ───────────────────────────────────────────────────────────
+
+test('resolveFormTokens fills Arrivy merge placeholders', () => {
+  // Real text from the Install Checkout form — Arrivy's own renderer
+  // substitutes these, so ours has to.
+  const ctx = { customerName: 'Test James', customerAddress: '12 Oak St, Provo UT' }
+  assert.equal(
+    resolveFormTokens('{{customer_name}} | {{customer_address}}', ctx),
+    'Test James | 12 Oak St, Provo UT',
+  )
+  assert.equal(resolveFormTokens('{{ customer_name }}', ctx), 'Test James', 'tolerates padding')
+
+  // A token we can't resolve is removed, never left as literal braces on a
+  // field agent's screen.
+  assert.equal(resolveFormTokens('Notes: {{details}}', ctx), 'Notes: ')
+  assert.equal(resolveFormTokens('{{totally_unknown}}', ctx), '')
+  assert.equal(resolveFormTokens('{{customer_name}}', {}), '')
+
+  // Untouched when there's nothing to substitute.
+  assert.equal(resolveFormTokens('Plain label', ctx), 'Plain label')
+})
+
+test('an empty Arrivy TextComponent yields a blank label, not "(untitled block)"', () => {
+  const raw = {
+    id: '1', title: 'T',
+    content: [
+      { hash: 'b1', type: 'TextComponent', yAxisValue: 1, content: { text: '' } },
+      { hash: 'p1', type: 'ImageUploadComponent', yAxisValue: 2, content: { label: '' } },
+    ],
+  }
+  const f = normalizeArrivyForm(raw, 'site_survey')
+  const byHash = new Map(f.fields.map(x => [x.hash, x]))
+  // Spacer blocks render as nothing; a nameless photo still needs a label.
+  assert.equal(byHash.get('b1')?.label, '')
+  assert.equal(byHash.get('p1')?.label, '(untitled photo)')
+})
+
+test('describeDesign renders the Quickbase design without repeating the brand', () => {
+  // Real shapes from project_cache: the model string usually already contains
+  // the brand ('Enphase IQ8+'), and module_brand is often blank.
+  assert.equal(
+    describeDesign({
+      system_size_kw: 11.68, module_brand: 'URE', module: 'URE 365', panel_count: 32,
+      inverter_brand: 'Enphase', inverter: 'Enphase IQ8+', inverter_count: 32,
+    })?.text,
+    '11.68 kW system · 32 × URE 365 modules · 32 × Enphase IQ8+',
+  )
+  assert.equal(
+    describeDesign({ system_size_kw: 6.46, module: 'QCell 340', inverter: 'Enphase IQ 7 Micro' })?.text,
+    '6.46 kW system · QCell 340 modules · Enphase IQ 7 Micro',
+  )
+  // Brand kept when it isn't already in the model string.
+  assert.match(
+    describeDesign({ module_brand: 'Jinko', module: 'JKM405M-72HL-V' })?.text ?? '',
+    /Jinko JKM405M-72HL-V/,
+  )
+  // Nothing useful → no block at all, rather than an empty one in the prompt.
+  assert.equal(describeDesign({ customer_name: 'X' }), null)
+  assert.equal(describeDesign(null), null)
+})
+
+test('buildVisionPrompt carries the design spec but scopes it to visible labels', () => {
+  const p = buildVisionPrompt('Inverter', 'Show the nameplate.', '11.68 kW system · 32 × Enphase IQ8+')
+  assert.match(p, /Enphase IQ8\+/)
+  assert.match(p, /Equipment specified for this job/)
+  // Must not turn every non-equipment photo into a failure.
+  assert.match(p, /Do NOT fail a photo merely because equipment is not visible/)
+
+  // Omitted entirely when there's no design.
+  assert.equal(/Equipment specified/.test(buildVisionPrompt('Roof Slope', 'x')), false)
+})
 
 test('buildVisionPrompt interpolates the category and hints', () => {
   const p = buildVisionPrompt('Main Breaker', 'Show the amperage rating.')

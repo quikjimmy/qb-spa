@@ -20,7 +20,8 @@ import { UPLOADS_DIR } from '../lib/upload'
 import { arrivyConfigured, arrivyGet } from '../lib/arrivy'
 import {
   ensurePhotoGuardFormSchema, getForm, findCategory, resolveRequirements,
-  listRules, seedDefaultRules, FORM_TYPES, arrivyFormIdFor,
+  listRules, seedDefaultRules, describeDesign,
+  resolveFormTokens, tokenContextFromProject, FORM_TYPES, arrivyFormIdFor,
   type PhotoGuardFormType,
 } from '../lib/photoguardForms'
 import { importArrivyForms, probeArrivyForms, ArrivyNotConfiguredError } from '../lib/arrivyFormImport'
@@ -220,10 +221,15 @@ function enqueueValidation(photoId: number): void {
  */
 async function validateStoredPhoto(photoId: number): Promise<void> {
   const p = db.prepare(`
-    SELECT id, file_path, category_label, category_hash, task_rowid, submission_id
-    FROM photoguard_photos WHERE id = ?
+    SELECT ph.id, ph.file_path, ph.category_label, ph.category_hash,
+           ph.task_rowid, ph.submission_id,
+           COALESCE(s.project_rid, t.project_rid) AS project_rid
+    FROM photoguard_photos ph
+    LEFT JOIN photoguard_submissions s ON s.id = ph.submission_id
+    LEFT JOIN photoguard_tasks t ON t.id = ph.task_rowid
+    WHERE ph.id = ?
   `).get(photoId) as
-    | { id: number; file_path: string; category_label: string | null; category_hash: string | null; task_rowid: number | null; submission_id: number | null }
+    | { id: number; file_path: string; category_label: string | null; category_hash: string | null; task_rowid: number | null; submission_id: number | null; project_rid: number | null }
     | undefined
   if (!p) return
 
@@ -255,8 +261,12 @@ async function validateStoredPhoto(photoId: number): Promise<void> {
 
   db.prepare(`UPDATE photoguard_photos SET validation_status='running' WHERE id=?`).run(photoId)
 
+  // The design comes from Quickbase via project_cache — it lets the model
+  // flag equipment that doesn't match what was sold.
+  const design = describeDesign(projectFor(p.project_rid))
+
   try {
-    const r = await validatePhotoBuffer(buf, label, hints)
+    const r = await validatePhotoBuffer(buf, label, hints, design?.text)
     db.prepare(`
       UPDATE photoguard_photos SET
         validation_status='done', validation_passed=?, validation_confidence=?,
@@ -304,14 +314,19 @@ photoguardRouter.get('/forms/:formType', (req: Request, res: Response) => {
   const project = projectFor(rid)
   const resolved = resolveRequirements(ft, project)
 
+  const tokens = tokenContextFromProject(project)
   res.json({
     ...form,
     projectRid: rid,
+    design: describeDesign(project),
     fields: form.fields.map(f => {
+      // Arrivy leaves {{customer_name}}-style placeholders in its text for
+      // its own renderer to fill; we're the renderer now.
+      const withTokens = { ...f, label: resolveFormTokens(f.label, tokens) }
       const r = resolved.get(f.hash)
       return r && f.fieldType === 'photo'
-        ? { ...f, required: r.required, requiredBase: r.base, requiredReasons: r.reasons }
-        : f
+        ? { ...withTokens, required: r.required, requiredBase: r.base, requiredReasons: r.reasons }
+        : withTokens
     }),
   })
 })
@@ -430,6 +445,7 @@ photoguardRouter.get('/submissions/:id', (req: Request, res: Response) => {
     submission: sub,
     answers,
     photos,
+    design: describeDesign(project),
     requirements: Object.fromEntries(resolved),
   })
 })

@@ -1,5 +1,6 @@
 // Shared PhotoGuard types + presentation helpers.
 // Accents come from docs/ui-component-specs.md — do not invent new ones.
+import DOMPurify from 'dompurify'
 import { useAuthStore } from '@/stores/auth'
 
 export type PhotoGuardFormType = 'site_survey' | 'install_checkout'
@@ -28,6 +29,18 @@ export interface FormSection {
   sortOrder: number
 }
 
+/** System design synced from Quickbase (project_cache). */
+export interface DesignSummary {
+  systemSizeKw: number | null
+  moduleBrand: string | null
+  module: string | null
+  panelCount: number | null
+  inverterBrand: string | null
+  inverter: string | null
+  inverterCount: number | null
+  text: string
+}
+
 export interface FormDefinition {
   formType: string
   title: string
@@ -35,6 +48,7 @@ export interface FormDefinition {
   version: number
   importedAt: string | null
   projectRid?: number | null
+  design?: DesignSummary | null
   sections: FormSection[]
   fields: FormField[]
 }
@@ -208,4 +222,34 @@ export function fmtBytes(n: number | null): string {
 export function fmtCoords(lat: number | null, lng: number | null): string {
   if (lat == null || lng == null) return '—'
   return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
+}
+
+// ─── Rich-text blocks ─────────────────────────────────────────────────
+//
+// Arrivy's form builder stores TextComponent bodies as HTML — headings,
+// paragraphs, <br> lists, &nbsp; — so interpolating one with {{ }} escapes it
+// and prints the tags on screen. These carry real instructions for the
+// surveyor (HUD plates, ground-mount measurements), so they're worth
+// rendering rather than stripping. Same rule as lib/markdown.ts: never bind
+// third-party HTML with v-html unsanitized.
+const BLOCK_TAGS = [
+  'p', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'a',
+]
+const BLOCK_ATTR = ['href', 'title', 'target', 'rel']
+
+export function sanitizeBlockHtml(raw: string | null | undefined): string {
+  if (!raw) return ''
+  return DOMPurify.sanitize(raw, { ALLOWED_TAGS: BLOCK_TAGS, ALLOWED_ATTR: BLOCK_ATTR })
+}
+
+/** True when a block would render as nothing — Arrivy forms carry a number of
+ *  empty TextComponents used purely as spacers. */
+export function isEmptyBlock(raw: string | null | undefined): boolean {
+  if (!raw) return true
+  const text = sanitizeBlockHtml(raw)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .trim()
+  return text === ''
 }

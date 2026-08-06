@@ -9,7 +9,7 @@
 // Verified source forms (Arrivy, 2026-08-05):
 //   site_survey      → 'Site Survey Form'               79 photo fields
 //   install_checkout → 'Field Task Site Checkout V1.02' 127 photo fields
-import { authHeaders, type FormDefinition, type FormField, type FormSection } from '@/lib/photoguard'
+import { authHeaders, isEmptyBlock, type FormDefinition, type FormField, type FormSection } from '@/lib/photoguard'
 
 export type { FormDefinition, FormField, FormSection }
 
@@ -62,6 +62,9 @@ export function groupBySection(
   const bySection = new Map<string, FormField[]>()
   for (const f of form.fields) {
     if (f.fieldType === 'unknown') continue
+    // Arrivy forms use empty TextComponents as spacers, and token
+    // substitution can empty one out too — neither should render.
+    if (f.fieldType === 'block' && isEmptyBlock(f.label)) continue
     const list = bySection.get(f.sectionKey) ?? []
     list.push(f)
     bySection.set(f.sectionKey, list)

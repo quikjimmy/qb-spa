@@ -13,7 +13,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { loadForm, groupBySection, formLabel, FormNotImportedError } from '@/data/arrivy-forms'
 import {
-  authHeaders, photoState,
+  authHeaders, photoState, sanitizeBlockHtml, isEmptyBlock,
   type FormDefinition, type FormField, type PhotoRow,
 } from '@/lib/photoguard'
 import { usePhotoGuardLive } from '@/lib/photoguardLive'
@@ -282,6 +282,11 @@ async function submit(force = false) {
       <p class="text-[11px] text-muted-foreground">
         {{ overall.done }} / {{ overall.total }} required photos captured
       </p>
+      <!-- What was sold, straight from Quickbase — so the crew can check the
+           equipment on site against it, and so the AI can too. -->
+      <p v-if="form?.design?.text" class="text-[11px] text-muted-foreground">
+        <span class="font-medium text-foreground">Design:</span> {{ form.design.text }}
+      </p>
     </div>
 
     <LocationGate
@@ -344,11 +349,19 @@ async function submit(force = false) {
               @uploaded="refreshSubmission"
             />
 
-            <!-- Static text block -->
-            <p
+            <!-- Instruction block. Arrivy stores these as rich HTML, so it
+                 is sanitized and rendered rather than escaped into tag soup. -->
+            <div
               v-else-if="field.fieldType === 'block'"
-              class="text-[12px] text-muted-foreground leading-relaxed"
-            >{{ field.label }}</p>
+              class="text-[12px] text-muted-foreground leading-relaxed
+                     [&_h1]:text-sm [&_h1]:font-semibold [&_h1]:text-foreground [&_h1]:mt-1
+                     [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-foreground [&_h2]:mt-1
+                     [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-foreground
+                     [&_p]:mb-1.5 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4
+                     [&_li]:mb-0.5 [&_strong]:font-semibold [&_strong]:text-foreground
+                     [&_a]:underline [&_a]:underline-offset-2"
+              v-html="sanitizeBlockHtml(field.label)"
+            />
 
             <!-- Everything else -->
             <div v-else class="rounded-xl border bg-card p-3 min-w-0">

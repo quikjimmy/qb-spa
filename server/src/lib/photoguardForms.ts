@@ -183,7 +183,7 @@ export function normalizeArrivyForm(raw: ArrivyForm, formType: PhotoGuardFormTyp
     const label = (c.label ?? c.title ?? c.text ?? '').trim()
     fields.push({
       hash,
-      label: label || `(untitled ${fieldType})`,
+      label: label || (fieldType === 'block' ? '' : `(untitled ${fieldType})`),
       fieldType,
       required: c.isRequired === true,
       options: optionsFor(type, c),
@@ -490,6 +490,116 @@ export function findCategory(hash: string): {
 // "Require certain pics depending on what is outstanding at the project level."
 // Rules read project_cache and flip individual photo fields (or whole sections)
 // between required and optional for a given project.
+
+// ─── Design context ───────────────────────────────────────────────────
+//
+// The system design is already synced from Quickbase into project_cache —
+// module/inverter make+model, counts, system size. Feeding it to the vision
+// model turns "is this a photo of an inverter?" into "is this the inverter
+// this customer actually bought?", which is the check that catches wrong
+// equipment while the crew is still on the roof.
+
+export interface DesignSummary {
+  systemSizeKw: number | null
+  moduleBrand: string | null
+  module: string | null
+  panelCount: number | null
+  inverterBrand: string | null
+  inverter: string | null
+  inverterCount: number | null
+  /** One-line rendering, used in the vision prompt and the form header. */
+  text: string
+}
+
+function cleanStr(v: unknown): string | null {
+  if (v == null) return null
+  const s = String(v).trim()
+  return s === '' ? null : s
+}
+
+function cleanNum(v: unknown): number | null {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Build a design summary from a project_cache row. Returns null when the
+ *  project carries nothing useful, so callers can skip the prompt block
+ *  rather than inject an empty one. */
+export function describeDesign(project: ProjectRow | null): DesignSummary | null {
+  if (!project) return null
+
+  const moduleBrand = cleanStr(project['module_brand'])
+  const moduleModel = cleanStr(project['module'])
+  const inverterBrand = cleanStr(project['inverter_brand'])
+  const inverterModel = cleanStr(project['inverter'])
+  const kw = cleanNum(project['system_size_kw'])
+  const panelCount = cleanNum(project['panel_count'])
+  const inverterCount = cleanNum(project['inverter_count'])
+
+  if (!moduleModel && !inverterModel && kw == null) return null
+
+  // Brand is often already embedded in the model string ("Enphase IQ8+"),
+  // so don't repeat it.
+  const join = (brand: string | null, model: string | null): string | null => {
+    if (!model) return brand
+    if (!brand) return model
+    return model.toLowerCase().includes(brand.toLowerCase()) ? model : `${brand} ${model}`
+  }
+
+  const parts: string[] = []
+  if (kw != null) parts.push(`${kw} kW system`)
+
+  const mod = join(moduleBrand, moduleModel)
+  if (mod) parts.push(panelCount != null ? `${panelCount} × ${mod} modules` : `${mod} modules`)
+
+  const inv = join(inverterBrand, inverterModel)
+  if (inv) parts.push(inverterCount != null ? `${inverterCount} × ${inv}` : inv)
+
+  return {
+    systemSizeKw: kw,
+    moduleBrand, module: moduleModel, panelCount,
+    inverterBrand, inverter: inverterModel, inverterCount,
+    text: parts.join(' · '),
+  }
+}
+
+// ─── Merge tokens ─────────────────────────────────────────────────────
+//
+// Arrivy form text carries {{customer_name}}-style placeholders that its own
+// renderer substitutes from the task. We render these forms ourselves, so we
+// have to do the substitution — otherwise the field agent reads a literal
+// "{{customer_address}}" on their phone.
+//
+// Vocabulary in the two live forms is small ({{customer_name}},
+// {{customer_address}}, {{details}}), but unknown tokens are stripped rather
+// than left in place: a blank is a better field experience than braces, and
+// new tokens will appear as Arrivy forms are edited.
+const TOKEN_RE = /\{\{\s*([a-zA-Z0-9_. ]+)\s*\}\}/g
+
+export interface TokenContext {
+  customerName?: string | null
+  customerAddress?: string | null
+  details?: string | null
+}
+
+export function resolveFormTokens(text: string, ctx: TokenContext): string {
+  if (!text || !text.includes('{{')) return text
+  const map: Record<string, string> = {
+    customer_name: ctx.customerName?.trim() || '',
+    customer_address: ctx.customerAddress?.trim() || '',
+    details: ctx.details?.trim() || '',
+  }
+  return text.replace(TOKEN_RE, (_m, raw: string) => map[raw.trim().toLowerCase()] ?? '')
+}
+
+export function tokenContextFromProject(project: ProjectRow | null): TokenContext {
+  if (!project) return {}
+  return {
+    customerName: cleanStr(project['customer_name']),
+    customerAddress: cleanStr(project['customer_address']),
+  }
+}
 
 export type ConditionType = 'missing_items' | 'attribute' | 'inspection'
 export type ConditionOp = 'contains' | 'nonempty' | 'empty' | 'eq' | 'neq' | 'gt' | 'lt'

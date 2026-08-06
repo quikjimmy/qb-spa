@@ -53,11 +53,32 @@ export class VisionNotConfiguredError extends Error {
   }
 }
 
-/** Prompt from the PhotoGuard spec, verbatim apart from the interpolations. */
-export function buildVisionPrompt(categoryLabel: string, hints: string): string {
+/**
+ * Prompt from the PhotoGuard spec, verbatim apart from the interpolations.
+ *
+ * `design` is the system spec pulled from Quickbase. When present it lets the
+ * model catch wrong equipment — the wrong inverter model on the wall is
+ * invisible to a "does this look like an inverter?" check. It's deliberately
+ * scoped to *visible labels only* and told not to fail photos where equipment
+ * isn't the subject, otherwise every roof shot would fail for not showing a
+ * module sticker.
+ */
+export function buildVisionPrompt(categoryLabel: string, hints: string, design?: string): string {
+  const designBlock = design
+    ? `
+
+Equipment specified for this job (from the project record):
+${design}
+
+If — and only if — this photo shows an equipment label, nameplate or model
+marking that clearly contradicts the specification above, FAIL it and say what
+you actually see. Do NOT fail a photo merely because equipment is not visible
+in it; most photos are not equipment photos.`
+    : ''
+
   return `You are a solar site survey photo validator. A field agent just took this photo for the category: "${categoryLabel}"
 
-Requirements for this photo: ${hints || 'No additional requirements beyond matching the category.'}
+Requirements for this photo: ${hints || 'No additional requirements beyond matching the category.'}${designBlock}
 
 Respond in JSON format ONLY:
 {
@@ -154,6 +175,7 @@ export async function validatePhotoBuffer(
   buf: Buffer,
   categoryLabel: string,
   hints: string,
+  design?: string,
 ): Promise<VisionResult> {
   if (!visionConfigured()) throw new VisionNotConfiguredError()
 
@@ -180,7 +202,7 @@ export async function validatePhotoBuffer(
         format: 'json',
         messages: [{
           role: 'user',
-          content: buildVisionPrompt(categoryLabel, hints),
+          content: buildVisionPrompt(categoryLabel, hints, design),
           images: [buf.toString('base64')],
         }],
       }),
