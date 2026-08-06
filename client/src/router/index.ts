@@ -81,6 +81,19 @@ const router = createRouter({
           component: () => import('../views/FieldDashboardView.vue'),
         },
         { path: 'projects/field', redirect: '/field' },
+        // PhotoGuard — AI-validated field photo capture. The dashboard is
+        // oversight; the form route is what field agents actually use, and
+        // replaces filling the equivalent form in Arrivy.
+        {
+          path: 'photoguard',
+          name: 'photoguard',
+          component: () => import('../views/PhotoGuardView.vue'),
+        },
+        {
+          path: 'photoguard/form/:formType',
+          name: 'photoguard-form',
+          component: () => import('../views/PhotoGuardFormView.vue'),
+        },
         // Milestone-organized sub-pages within Projects. Order matches
         // the project lifecycle and the AppSidebar nav. Stubs use the
         // shared MilestonePlaceholder; built views (PC, Inspections,

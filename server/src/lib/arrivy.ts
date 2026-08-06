@@ -41,7 +41,7 @@ export class ArrivyApiError extends Error {
   }
 }
 
-async function arrivyGet<T>(path: string): Promise<T> {
+export async function arrivyGet<T>(path: string): Promise<T> {
   const h = authHeaders()
   if (!h) throw new Error('Arrivy auth not configured (ARRIVY_AUTH_KEY / ARRIVY_AUTH_TOKEN)')
   const res = await fetch(`${BASE}${path}`, { headers: h as unknown as Record<string, string> })
@@ -143,4 +143,36 @@ export interface ArrivyUser {
 
 export async function getArrivyUsers(): Promise<ArrivyUser[]> {
   return arrivyGet<ArrivyUser[]>('/entities')
+}
+
+// ─── Forms ────────────────────────────────────────────────────────────
+//
+// GET /forms returns every form definition on the account (27 as of
+// 2026-08-05), each a flat y-ordered list of components. Verified live —
+// note that /form_templates, /task_templates, /customer_forms and /form
+// are NOT endpoints: Arrivy answers those with its marketing HTML at
+// status 200, which arrivyGet's content-type guard turns into a clear
+// error instead of a JSON parse crash.
+//
+// A form's `title` carries the human name; the top-level `name` field is
+// always null, so don't key off it.
+export interface ArrivyFormComponent {
+  hash?: string | number
+  type?: string
+  yAxisValue?: number
+  xAxisValue?: number
+  content?: Record<string, unknown>
+}
+
+export interface ArrivyFormDefinition {
+  id?: string | number
+  title?: string
+  description?: string
+  status?: string
+  content?: ArrivyFormComponent[]
+  [k: string]: unknown
+}
+
+export function getArrivyForms(): Promise<ArrivyFormDefinition[]> {
+  return arrivyGet<ArrivyFormDefinition[]>('/forms')
 }
