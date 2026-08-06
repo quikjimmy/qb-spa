@@ -33,6 +33,7 @@ import {
   validatePhotoBuffer, visionConfigured, visionModel,
 } from '../lib/photoguardVision'
 import { attachPhotoGuardSseStream, publishPhotoGuardEvent } from '../lib/photoguardEvents'
+import { OFFICE_TZ } from '../lib/officeTime'
 import { runJobReview, listFindings, ensureReviewSchema } from '../lib/photoguardReview'
 import {
   ensureExampleSchema, harvestExamples, examplesFor, primaryExamples, labelsFor, scoreCandidate,
@@ -284,6 +285,29 @@ function enqueueValidation(photoId: number): void {
 }
 
 /**
+ * Re-queue work stranded by a restart.
+ *
+ * The queue is in-process, so a deploy or crash mid-scan leaves photos sitting
+ * at 'pending' (or 'running') with nothing left to pick them up — they'd stay
+ * unvalidated forever, silently. A bulk Arrivy import makes that near-certain,
+ * since it can queue hundreds of minutes of work. Runs once at startup,
+ * bounded so a huge backlog doesn't stampede the vision endpoint on boot.
+ */
+export function resumePendingValidations(limit = 500): number {
+  const rows = db.prepare(`
+    SELECT id FROM photoguard_photos
+    WHERE validation_status IN ('pending', 'running')
+      AND gate_status != 'blocked'
+      AND file_path IS NOT NULL
+    ORDER BY created_at
+    LIMIT ?
+  `).all(limit) as Array<{ id: number }>
+  for (const r of rows) enqueueValidation(r.id)
+  if (rows.length) console.log(`[photoguard] resumed ${rows.length} pending validation(s)`)
+  return rows.length
+}
+
+/**
  * Run the vision model against a stored photo and record the verdict.
  * A transport/config failure leaves the photo 'pending' with the reason
  * recorded — never 'failed'. An outage must not mass-fail a crew's work.
@@ -371,6 +395,13 @@ async function validateStoredPhoto(photoId: number): Promise<void> {
     })
   }
 }
+
+// Deliberately deferred: startup already does a lot, and this can enqueue
+// hundreds of jobs.
+setTimeout(() => {
+  try { resumePendingValidations() }
+  catch (e) { console.error('[photoguard] resume failed:', e) }
+}, 8000).unref?.()
 
 // ─── Forms ────────────────────────────────────────────────────────────
 
@@ -1407,8 +1438,43 @@ interface ArrivyTaskListItem {
   external_id?: string
   end_datetime?: string
   template_type?: string
+  files?: unknown[]
   forms?: Array<{ form_id?: number | string; title?: string }>
 }
+
+// Arrivy is a shared production system that the dispatch desk works in all day.
+// A bulk import from here measurably slowed it down for them on 2026-08-06 —
+// 400ms between calls was far too aggressive once multi-MB photo downloads were
+// in the mix. The defaults below are now deliberately timid, and a scan is
+// OPT-IN and refuses to run during office hours unless explicitly forced.
+//
+//   PHOTOGUARD_SCAN_ENABLED=1   required — no scan runs without it
+//   PHOTOGUARD_ARRIVY_DELAY_MS  default 2500 (was 400)
+//   PHOTOGUARD_SCAN_MAX_PHOTOS  default 40   (was 150)
+//   PHOTOGUARD_SCAN_ANY_HOUR=1  allow running inside office hours
+const ARRIVY_CALL_DELAY_MS = Number(process.env['PHOTOGUARD_ARRIVY_DELAY_MS'] || 2500)
+const ARRIVY_MAX_PHOTOS = Number(process.env['PHOTOGUARD_SCAN_MAX_PHOTOS'] || 40)
+const SCAN_ENABLED = process.env['PHOTOGUARD_SCAN_ENABLED'] === '1'
+const SCAN_ANY_HOUR = process.env['PHOTOGUARD_SCAN_ANY_HOUR'] === '1'
+
+/** Office-hours guard. Bulk reads belong outside the working day. */
+function insideOfficeHours(now = new Date()): boolean {
+  const h = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: OFFICE_TZ, hour: 'numeric', hour12: false,
+  }).format(now))
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: OFFICE_TZ, weekday: 'short' }).format(now)
+  const weekend = day === 'Sat' || day === 'Sun'
+  return !weekend && h >= 7 && h < 18
+}
+
+/** Arrivy asking us to slow down is not something to retry through. */
+class ArrivyBackoff extends Error {
+  constructor(public retryAfterSec: number | null) {
+    super('Arrivy asked us to back off (429)')
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 /**
  * Pull recent Arrivy tasks and their form submissions into the review tables.
@@ -1420,6 +1486,20 @@ interface ArrivyTaskListItem {
 photoguardRouter.post('/scan', async (req: Request, res: Response) => {
   if (!arrivyConfigured()) {
     res.status(503).json({ error: 'Arrivy is not configured — set ARRIVY_AUTH_KEY and ARRIVY_AUTH_TOKEN' })
+    return
+  }
+  if (!SCAN_ENABLED) {
+    res.status(423).json({
+      error: 'Arrivy scanning is disabled. Set PHOTOGUARD_SCAN_ENABLED=1 to allow it.',
+      why: 'Bulk reads hit the same Arrivy the dispatch desk uses; this is opt-in on purpose.',
+    })
+    return
+  }
+  if (insideOfficeHours() && !SCAN_ANY_HOUR && req.query['force'] !== '1') {
+    res.status(423).json({
+      error: 'Refusing to scan during office hours (07:00–18:00 America/Denver, Mon–Fri).',
+      hint: 'Run it outside working hours, or pass ?force=1 / PHOTOGUARD_SCAN_ANY_HOUR=1 if you accept the load.',
+    })
     return
   }
   const days = Math.min(Math.max(Number(req.query['days'] ?? 3), 1), 30)
@@ -1436,17 +1516,59 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
 
   let scanned = 0, imported = 0, photosAdded = 0
   try {
-    const tasks = await arrivyGet<ArrivyTaskListItem[]>(
-      `/tasks?start_date=${iso(start)}&end_date=${iso(end)}`,
-    )
+    // Arrivy caps /tasks at 500 per page and pages via ?page=. A single page
+    // is NOT the window: verified live, site surveys fill page 1 while install
+    // checkouts don't appear until page 5. Reading one page silently returned
+    // "no installs exist", which was wrong.
+    const maxPages = Math.min(Math.max(Number(req.query['pages'] ?? 6), 1), 12)
+    const tasks: ArrivyTaskListItem[] = []
+    for (let page = 1; page <= maxPages; page++) {
+      if (page > 1) await sleep(ARRIVY_CALL_DELAY_MS)
+      let batch: ArrivyTaskListItem[] = []
+      try {
+        batch = await arrivyGet<ArrivyTaskListItem[]>(
+          `/tasks?start_date=${iso(start)}&end_date=${iso(end)}&page=${page}`,
+        )
+      } catch { break }
+      if (!Array.isArray(batch) || !batch.length) break
+      tasks.push(...batch)
+      if (batch.length < 500) break   // last page
+    }
+    // Photos only exist on work that's been done, so completed tasks come
+    // first. Spending the run's call budget on scheduled-but-empty tasks is
+    // pure waste against a shared production API.
+    // The task list already says whether anything was attached, so we can spend
+    // the run's budget on tasks that actually contain work without paying an
+    // extra call to find out. Verified against a live window: 322 of 329
+    // completed survey tasks carry files, while the first few in array order
+    // are test/empty records — ranking on status alone imported nothing.
+    const rank = (t: ArrivyTaskListItem): number => {
+      const st = String(t.status ?? '').toUpperCase()
+      const done = st === 'COMPLETE' || st === 'COMPLETED'
+      const hasFiles = (t.files?.length ?? 0) > 0
+      if (done && hasFiles) return 0
+      if (done) return 1
+      if (hasFiles) return 2
+      return 3
+    }
+    const wantStatus = req.query['status'] ? String(req.query['status']).toUpperCase() : null
+    // Optional single-form targeting, so a run can go after installs
+    // specifically rather than drowning in the far more numerous surveys.
+    const onlyType = req.query['formType'] ? String(req.query['formType']) : null
+    const targetIds = onlyType && isFormType(onlyType)
+      ? new Set([arrivyFormIdFor(onlyType)])
+      : wantedFormIds
+
     const candidates = tasks
-      .filter(t => (t.forms ?? []).some(f => wantedFormIds.has(String(f.form_id))))
+      .filter(t => (t.forms ?? []).some(f => targetIds.has(String(f.form_id))))
+      .filter(t => !wantStatus || String(t.status ?? '').toUpperCase() === wantStatus)
+      .sort((a, b) => rank(a) - rank(b))
       .slice(0, limit)
 
     for (const t of candidates) {
       scanned++
       const arrivyTaskId = String(t.id)
-      const formRef = (t.forms ?? []).find(f => wantedFormIds.has(String(f.form_id)))
+      const formRef = (t.forms ?? []).find(f => targetIds.has(String(f.form_id)))
       const formType = formTypeById.get(String(formRef?.form_id)) ?? null
 
       db.prepare(`
@@ -1467,13 +1589,14 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
         .get(arrivyTaskId) as { id: number }
       imported++
 
+      await sleep(ARRIVY_CALL_DELAY_MS)
       let subs: ArrivySubmission[] = []
       try {
         subs = await arrivyGet<ArrivySubmission[]>(`/tasks/${arrivyTaskId}/forms`)
       } catch { continue }
 
       for (const sub of subs) {
-        if (!wantedFormIds.has(String(sub.master_form_id))) continue
+        if (!targetIds.has(String(sub.master_form_id))) continue
         for (const comp of sub.content ?? []) {
           if (comp.type !== 'ImageUploadComponent') continue
           const files = comp.content?.files ?? []
@@ -1482,6 +1605,8 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
             const exists = db.prepare(`SELECT 1 FROM photoguard_photos WHERE file_id = ?`).get(fileId)
             if (exists) continue
 
+            if (photosAdded >= ARRIVY_MAX_PHOTOS) break
+            await sleep(ARRIVY_CALL_DELAY_MS)
             const dl = await downloadArrivyFile(f.file_path ?? '')
             if (!dl) continue
 
@@ -1524,6 +1649,13 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
         type: 'scan_progress', taskId: taskRow.id, arrivyTaskId,
         data: { scanned, imported, photosAdded },
       })
+      if (photosAdded >= ARRIVY_MAX_PHOTOS) {
+        publishPhotoGuardEvent({
+          type: 'scan_progress',
+          message: `Stopped at the ${ARRIVY_MAX_PHOTOS}-photo ceiling for this run`,
+        })
+        break
+      }
     }
 
     publishPhotoGuardEvent({
@@ -1531,8 +1663,19 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
       message: `${imported} task(s), ${photosAdded} photo(s)`,
       data: { scanned, imported, photosAdded },
     })
-    res.json({ ok: true, days, scanned, imported, photosAdded })
+    res.json({
+      ok: true, days, scanned, imported, photosAdded,
+      officeHours: insideOfficeHours(),
+      cappedAt: photosAdded >= ARRIVY_MAX_PHOTOS ? ARRIVY_MAX_PHOTOS : null,
+      delayMs: ARRIVY_CALL_DELAY_MS,
+    })
   } catch (e) {
+    if (e instanceof ArrivyBackoff) {
+      const msg = `Arrivy returned 429 — run stopped. ${e.retryAfterSec ? `Retry after ${e.retryAfterSec}s.` : ''}`
+      publishPhotoGuardEvent({ type: 'scan_failed', message: msg })
+      res.status(429).json({ error: msg, scanned, imported, photosAdded, backedOff: true })
+      return
+    }
     const msg = e instanceof Error ? e.message : 'Scan failed'
     publishPhotoGuardEvent({ type: 'scan_failed', message: msg })
     res.status(502).json({ error: msg, scanned, imported, photosAdded })
@@ -1541,6 +1684,7 @@ photoguardRouter.post('/scan', async (req: Request, res: Response) => {
 
 /** Arrivy file paths are API-relative and need the auth headers. */
 async function downloadArrivyFile(filePath: string): Promise<Buffer | null> {
+  // Throws ArrivyBackoff on 429 so the caller stops the run entirely.
   if (!filePath) return null
   const key = process.env['ARRIVY_AUTH_KEY']
   const token = process.env['ARRIVY_AUTH_TOKEN']
@@ -1549,11 +1693,16 @@ async function downloadArrivyFile(filePath: string): Promise<Buffer | null> {
   const url = filePath.startsWith('http') ? filePath : `${base}${filePath}`
   try {
     const r = await fetch(url, { headers: { 'X-Auth-Key': key, 'X-Auth-Token': token } })
+    if (r.status === 429) {
+      const ra = Number(r.headers.get('retry-after'))
+      throw new ArrivyBackoff(Number.isFinite(ra) ? ra : null)
+    }
     if (!r.ok) return null
     const ct = r.headers.get('content-type') || ''
     if (!/^image\//i.test(ct)) return null
     return Buffer.from(await r.arrayBuffer())
-  } catch {
+  } catch (e) {
+    if (e instanceof ArrivyBackoff) throw e
     return null
   }
 }
