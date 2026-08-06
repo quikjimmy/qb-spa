@@ -11,7 +11,12 @@ import {
 } from '@/lib/photoguard'
 
 const props = defineProps<{ taskRowId: number | null; title: string }>()
-const emit = defineEmits<{ (e: 'close'): void; (e: 'openPhoto', p: PhotoRow): void }>()
+// The list travels with the photo so the dialog can walk it — reviewing 15
+// failures shouldn't mean 15 open/close cycles.
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'openPhoto', p: PhotoRow, list: PhotoRow[]): void
+}>()
 
 const photos = ref<PhotoRow[]>([])
 const loading = ref(false)
@@ -117,8 +122,8 @@ function sectionLabel(key: string): string {
             </p>
             <button
               v-for="p in failed" :key="p.id" type="button"
-              class="flex gap-2 items-start rounded-lg border border-rose-200 p-2 min-w-0 text-left cursor-pointer hover:bg-muted transition-colors"
-              @click="emit('openPhoto', p)"
+              class="flex gap-2 items-start rounded-lg border border-l-2 border-l-rose-500 p-2 min-w-0 text-left cursor-pointer hover:bg-muted transition-colors"
+              @click="emit('openPhoto', p, failed)"
             >
               <img
                 v-if="p.thumb_path" :src="p.thumb_path"
@@ -154,7 +159,7 @@ function sectionLabel(key: string): string {
                 v-for="p in photos" :key="p.id" type="button"
                 class="relative block rounded-lg overflow-hidden bg-muted aspect-square cursor-pointer"
                 :aria-label="`${p.category_label ?? 'Photo'} — ${stateLabel(photoState(p))}`"
-                @click="emit('openPhoto', p)"
+                @click="emit('openPhoto', p, photos)"
               >
                 <img
                   v-if="p.thumb_path" :src="p.thumb_path"

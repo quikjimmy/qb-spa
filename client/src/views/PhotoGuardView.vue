@@ -17,6 +17,7 @@ import { windowTaskToCard, type WindowResponse, type SurveyCard } from '@/lib/su
 import { arrivyTaskIdFrom } from '@/lib/photoguard'
 import ArrivySurveyRow, { type ImportState } from '@/components/photoguard/ArrivySurveyRow.vue'
 import AssessmentDrawer from '@/components/photoguard/AssessmentDrawer.vue'
+import PhotoReviewDialog from '@/components/photoguard/PhotoReviewDialog.vue'
 
 const auth = useAuthStore()
 
@@ -176,9 +177,16 @@ async function pullSurvey(card: SurveyCard) {
   }
 }
 
-// Review drawer
-const openPhoto = ref<PhotoRow | null>(null)
-const reviewNote = ref('')
+// Review dialog — holds the list being walked so ← → can move through it.
+const reviewList = ref<PhotoRow[]>([])
+const reviewIndex = ref(0)
+const reviewBusy = ref(false)
+const openPhoto = computed<PhotoRow | null>(() => reviewList.value[reviewIndex.value] ?? null)
+
+function openPhotoIn(list: PhotoRow[], photo: PhotoRow) {
+  reviewList.value = list
+  reviewIndex.value = Math.max(0, list.findIndex(p => p.id === photo.id))
+}
 
 function flash(msg: string) {
   toast.value = msg
@@ -245,18 +253,33 @@ async function scanArrivy() {
   }
 }
 
-async function review(status: 'approved' | 'rejected' | 'resubmit') {
-  if (!openPhoto.value) return
-  const id = openPhoto.value.id
-  await fetch(`/api/photoguard/photos/${id}/review`, {
-    method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status, note: reviewNote.value || null }),
-  })
-  openPhoto.value = null
-  reviewNote.value = ''
-  flash(`Marked ${status}`)
-  loadAll()
+async function review(status: 'approved' | 'rejected' | 'resubmit', note: string) {
+  const p = openPhoto.value
+  if (!p) return
+  reviewBusy.value = true
+  try {
+    await fetch(`/api/photoguard/photos/${p.id}/review`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note: note || null }),
+    })
+    // Reflect it locally so the dialog updates without a refetch, then move on
+    // — reviewing a queue of failures shouldn't need a click back in each time.
+    reviewList.value = reviewList.value.map(x =>
+      x.id === p.id ? { ...x, review_status: status } : x)
+    flash(`Marked ${status}`)
+    if (reviewIndex.value < reviewList.value.length - 1) reviewIndex.value++
+    else closeReview()
+    loadAll()
+    refreshImported()
+  } finally {
+    reviewBusy.value = false
+  }
+}
+
+function closeReview() {
+  reviewList.value = []
+  reviewIndex.value = 0
 }
 
 async function revalidate(id: number) {
@@ -601,7 +624,7 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
       :task-row-id="assessmentTask.id"
       :title="assessmentTask.title"
       @close="assessmentTask = null"
-      @open-photo="p => { openPhoto = p }"
+      @open-photo="(p, list) => openPhotoIn(list, p)"
     />
 
     <!-- Audit trail -->
@@ -669,86 +692,17 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
       </div>
     </div>
 
-    <!-- Review drawer -->
-    <div
+    <!-- Photo assessment + review -->
+    <PhotoReviewDialog
       v-if="openPhoto"
-      class="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-      @click.self="openPhoto = null"
-    >
-      <div class="bg-card w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl p-4 max-h-[90vh] overflow-y-auto">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <p class="text-sm font-medium break-words">{{ openPhoto.category_label || 'Photo' }}</p>
-            <p class="text-[11px]" :class="accentText(stateAccent(photoState(openPhoto)))">
-              {{ stateLabel(photoState(openPhoto)) }} ·
-              {{ fmtConfidence(openPhoto.validation_confidence) }} confidence
-            </p>
-          </div>
-          <button type="button" class="text-[11px] text-muted-foreground" @click="openPhoto = null">Close</button>
-        </div>
+      :photos="reviewList"
+      :index="reviewIndex"
+      :busy="reviewBusy"
+      @close="closeReview"
+      @navigate="i => reviewIndex = i"
+      @review="review"
+      @revalidate="revalidate"
+    />
 
-        <img
-          v-if="openPhoto.file_path" :src="openPhoto.file_path" alt=""
-          class="mt-2 w-full rounded-lg object-contain max-h-[45vh] bg-muted"
-        />
-
-        <p v-if="openPhoto.validation_description" class="mt-2 text-[12px] text-muted-foreground">
-          {{ openPhoto.validation_description }}
-        </p>
-
-        <ul v-if="modalIssues.length || modalAiIssues.length" class="mt-2 grid gap-1">
-          <li v-for="(i, idx) in modalIssues" :key="`m${idx}`" class="text-[11px]"
-            :class="i.severity === 'fail' ? 'text-rose-600' : 'text-amber-600'">{{ i.message }}</li>
-          <li v-for="(i, idx) in modalAiIssues" :key="`ai${idx}`" class="text-[11px] text-rose-600">{{ i }}</li>
-        </ul>
-
-        <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
-          <dt class="text-muted-foreground">Captured by</dt>
-          <dd class="text-right truncate">{{ openPhoto.captured_by_name || '—' }}</dd>
-          <dt class="text-muted-foreground">Taken</dt>
-          <dd class="text-right truncate">{{ openPhoto.photo_timestamp || '—' }}</dd>
-          <dt class="text-muted-foreground">GPS</dt>
-          <dd class="text-right truncate">{{ fmtCoords(openPhoto.gps_lat, openPhoto.gps_lng) }}</dd>
-          <dt class="text-muted-foreground">Device</dt>
-          <dd class="text-right truncate">
-            {{ [openPhoto.camera_make, openPhoto.camera_model].filter(Boolean).join(' ') || '—' }}
-          </dd>
-          <dt class="text-muted-foreground">Size</dt>
-          <dd class="text-right truncate">
-            {{ openPhoto.width }}×{{ openPhoto.height }} · {{ fmtBytes(openPhoto.file_size) }}
-          </dd>
-          <dt class="text-muted-foreground">Source</dt>
-          <dd class="text-right truncate">{{ openPhoto.capture_source || '—' }}</dd>
-        </dl>
-
-        <textarea
-          v-model="reviewNote" rows="2" placeholder="Note (optional)"
-          class="mt-3 w-full rounded-md border bg-background px-2 py-2 text-sm"
-        />
-
-        <div class="mt-2 flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground cursor-pointer transition-colors"
-            @click="review('approved')"
-          >Approve</button>
-          <button
-            type="button"
-            class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
-            @click="review('resubmit')"
-          >Request retake</button>
-          <button
-            type="button"
-            class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
-            @click="review('rejected')"
-          >Reject</button>
-          <button
-            type="button"
-            class="min-h-11 px-4 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
-            @click="revalidate(openPhoto.id)"
-          >Re-run AI</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
