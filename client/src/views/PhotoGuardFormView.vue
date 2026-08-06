@@ -20,6 +20,11 @@ import { usePhotoGuardLive } from '@/lib/photoguardLive'
 import { useGeolocation } from '@/lib/geolocation'
 import PhotoCaptureTile from '@/components/photoguard/PhotoCaptureTile.vue'
 import LocationGate from '@/components/photoguard/LocationGate.vue'
+import { startQueueWorker, useUploadQueue } from '@/lib/uploadQueue'
+import {
+  bindConnectivityListeners, flushSamples, isOnline, pingSample,
+  recordSample, transitionSample,
+} from '@/lib/connectivity'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +45,7 @@ const loc = useGeolocation()
 const geo = computed(() => (loc.fix.value ? { lat: loc.fix.value.lat, lng: loc.fix.value.lng } : null))
 const contributors = ref<Array<{ name: string; photos: number; last_at: string }>>([])
 const shareCopied = ref(false)
+const queue = useUploadQueue()
 
 const loading = ref(true)
 const error = ref('')
@@ -161,6 +167,34 @@ onMounted(async () => {
   // ask happens from the LocationGate button.
   void loc.refreshPermission()
   await start()
+
+  // Drain anything stranded from a previous visit, then keep draining as
+  // signal comes and goes.
+  stopQueue = startQueueWorker(() => { refreshSubmission() })
+
+  // Connectivity evidence: a reading when the job is opened, one on each
+  // online/offline transition, and a slow heartbeat while the form is open.
+  // Uploads contribute their own throughput samples as they happen.
+  stopConn = bindConnectivityListeners(online => {
+    recordSample(submissionId.value, transitionSample(online ? 'online' : 'offline'))
+    if (online) void flushSamples(submissionId.value)
+  })
+  const takePing = async () => {
+    recordSample(submissionId.value, await pingSample(geo.value))
+  }
+  void takePing()
+  pingTimer = setInterval(takePing, 5 * 60_000)
+})
+
+let stopQueue: (() => void) | null = null
+let stopConn: (() => void) | null = null
+let pingTimer: ReturnType<typeof setInterval> | null = null
+
+onBeforeUnmount(() => {
+  stopQueue?.()
+  stopConn?.()
+  if (pingTimer) clearInterval(pingTimer)
+  void flushSamples(submissionId.value)
 })
 
 // Anchor the site as soon as a fix exists. Surveys frequently begin before
@@ -331,6 +365,34 @@ async function submit(force = false) {
       >{{ shareCopied ? 'Link copied' : 'Share job' }}</button>
     </div>
 
+    <!-- Offline / pending uploads. Only shown when it matters. -->
+    <div
+      v-if="!isOnline || queue.queueCount.value"
+      class="rounded-xl border bg-card p-2.5 min-w-0"
+      :class="isOnline ? 'border-amber-300' : 'border-slate-300'"
+    >
+      <p class="text-[12px] font-medium" :class="isOnline ? 'text-amber-600' : 'text-slate-600'">
+        <span v-if="!isOnline">No connection — keep shooting</span>
+        <span v-else-if="queue.draining.value">Uploading saved photos…</span>
+        <span v-else>{{ queue.queueCount.value }} photo(s) waiting to upload</span>
+      </p>
+      <p class="mt-0.5 text-[11px] text-muted-foreground">
+        <span v-if="queue.queueCount.value">
+          {{ queue.queueCount.value }} saved on this device.
+        </span>
+        Photos are stored on the phone and sent automatically when signal
+        returns — keep this page open until the count reaches zero.
+      </p>
+      <p v-if="queue.lastError.value" class="mt-0.5 text-[11px] text-amber-600">
+        {{ queue.lastError.value }}
+      </p>
+      <button
+        v-if="isOnline && queue.queueCount.value" type="button" :disabled="queue.draining.value"
+        class="mt-1.5 px-2.5 py-1 rounded-full border text-[10px] font-medium bg-card hover:bg-muted disabled:opacity-50"
+        @click="queue.drainQueue(refreshSubmission)"
+      >{{ queue.draining.value ? 'Uploading…' : 'Retry now' }}</button>
+    </div>
+
     <p v-if="loading" class="text-sm text-muted-foreground">Loading form…</p>
 
     <!-- Form not imported yet -->
@@ -380,6 +442,7 @@ async function submit(force = false) {
               :photos="photosByHash.get(field.hash) ?? []"
               :geo="geo"
               @uploaded="refreshSubmission"
+              @queued="queue.refreshQueue()"
             />
 
             <!-- Instruction block. Arrivy stores these as rich HTML, so it

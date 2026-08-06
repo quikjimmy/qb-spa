@@ -139,6 +139,28 @@ function ensureSchema(): void {
     )
   `)
 
+  // Connectivity evidence. "There was no signal" is otherwise unfalsifiable;
+  // this makes it checkable in both directions.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS photoguard_connectivity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id INTEGER NOT NULL REFERENCES photoguard_submissions(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id),
+      user_name TEXT,
+      at TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      online INTEGER NOT NULL DEFAULT 1,
+      rtt_ms INTEGER,
+      throughput_kbps INTEGER,
+      effective_type TEXT,
+      downlink_mbps REAL,
+      bytes INTEGER,
+      lat REAL, lng REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_conn_sub ON photoguard_connectivity(submission_id, at)`)
+
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_task ON photoguard_photos(task_rowid)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_sub ON photoguard_photos(submission_id)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_val ON photoguard_photos(validation_status)`)
@@ -666,6 +688,83 @@ photoguardRouter.post('/submissions/:id/submit', (req: Request, res: Response) =
 
   publishPhotoGuardEvent({ type: 'scan_complete', data: { submissionId: id, gaps: missing.length } })
   res.json({ ok: true, submitted: true, gaps: missing })
+})
+
+/** Tiny endpoint whose only job is to be round-tripped for an RTT reading. */
+photoguardRouter.get('/ping', (_req: Request, res: Response) => {
+  res.json({ t: Date.now() })
+})
+
+/**
+ * Record connectivity samples for a job.
+ *
+ * Batched, because reporting one-at-a-time over a bad link is self-defeating.
+ * Samples are observations, not assertions of fault — they exonerate a crew
+ * that genuinely had no service just as often as they contradict one.
+ */
+photoguardRouter.post('/submissions/:id/connectivity', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const exists = db.prepare(`SELECT 1 FROM photoguard_submissions WHERE id = ?`).get(id)
+  if (!exists) { res.status(404).json({ error: 'Submission not found' }); return }
+
+  const b = req.body as { samples?: Array<Record<string, unknown>> }
+  const list = Array.isArray(b.samples) ? b.samples.slice(0, 200) : []
+  const stmt = db.prepare(`
+    INSERT INTO photoguard_connectivity
+      (submission_id, user_id, user_name, at, kind, online, rtt_ms, throughput_kbps,
+       effective_type, downlink_mbps, bytes, lat, lng)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const name = actorName(req)
+  const tx = db.transaction(() => {
+    for (const s of list) {
+      stmt.run(
+        id, req.user?.userId ?? null, name,
+        String(s['at'] ?? new Date().toISOString()),
+        String(s['kind'] ?? 'ping'),
+        s['online'] === false ? 0 : 1,
+        s['rttMs'] != null ? Number(s['rttMs']) : null,
+        s['throughputKbps'] != null ? Number(s['throughputKbps']) : null,
+        s['effectiveType'] != null ? String(s['effectiveType']) : null,
+        s['downlinkMbps'] != null ? Number(s['downlinkMbps']) : null,
+        s['bytes'] != null ? Number(s['bytes']) : null,
+        s['lat'] != null ? Number(s['lat']) : null,
+        s['lng'] != null ? Number(s['lng']) : null,
+      )
+    }
+  })
+  tx()
+  res.json({ ok: true, recorded: list.length })
+})
+
+/** Connectivity summary for a job — what the network was doing on site. */
+photoguardRouter.get('/submissions/:id/connectivity', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const samples = db.prepare(`
+    SELECT * FROM photoguard_connectivity WHERE submission_id = ? ORDER BY at
+  `).all(id) as Array<Record<string, unknown>>
+
+  const online = samples.filter(s => s['online'] === 1)
+  const rtts = online.map(s => s['rtt_ms']).filter((v): v is number => typeof v === 'number')
+  const thr = online.map(s => s['throughput_kbps']).filter((v): v is number => typeof v === 'number')
+  const median = (xs: number[]): number | null => {
+    if (!xs.length) return null
+    const a = [...xs].sort((p, q) => p - q)
+    return a[Math.floor(a.length / 2)] ?? null
+  }
+
+  res.json({
+    samples,
+    summary: {
+      total: samples.length,
+      offlineSamples: samples.length - online.length,
+      medianRttMs: median(rtts),
+      medianThroughputKbps: median(thr),
+      bestThroughputKbps: thr.length ? Math.max(...thr) : null,
+      firstAt: samples[0]?.['at'] ?? null,
+      lastAt: samples[samples.length - 1]?.['at'] ?? null,
+    },
+  })
 })
 
 // ─── Upload (the live capture path) ───────────────────────────────────

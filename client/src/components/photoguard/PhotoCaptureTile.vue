@@ -14,6 +14,8 @@ import {
   type FormField, type GateIssue, type PhotoRow,
 } from '@/lib/photoguard'
 import { checkPhotoLocally, extractBestFrames, type LocalIssue, type VideoFrame } from '@/lib/photoQuality'
+import { enqueue, queuedFor } from '@/lib/uploadQueue'
+import { uploadSample, recordSample } from '@/lib/connectivity'
 
 const props = defineProps<{
   field: FormField
@@ -22,7 +24,7 @@ const props = defineProps<{
   geo: { lat: number; lng: number } | null
 }>()
 
-const emit = defineEmits<{ (e: 'uploaded'): void }>()
+const emit = defineEmits<{ (e: 'uploaded'): void; (e: 'queued'): void }>()
 
 const busy = ref(false)
 // Batch progress for library multi-select: crews commonly shoot on the native
@@ -77,11 +79,40 @@ const serverIssues = computed<GateIssue[]>(() =>
 const aiIssues = computed<string[]>(() =>
   latest.value ? parseStringList(latest.value.validation_issues) : [])
 
+const waiting = computed(() => queuedFor(props.field.hash).length)
+
 const pending = computed(() =>
   !!latest.value && latest.value.gate_status !== 'blocked' &&
   latest.value.validation_status !== 'done')
 
+async function queueIt(blob: Blob, filename: string, source: 'camera' | 'upload' | 'video_frame') {
+  await enqueue({
+    submissionId: props.submissionId,
+    fieldHash: props.field.hash,
+    fieldLabel: props.field.label,
+    source,
+    filename,
+    capturedAt: new Date().toISOString(),
+    lat: props.geo?.lat ?? null,
+    lng: props.geo?.lng ?? null,
+    blob,
+    bytes: blob.size,
+  })
+  emit('queued')
+}
+
+/**
+ * Upload, or bank it for later.
+ *
+ * A crew on a metal roof or in a basement shouldn't have to stop shooting
+ * because the network died — so anything that fails at the transport level
+ * goes to the durable IndexedDB queue and drains when signal returns. A
+ * server-side REJECTION is different: that's a verdict the agent needs to see
+ * now, so it surfaces rather than being silently retried forever.
+ */
 async function uploadBlob(blob: Blob, filename: string, source: 'camera' | 'upload' | 'video_frame') {
+  if (!navigator.onLine) { await queueIt(blob, filename, source); return }
+
   const fd = new FormData()
   fd.append('file', blob, filename)
   fd.append('submissionId', String(props.submissionId))
@@ -92,13 +123,25 @@ async function uploadBlob(blob: Blob, filename: string, source: 'camera' | 'uplo
     fd.append('lat', String(props.geo.lat))
     fd.append('lng', String(props.geo.lng))
   }
-  const res = await fetch('/api/photoguard/upload', {
-    method: 'POST', headers: authHeaders(), body: fd,
-  })
+
+  const t0 = performance.now()
+  let res: Response
+  try {
+    res = await fetch('/api/photoguard/upload', { method: 'POST', headers: authHeaders(), body: fd })
+  } catch {
+    await queueIt(blob, filename, source)   // transport failure — keep the photo
+    return
+  }
+  if (res.status >= 500 || res.status === 429) {
+    await queueIt(blob, filename, source)   // server wobble — retry later
+    return
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as { error?: string }
     throw new Error(body.error || `Upload failed (${res.status})`)
   }
+  // A successful upload is also our best throughput measurement.
+  recordSample(props.submissionId, uploadSample(blob.size, performance.now() - t0, props.geo))
   emit('uploaded')
 }
 
@@ -303,6 +346,9 @@ function onVideoPick(e: Event) {
       <li v-for="(i, idx) in aiIssues" :key="`a${idx}`" class="text-[11px] text-rose-600">{{ i }}</li>
     </ul>
 
+    <p v-if="waiting" class="mt-2 text-[11px] text-amber-600">
+      {{ waiting }} photo{{ waiting > 1 ? 's' : '' }} saved on this device — will upload when back online.
+    </p>
     <p v-if="batch" class="mt-2 text-[11px] text-muted-foreground">
       Uploading {{ batch.done }} / {{ batch.total }}<span v-if="batch.failed"> · {{ batch.failed }} rejected</span>
     </p>
