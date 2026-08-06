@@ -50,6 +50,62 @@ const docs = ref<Array<{ recordId: number; type: string; fileName: string | null
 const progress = ref<{ requiredTotal: number; requiredApproved: number; percentApproved: number } | null>(null)
 const showChecklist = ref(false)
 
+// ─── AI job review ───────────────────────────────────────────────────
+interface Finding {
+  id: number
+  kind: string
+  severity: 'blocker' | 'warning' | 'note'
+  title: string
+  detail: string
+  requirement_hash: string | null
+  photo_ids: string
+  status: 'open' | 'resolved' | 'dismissed' | 'escalated'
+  escalated_by: string | null
+}
+const findings = ref<Finding[]>([])
+const reviewing = ref(false)
+const reviewNote = ref('')
+
+const openFindings = computed(() => findings.value.filter(f => f.status === 'open' || f.status === 'escalated'))
+
+async function loadFindings() {
+  if (!submissionId.value) return
+  const res = await fetch(`/api/photoguard/submissions/${submissionId.value}/findings`, { headers: authHeaders() })
+  if (res.ok) findings.value = (await res.json() as { findings: Finding[] }).findings
+}
+
+async function runReview() {
+  if (!submissionId.value) return
+  reviewing.value = true
+  reviewNote.value = ''
+  try {
+    const res = await fetch(`/api/photoguard/submissions/${submissionId.value}/review`, {
+      method: 'POST', headers: authHeaders(),
+    })
+    const data = await res.json() as { ran: boolean; reason?: string; findings: Finding[] }
+    findings.value = data.findings ?? []
+    if (!data.ran) reviewNote.value = data.reason ?? 'Review did not run'
+    else if (!openFindings.value.length) reviewNote.value = 'No issues found across the job.'
+  } catch (e) {
+    reviewNote.value = e instanceof Error ? e.message : 'Review failed'
+  } finally {
+    reviewing.value = false
+  }
+}
+
+async function setFindingStatus(f: Finding, status: Finding['status']) {
+  await fetch(`/api/photoguard/findings/${f.id}/status`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+  await loadFindings()
+}
+
+const SEVERITY_TEXT: Record<string, string> = {
+  blocker: 'text-rose-600', warning: 'text-amber-600', note: 'text-sky-600',
+}
+
 const loading = ref(true)
 const error = ref('')
 const notImported = ref(false)
@@ -127,6 +183,7 @@ async function refreshSubmission() {
   }
   photos.value = data.photos
   contributors.value = data.contributors ?? []
+  void loadFindings()
   progress.value = data.progress ?? null
   const next: Record<string, unknown> = {}
   for (const a of data.answers) {
@@ -570,6 +627,60 @@ async function submit(force = false) {
           class="px-3 py-2 rounded-full border text-[12px] font-medium bg-foreground text-background border-foreground disabled:opacity-50"
           @click="submit(false)"
         >{{ submitting ? 'Checking…' : 'Submit' }}</button>
+      </div>
+
+      <!-- AI job review. Reviews the job as a whole — the cross-cutting
+           problems per-photo checks can't see. Advisory: a crew can dismiss a
+           finding, or escalate it to a human when the call isn't the AI's to
+           make. -->
+      <div class="rounded-xl border bg-card p-3 min-w-0">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+            AI job review<span v-if="openFindings.length"> · {{ openFindings.length }}</span>
+          </p>
+          <button
+            type="button" :disabled="reviewing"
+            class="px-2.5 py-1 rounded-full border text-[10px] font-medium bg-card hover:bg-muted disabled:opacity-50"
+            @click="runReview"
+          >{{ reviewing ? 'Reviewing…' : 'Review job now' }}</button>
+        </div>
+
+        <p v-if="reviewNote" class="mt-1.5 text-[11px] text-muted-foreground">{{ reviewNote }}</p>
+
+        <div v-if="openFindings.length" class="mt-2 grid gap-2">
+          <div v-for="f in openFindings" :key="f.id" class="rounded-lg border p-2.5 min-w-0">
+            <p class="text-[12px] font-medium" :class="SEVERITY_TEXT[f.severity]">
+              {{ f.title }}
+              <span class="text-[10px] uppercase tracking-wider text-muted-foreground">· {{ f.kind }}</span>
+            </p>
+            <p v-if="f.detail" class="mt-0.5 text-[11px] text-muted-foreground">{{ f.detail }}</p>
+            <p v-if="f.status === 'escalated'" class="mt-0.5 text-[11px] text-violet-600">
+              Human review requested{{ f.escalated_by ? ` by ${f.escalated_by}` : '' }}
+            </p>
+            <div class="mt-1.5 flex flex-wrap gap-1.5">
+              <button
+                v-if="f.requirement_hash" type="button"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
+                @click="jumpTo(f.requirement_hash!)"
+              >Go to item</button>
+              <button
+                v-if="f.status !== 'escalated'" type="button"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
+                @click="setFindingStatus(f, 'escalated')"
+              >Ask a human</button>
+              <button
+                type="button"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
+                @click="setFindingStatus(f, 'resolved')"
+              >Fixed</button>
+              <button
+                type="button"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
+                @click="setFindingStatus(f, 'dismissed')"
+              >Not an issue</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Progress + what's left.

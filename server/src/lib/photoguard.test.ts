@@ -559,3 +559,86 @@ test('an undecodable image fails fast without cascading errors', () => {
   assert.equal(issues.length, 1)
   assert.equal(issues[0]?.code, 'unreadable')
 })
+
+// ─── Job reviewer ─────────────────────────────────────────────────────
+
+test('parseReviewFindings accepts both shapes and normalizes fields', async () => {
+  const { parseReviewFindings } = await import('./photoguardReview')
+
+  const wrapped = parseReviewFindings(JSON.stringify({
+    findings: [{
+      kind: 'mismatch', severity: 'blocker',
+      title: 'Inverter does not match the design',
+      detail: 'Photo 12 shows a SolarEdge unit; the job sold Enphase IQ8+.',
+      requirementHash: '770', photoIds: [12, 13],
+    }],
+  }))
+  assert.equal(wrapped?.length, 1)
+  assert.equal(wrapped?.[0]?.kind, 'mismatch')
+  assert.equal(wrapped?.[0]?.severity, 'blocker')
+  assert.deepEqual(wrapped?.[0]?.photoIds, [12, 13])
+
+  // A bare array is accepted too — models drop the wrapper often enough.
+  assert.equal(parseReviewFindings('[{"title":"x","kind":"gap","severity":"note"}]')?.length, 1)
+})
+
+test('parseReviewFindings treats an empty result as success, not failure', async () => {
+  const { parseReviewFindings } = await import('./photoguardReview')
+  // A clean job MUST be able to produce zero findings — distinct from a parse
+  // failure, which returns null and is reported as "review didn't run".
+  assert.deepEqual(parseReviewFindings('{"findings":[]}'), [])
+  assert.deepEqual(parseReviewFindings('[]'), [])
+  assert.equal(parseReviewFindings('the job looks fine to me'), null)
+  assert.equal(parseReviewFindings(''), null)
+})
+
+test('parseReviewFindings is defensive about junk the model invents', async () => {
+  const { parseReviewFindings } = await import('./photoguardReview')
+  const out = parseReviewFindings(JSON.stringify({
+    findings: [
+      { title: '', kind: 'gap' },                                  // no title → dropped
+      { title: 'Unknown kind', kind: 'vibes', severity: 'urgent' }, // coerced
+      { title: 'Bad ids', photoIds: ['a', 3, null] },               // filtered
+      { title: 'Null hash', requirementHash: 'null' },              // treated as absent
+    ],
+  }))
+  assert.equal(out?.length, 3, 'the untitled finding is dropped')
+  assert.equal(out?.[0]?.kind, 'other', 'unknown kind lands on other, not safety')
+  assert.equal(out?.[0]?.severity, 'note')
+  assert.deepEqual(out?.[1]?.photoIds, [3])
+  assert.equal(out?.[2]?.requirementHash, null)
+})
+
+test('review findings fingerprint stably so re-runs update instead of duplicating', async () => {
+  const { fingerprint } = await import('./photoguardReview')
+  const base = { kind: 'gap' as const, severity: 'warning' as const, detail: 'd', requirementHash: '770', photoIds: [1] }
+  // Models rephrase capitalisation and punctuation between runs.
+  assert.equal(
+    fingerprint({ ...base, title: 'Missing rapid-shutdown label' }),
+    fingerprint({ ...base, title: 'missing rapid shutdown label!' }),
+  )
+  // Genuinely different complaints stay distinct.
+  assert.notEqual(
+    fingerprint({ ...base, title: 'Missing rapid-shutdown label' }),
+    fingerprint({ ...base, title: 'Missing placard at meter' }),
+  )
+})
+
+test('buildReviewPrompt tells the model that silence is an acceptable answer', async () => {
+  const { buildReviewPrompt } = await import('./photoguardReview')
+  const p = buildReviewPrompt({
+    formTitle: 'Field Task Site Checkout V1.02',
+    design: '11.68 kW system · 32 × Enphase IQ8+',
+    sections: [{ title: 'Electrical section', required: 46, satisfied: 12 }],
+    captured: [{ photoId: 1, requirement: 'Inverter', section: 'Electrical section',
+      passed: true, description: 'A SolarEdge inverter on a stucco wall.', issues: [] }],
+    missing: [{ hash: '9', label: 'Rapid shutdown label', section: 'Electrical section' }],
+    answers: [{ label: 'Crew lead', value: 'James' }],
+  })
+  assert.match(p, /11\.68 kW system/)
+  assert.match(p, /SolarEdge inverter on a stucco wall/)
+  assert.match(p, /empty array is a correct and\s+expected answer/)
+  assert.match(p, /You cannot see the\s+photos/)
+  // Must not nag about the outstanding list the form already shows.
+  assert.match(p, /Do NOT report a required photo as missing just because/)
+})

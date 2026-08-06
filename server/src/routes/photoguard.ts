@@ -33,6 +33,7 @@ import {
   validatePhotoBuffer, visionConfigured, visionModel,
 } from '../lib/photoguardVision'
 import { attachPhotoGuardSseStream, publishPhotoGuardEvent } from '../lib/photoguardEvents'
+import { runJobReview, listFindings, ensureReviewSchema } from '../lib/photoguardReview'
 
 export const photoguardRouter = Router()
 
@@ -166,6 +167,7 @@ function ensureSchema(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_val ON photoguard_photos(validation_status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_rev ON photoguard_photos(review_status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_hash ON photoguard_photos(content_hash)`)
+  ensureReviewSchema()
   seedDefaultRules()
 }
 ensureSchema()
@@ -784,6 +786,60 @@ photoguardRouter.get('/submissions/:id/connectivity', (req: Request, res: Respon
       lastAt: samples[samples.length - 1]?.['at'] ?? null,
     },
   })
+})
+
+// ─── Live job review ──────────────────────────────────────────────────
+
+/** Run the AI inspector over the whole job. Safe to call repeatedly —
+ *  findings are upserted by fingerprint, not duplicated. */
+photoguardRouter.post('/submissions/:id/review', async (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const result = await runJobReview(id)
+  res.json({ ...result, findings: listFindings(id) })
+})
+
+photoguardRouter.get('/submissions/:id/findings', (req: Request, res: Response) => {
+  res.json({ findings: listFindings(Number(req.params['id'])) })
+})
+
+/**
+ * Act on a finding.
+ *
+ * 'escalated' is the human-review request: the crew (or the reviewer) can say
+ * "I need a person to look at this one" without blocking the rest of the job.
+ * The AI is explicitly not the final word.
+ */
+photoguardRouter.post('/findings/:id/status', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const b = req.body as Record<string, unknown>
+  const status = String(b['status'] ?? '')
+  if (!['open', 'resolved', 'dismissed', 'escalated'].includes(status)) {
+    res.status(400).json({ error: "status must be open, resolved, dismissed or escalated" })
+    return
+  }
+  const row = db.prepare(`SELECT submission_id FROM photoguard_findings WHERE id = ?`).get(id) as
+    | { submission_id: number } | undefined
+  if (!row) { res.status(404).json({ error: 'Finding not found' }); return }
+
+  const who = actorName(req)
+  db.prepare(`
+    UPDATE photoguard_findings SET
+      status = ?,
+      resolved_by = CASE WHEN ? IN ('resolved','dismissed') THEN ? ELSE resolved_by END,
+      resolved_at = CASE WHEN ? IN ('resolved','dismissed') THEN datetime('now') ELSE resolved_at END,
+      escalated_by = CASE WHEN ? = 'escalated' THEN ? ELSE escalated_by END,
+      escalated_note = CASE WHEN ? = 'escalated' THEN ? ELSE escalated_note END,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(status, status, who, status, status, who, status,
+    b['note'] != null ? String(b['note']) : null, id)
+
+  publishPhotoGuardEvent({
+    type: 'photo_reviewed', status,
+    message: status === 'escalated' ? `${who} requested a human review` : undefined,
+    data: { submissionId: row.submission_id, findingId: id, kind: 'finding' },
+  })
+  res.json({ ok: true })
 })
 
 /**

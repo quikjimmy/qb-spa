@@ -96,6 +96,57 @@ A photo PASSES if it meets the requirements. It FAILS if:
 - Photo appears to be a placeholder, stock image, or not a real site photo`
 }
 
+/** Pull JSON out of a model response that may be fenced or prose-wrapped.
+ *  Shared by the per-photo verdict parser and the job reviewer. */
+export function extractJson(raw: string): unknown {
+  if (!raw || !raw.trim()) return null
+  let text = raw.trim()
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence?.[1]) text = fence[1].trim()
+  try { return JSON.parse(text) } catch { /* fall through */ }
+  // Outermost object or array span.
+  for (const [open, close] of [['{', '}'], ['[', ']']] as const) {
+    const a = text.indexOf(open)
+    const b = text.lastIndexOf(close)
+    if (a !== -1 && b > a) {
+      try { return JSON.parse(text.slice(a, b + 1)) } catch { /* try the other */ }
+    }
+  }
+  return null
+}
+
+/**
+ * Text-only completion against the same endpoint.
+ *
+ * Job-level review reasons over the descriptions the vision model already
+ * produced per photo, so it needs no images — which keeps a whole-job review
+ * to one cheap call instead of re-sending 40 photos.
+ */
+export async function callModelText(prompt: string, timeoutMs = 60_000): Promise<string> {
+  if (!visionConfigured()) throw new VisionNotConfiguredError()
+  const key = process.env['OLLAMA_API_KEY']
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (key) headers['Authorization'] = `Bearer ${key}`
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${visionBase()}/api/chat`, {
+      method: 'POST', headers, signal: ctrl.signal,
+      body: JSON.stringify({
+        model: visionModel(), stream: false, format: 'json',
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    if (!res.ok) throw new Error(`Model API ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
+    const data = await res.json() as OllamaChatResponse
+    if (data.error) throw new Error(`Model API error: ${data.error}`)
+    return data.message?.content ?? ''
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function coerceIssues(v: unknown): string[] {
   if (Array.isArray(v)) {
     return v.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).filter(s => s.trim() !== '')
