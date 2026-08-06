@@ -27,8 +27,10 @@ import {
 import { importArrivyForms, probeArrivyForms, ArrivyNotConfiguredError } from '../lib/arrivyFormImport'
 import {
   extractMetadata, runQualityGates, gatesBlock, haversineMeters, GEOFENCE_METERS,
+  perceptualHash, isNearDuplicate,
   type CaptureSource, type GateIssue,
 } from '../lib/photoguardQuality'
+import { assessSets, listSetAssessments, ensureSetSchema } from '../lib/photoguardSets'
 import {
   validatePhotoBuffer, visionConfigured, visionModel,
 } from '../lib/photoguardVision'
@@ -128,6 +130,9 @@ function ensureSchema(): void {
       gps_lat REAL, gps_lng REAL,
       camera_make TEXT, camera_model TEXT, photo_timestamp TEXT,
       content_hash TEXT,
+      -- Perceptual hash: catches the same SUBJECT reshot, which content_hash
+      -- (exact bytes) never will.
+      phash TEXT,
       capture_source TEXT,
       captured_by INTEGER REFERENCES users(id),
       captured_by_name TEXT,
@@ -171,8 +176,13 @@ function ensureSchema(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_val ON photoguard_photos(validation_status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_rev ON photoguard_photos(review_status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_hash ON photoguard_photos(content_hash)`)
+  {
+    const cols = db.prepare(`PRAGMA table_info(photoguard_photos)`).all() as Array<{ name: string }>
+    if (!cols.some(c => c.name === 'phash')) db.exec(`ALTER TABLE photoguard_photos ADD COLUMN phash TEXT`)
+  }
   ensureReviewSchema()
   ensureExampleSchema()
+  ensureSetSchema()
   seedDefaultRules()
 }
 ensureSchema()
@@ -960,6 +970,46 @@ photoguardRouter.post('/examples/harvest', (req: Request, res: Response) => {
   res.json(report)
 })
 
+// ─── Set-level assessment ─────────────────────────────────────────────
+
+/** Assess whether each multi-photo requirement is actually covered. */
+photoguardRouter.post('/sets/:scope/:id/assess', async (req: Request, res: Response) => {
+  const scope = String(req.params['scope'])
+  if (scope !== 'submission' && scope !== 'task') {
+    res.status(400).json({ error: "scope must be 'submission' or 'task'" }); return
+  }
+  const result = await assessSets(scope, Number(req.params['id']))
+  res.json({ ...result, stored: listSetAssessments(scope, Number(req.params['id'])) })
+})
+
+photoguardRouter.get('/sets/:scope/:id', (req: Request, res: Response) => {
+  const scope = String(req.params['scope'])
+  if (scope !== 'submission' && scope !== 'task') {
+    res.status(400).json({ error: "scope must be 'submission' or 'task'" }); return
+  }
+  res.json({ sets: listSetAssessments(scope, Number(req.params['id'])) })
+})
+
+/** Backfill perceptual hashes for photos stored before hashing existed. */
+photoguardRouter.post('/backfill-phash', async (req: Request, res: Response) => {
+  const limit = Math.min(Number(req.query['limit'] ?? 500), 2000)
+  const rows = db.prepare(`
+    SELECT id, file_path FROM photoguard_photos
+    WHERE phash IS NULL AND file_path IS NOT NULL LIMIT ?
+  `).all(limit) as Array<{ id: number; file_path: string }>
+
+  const upd = db.prepare(`UPDATE photoguard_photos SET phash = ? WHERE id = ?`)
+  let done = 0
+  for (const r of rows) {
+    try {
+      const buf = await fs.promises.readFile(path.join(PHOTO_DIR, path.basename(r.file_path)))
+      const h = await perceptualHash(buf)
+      if (h) { upd.run(h, r.id); done++ }
+    } catch { /* skip unreadable */ }
+  }
+  res.json({ ok: true, considered: rows.length, hashed: done })
+})
+
 // ─── Live job review ──────────────────────────────────────────────────
 
 /** Run the AI inspector over the whole job. Safe to call repeatedly —
@@ -1216,6 +1266,7 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
 
   // 1. Metadata + deterministic gates — the instant-feedback path.
   const meta = await extractMetadata(file.buffer)
+  const phash = await perceptualHash(file.buffer)
   const issues: GateIssue[] = runQualityGates(meta, {
     source,
     deviceLat: b['lat'] ? Number(b['lat']) : null,
@@ -1225,6 +1276,23 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     capturedAt: b['capturedAt'] ?? null,
     knownHashes: knownHashes(submissionId),
   })
+  // Near-duplicate of something already on this requirement. A warning, not a
+  // block: a second angle of the same subject is sometimes legitimate, and the
+  // set assessment is what decides whether it counts as coverage.
+  if (phash && submissionId && categoryHash) {
+    const sibs = db.prepare(`
+      SELECT phash FROM photoguard_photos
+      WHERE submission_id = ? AND category_hash = ? AND phash IS NOT NULL
+    `).all(submissionId, categoryHash) as Array<{ phash: string }>
+    if (sibs.some(x => isNearDuplicate(x.phash, phash))) {
+      issues.push({
+        code: 'near_duplicate',
+        severity: 'warn',
+        message: 'Looks like the same shot as one you already added — a different angle adds more.',
+      })
+    }
+  }
+
   const blocked = gatesBlock(issues)
 
   // 2. Persist. Blocked shots are still stored so the agent can see what was
@@ -1247,9 +1315,9 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
       category_label, category_hash, category_section, form_type, required,
       file_path, thumb_path, file_size, width, height,
       has_exif, has_gps, gps_lat, gps_lng, camera_make, camera_model, photo_timestamp,
-      content_hash, capture_source, captured_by, captured_by_name,
+      content_hash, phash, capture_source, captured_by, captured_by_name,
       metadata_issues, gate_status, validation_status
-    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     submissionId, fileId, file.originalname,
     cat?.label ?? null, categoryHash || null, cat?.sectionKey ?? null, formType || null,
@@ -1259,7 +1327,7 @@ photoguardRouter.post('/upload', memUpload.single('file'), async (req: Request, 
     meta.fileSize, meta.width, meta.height,
     meta.hasExif ? 1 : 0, meta.hasGps ? 1 : 0, meta.gpsLat, meta.gpsLng,
     meta.cameraMake, meta.cameraModel, meta.photoTimestamp,
-    meta.contentHash, source, req.user?.userId ?? null, actorName(req),
+    meta.contentHash, phash, source, req.user?.userId ?? null, actorName(req),
     JSON.stringify(issues), blocked ? 'blocked' : 'ok',
     blocked ? 'skipped' : 'pending',
   )
@@ -1779,6 +1847,7 @@ async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskR
         if (!dl) continue
 
         const meta = await extractMetadata(dl)
+        const dlPhash = await perceptualHash(dl)
         const fileName = `${fileId}.jpg`
         try { await fs.promises.writeFile(path.join(PHOTO_DIR, fileName), dl) } catch { continue }
         let thumbName: string | null = `thumb_${fileId}.jpg`
@@ -1795,8 +1864,8 @@ async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskR
             category_label, category_hash, category_section, form_type, required,
             file_path, thumb_path, file_size, width, height,
             has_exif, has_gps, gps_lat, gps_lng, camera_make, camera_model, photo_timestamp,
-            content_hash, capture_source, metadata_issues, gate_status, validation_status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'arrivy_import', '[]', 'ok', 'pending')
+            content_hash, phash, capture_source, metadata_issues, gate_status, validation_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'arrivy_import', '[]', 'ok', 'pending')
         `).run(
           taskRow.id, arrivyTaskId, fileId, f.filename ?? null,
           comp.content?.label ?? cat?.label ?? null, hash || null,
@@ -1805,7 +1874,7 @@ async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskR
           thumbName ? `/uploads/photoguard/thumbs/${thumbName}` : null,
           meta.fileSize, meta.width, meta.height,
           meta.hasExif ? 1 : 0, meta.hasGps ? 1 : 0, meta.gpsLat, meta.gpsLng,
-          meta.cameraMake, meta.cameraModel, meta.photoTimestamp, meta.contentHash,
+          meta.cameraMake, meta.cameraModel, meta.photoTimestamp, meta.contentHash, dlPhash,
         )
         out.photosAdded++
         enqueueValidation(Number(info.lastInsertRowid))

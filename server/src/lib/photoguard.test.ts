@@ -803,3 +803,71 @@ test('normalizeArrivyForm carries grouping onto photo fields', () => {
   // Non-photo fields never carry grouping.
   assert.equal(byHash.get('c')?.collective, false)
 })
+
+// ─── Duplicate detection & set coverage ───────────────────────────────
+
+test('hammingDistance and near-duplicate thresholds behave', async () => {
+  const { hammingDistance, isNearDuplicate } = await import('./photoguardQuality')
+  assert.equal(hammingDistance('ffffffffffffffff', 'ffffffffffffffff'), 0)
+  assert.equal(hammingDistance('0000000000000000', 'ffffffffffffffff'), 64)
+  assert.equal(hammingDistance('0000000000000001', '0000000000000000'), 1)
+  // Same shot, tiny difference.
+  assert.equal(isNearDuplicate('0000000000000003', '0000000000000000'), true)
+  // Genuinely different subject.
+  assert.equal(isNearDuplicate('ffffffffffffffff', '0000000000000000'), false)
+  // A missing hash must never be treated as a match — that would silently
+  // collapse real coverage.
+  assert.equal(isNearDuplicate(null, '0000000000000000'), false)
+  assert.equal(isNearDuplicate('0000000000000000', null), false)
+})
+
+test('clusterByLikeness counts distinct subjects, not photos', async () => {
+  const { clusterByLikeness } = await import('./photoguardQuality')
+  // Nineteen shots of one plane must not read as nineteen pieces of evidence.
+  const sameThing = Array.from({ length: 19 }, (_, i) => ({ id: i + 1, phash: '0000000000000000' }))
+  assert.equal(clusterByLikeness(sameThing).length, 1)
+
+  const threePlanes = [
+    { id: 1, phash: '0000000000000000' },
+    { id: 2, phash: '0000000000000001' },   // same as 1
+    { id: 3, phash: 'ffffffffffffffff' },
+    { id: 4, phash: '0f0f0f0f0f0f0f0f' },
+  ]
+  const clusters = clusterByLikeness(threePlanes)
+  assert.equal(clusters.length, 3)
+  assert.deepEqual(clusters[0], [1, 2])
+})
+
+test('parseSetVerdict refuses to guess whether a set is satisfied', async () => {
+  const { parseSetVerdict } = await import('./photoguardSets')
+  const ok = parseSetVerdict('{"satisfied":false,"confidence":0.8,"covered":["front"],"missing":["rear plane"],"note":"n"}')
+  assert.equal(ok?.satisfied, false)
+  assert.deepEqual(ok?.missing, ['rear plane'])
+
+  assert.equal(parseSetVerdict('{"confidence":0.9,"note":"looks fine"}'), null,
+    'missing `satisfied` must not default to satisfied')
+  assert.equal(parseSetVerdict('the roof looks covered'), null)
+  assert.equal(parseSetVerdict('{"satisfied":"maybe"}'), null)
+  assert.equal(parseSetVerdict('{"satisfied":"yes","confidence":85}')?.confidence, 0.85)
+})
+
+test('the set prompt judges coverage on distinct content, not photo count', async () => {
+  const { buildSetPrompt } = await import('./photoguardSets')
+  const members = [
+    { id: 1, description: 'Front roof plane', passed: 1, phash: 'a' },
+    { id: 2, description: 'Front roof plane again', passed: 1, phash: 'a' },
+    { id: 3, description: 'Left roof plane', passed: 1, phash: 'b' },
+  ]
+  const p = buildSetPrompt('Photos of Every Roof Plane', 'Show every plane', members, [[1, 2], [3]], 8)
+
+  assert.match(p, /photos 1, 2 look like the same shot/)
+  assert.match(p, /Treat each of those groups as ONE piece of evidence/)
+  assert.match(p, /Judge COVERAGE, not quantity/)
+  assert.match(p, /the same subject photographed repeatedly does not become coverage/)
+  assert.match(p, /about 8 photos/)
+  // It must be able to say "this is fine" without inventing gaps.
+  assert.match(p, /do not invent gaps/)
+
+  // With no duplicates it says so rather than implying some.
+  assert.match(buildSetPrompt('X', '', members, [[1], [2], [3]], null), /No near-duplicates detected/)
+})

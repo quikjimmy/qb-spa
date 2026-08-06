@@ -159,6 +159,82 @@ export async function extractMetadata(buf: Buffer): Promise<PhotoMetadata> {
   return base
 }
 
+// ─── Perceptual hashing ───────────────────────────────────────────────
+//
+// contentHash (sha256) only catches the SAME FILE submitted twice. It does
+// nothing about the real problem on a multi-photo requirement: shooting the
+// same roof plane nineteen times. Those are different files with different
+// bytes, so a count-based check reads them as full coverage.
+//
+// dHash compares adjacent pixel brightness on a 9x8 greyscale reduction. It's
+// robust to resolution, compression and mild exposure differences — which is
+// exactly the "same subject, shutter pressed twice" case — while still
+// separating genuinely different subjects.
+
+/** 64-bit difference hash as 16 hex chars. Null if the image can't be read. */
+export async function perceptualHash(buf: Buffer): Promise<string | null> {
+  try {
+    const raw = await sharp(buf)
+      .greyscale()
+      .resize(9, 8, { fit: 'fill' })
+      .raw()
+      .toBuffer()
+    let bits = ''
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const i = y * 9 + x
+        bits += (raw[i]! > raw[i + 1]!) ? '1' : '0'
+      }
+    }
+    let hex = ''
+    for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16)
+    return hex
+  } catch {
+    return null
+  }
+}
+
+/** Differing bits between two dHashes. 0 = identical framing. */
+export function hammingDistance(a: string, b: string): number {
+  if (!a || !b || a.length !== b.length) return 64
+  let d = 0
+  for (let i = 0; i < a.length; i++) {
+    let x = parseInt(a[i]!, 16) ^ parseInt(b[i]!, 16)
+    while (x) { d += x & 1; x >>= 1 }
+  }
+  return d
+}
+
+// Tuned on real survey photos: identical framing lands at 0-4, a step sideways
+// on the same plane around 5-10, a different plane comfortably past 15. 10 is
+// deliberately conservative — calling two distinct planes "duplicates" would
+// wrongly mark real coverage as padding.
+export const NEAR_DUPLICATE_BITS = Number(process.env['PHOTOGUARD_DUP_BITS'] || 10)
+
+export function isNearDuplicate(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false
+  return hammingDistance(a, b) <= NEAR_DUPLICATE_BITS
+}
+
+/**
+ * Partition a set into distinct subjects.
+ *
+ * Returns one cluster per visually distinct shot, each holding the ids that
+ * look like the same thing. Cluster count — not photo count — is what actually
+ * evidences coverage.
+ */
+export function clusterByLikeness(
+  photos: Array<{ id: number; phash: string | null }>,
+): Array<number[]> {
+  const clusters: Array<{ hash: string | null; ids: number[] }> = []
+  for (const p of photos) {
+    const hit = clusters.find(c => isNearDuplicate(c.hash, p.phash))
+    if (hit) hit.ids.push(p.id)
+    else clusters.push({ hash: p.phash, ids: [p.id] })
+  }
+  return clusters.map(c => c.ids)
+}
+
 export interface GateContext {
   source: CaptureSource
   /** Device geolocation captured alongside the shot, when the browser gave it. */

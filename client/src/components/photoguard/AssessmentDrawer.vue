@@ -22,6 +22,46 @@ const photos = ref<PhotoRow[]>([])
 const loading = ref(false)
 const showAll = ref(false)
 
+// Coverage of multi-photo requirements. A count of photos proves nothing —
+// this is whether the SET actually evidences what was asked for.
+interface SetAssessment {
+  field_hash: string
+  label: string
+  satisfied: number
+  distinct_shots: number
+  photo_count: number
+  duplicate_count: number
+  expected_count: number | null
+  covered: string
+  missing: string
+  note: string
+}
+const sets = ref<SetAssessment[]>([])
+const assessing = ref(false)
+
+function jsonList(raw: string): string[] {
+  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.map(String) : [] } catch { return [] }
+}
+
+async function loadSets() {
+  if (!props.taskRowId) return
+  const r = await fetch(`/api/photoguard/sets/task/${props.taskRowId}`, { headers: authHeaders() })
+  if (r.ok) sets.value = (await r.json() as { sets: SetAssessment[] }).sets
+}
+
+async function runCoverage() {
+  if (!props.taskRowId) return
+  assessing.value = true
+  try {
+    const r = await fetch(`/api/photoguard/sets/task/${props.taskRowId}/assess`, {
+      method: 'POST', headers: authHeaders(),
+    })
+    if (r.ok) sets.value = (await r.json() as { stored: SetAssessment[] }).stored
+  } finally {
+    assessing.value = false
+  }
+}
+
 async function load() {
   if (!props.taskRowId) return
   loading.value = true
@@ -34,7 +74,7 @@ async function load() {
     loading.value = false
   }
 }
-watch(() => props.taskRowId, load, { immediate: true })
+watch(() => props.taskRowId, () => { load(); loadSets() }, { immediate: true })
 
 const judged = computed(() => photos.value.filter(p => p.validation_status === 'done'))
 const failed = computed(() => photos.value.filter(p => photoState(p) === 'failed' || photoState(p) === 'blocked'))
@@ -96,6 +136,53 @@ function sectionLabel(key: string): string {
         <p v-if="loading" class="text-[12px] text-muted-foreground">Loading assessment…</p>
 
         <template v-else-if="photos.length">
+          <!-- Multi-photo requirements: is the set actually covered? -->
+          <div class="grid gap-1.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Coverage of multi-photo requirements
+              </p>
+              <button
+                type="button" :disabled="assessing"
+                class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors disabled:opacity-50"
+                @click="runCoverage"
+              >{{ assessing ? 'Checking…' : sets.length ? 'Re-check' : 'Check coverage' }}</button>
+            </div>
+
+            <p v-if="!sets.length && !assessing" class="text-[11px] text-muted-foreground">
+              Not checked yet — this asks whether each set of photos actually evidences
+              the requirement, rather than just counting uploads.
+            </p>
+
+            <div
+              v-for="a in sets" :key="a.field_hash"
+              class="rounded-lg border border-l-2 p-2 min-w-0"
+              :class="a.satisfied ? 'border-l-emerald-500' : 'border-l-amber-500'"
+            >
+              <div class="flex items-baseline justify-between gap-2 min-w-0">
+                <p class="text-[12px] font-medium truncate">{{ a.label }}</p>
+                <span
+                  class="flex-none text-[10px] font-bold uppercase tracking-wider"
+                  :class="a.satisfied ? 'text-emerald-600' : 'text-amber-600'"
+                >{{ a.satisfied ? 'Covered' : 'Gap' }}</span>
+              </div>
+              <p class="mt-0.5 text-[10px] text-muted-foreground">
+                {{ a.photo_count }} photo{{ a.photo_count === 1 ? '' : 's' }} ·
+                <span :class="a.duplicate_count ? 'text-amber-600' : ''">
+                  {{ a.distinct_shots }} distinct
+                </span>
+                <span v-if="a.duplicate_count"> · {{ a.duplicate_count }} near-duplicate</span>
+                <span v-if="a.expected_count"> · asks for {{ a.expected_count }}</span>
+              </p>
+              <ul v-if="jsonList(a.missing).length" class="mt-1 grid gap-0.5">
+                <li v-for="(m, i) in jsonList(a.missing)" :key="i" class="text-[11px] text-amber-700">
+                  {{ m }}
+                </li>
+              </ul>
+              <p v-else-if="a.note" class="mt-1 text-[11px] text-muted-foreground">{{ a.note }}</p>
+            </div>
+          </div>
+
           <!-- Coverage by section -->
           <div class="grid gap-1.5">
             <p class="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
