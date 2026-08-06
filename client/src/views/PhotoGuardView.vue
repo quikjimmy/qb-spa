@@ -13,6 +13,8 @@ import {
 } from '@/lib/photoguard'
 import { usePhotoGuardLive } from '@/lib/photoguardLive'
 import { formLabel } from '@/data/arrivy-forms'
+import SurveyTaskCard from '@/components/survey/SurveyTaskCard.vue'
+import { windowTaskToCard, type WindowResponse, type SurveyCard } from '@/lib/surveyTasks'
 
 const auth = useAuthStore()
 
@@ -98,46 +100,56 @@ function fmtTime(iso: string | null): string {
 }
 
 // ─── Pull a survey from Arrivy on demand ─────────────────────────────
-// One task at a time, triggered by a person who's waiting for it. Bulk
-// sweeping is disabled by default — it degraded Arrivy for the dispatch desk.
-interface ArrivyTaskRow {
-  arrivyTaskId: string
-  title: string | null
-  customerName: string | null
-  status: string | null
-  endDatetime: string | null
-  hasFiles: boolean
-  imported: boolean
-  photos: number
-  passed: number
-  pending: number
-}
-const arrivyTasks = ref<ArrivyTaskRow[]>([])
-const arrivyDays = ref(1)
-const arrivyLoading = ref(false)
+//
+// Deliberately reuses the Field view's survey window endpoint and its
+// SurveyTaskCard, so a survey reads here exactly as it does on
+// /projects/site-survey — same fields, same status pills, same chips. Two
+// benefits beyond consistency: that endpoint is served from local cache, so
+// browsing costs Arrivy nothing, and Arrivy is only touched when someone
+// actually presses import.
+type SurveyPreset = 'today' | 'yesterday' | 'week'
+const surveyPreset = ref<SurveyPreset>('yesterday')
+const surveyCards = ref<SurveyCard[]>([])
+const surveysLoading = ref(false)
 const pulling = ref<string | null>(null)
 const showArrivy = ref(false)
+// arrivy task id -> what PhotoGuard already holds for it
+const importedTasks = ref<Record<string, { photos: number; passed: number; failed: number; pending: number }>>({})
 
-async function loadArrivyRecent() {
-  arrivyLoading.value = true
+async function loadSurveys() {
+  surveysLoading.value = true
   try {
-    const res = await fetch(`/api/photoguard/arrivy/recent?days=${arrivyDays.value}`, { headers: authHeaders() })
-    arrivyTasks.value = res.ok ? (await res.json() as { tasks: ArrivyTaskRow[] }).tasks : []
-  } catch { arrivyTasks.value = [] } finally { arrivyLoading.value = false }
+    const [w, imp] = await Promise.all([
+      fetch(`/api/survey-tasks/window?preset=${surveyPreset.value}`, { headers: authHeaders() }),
+      fetch('/api/photoguard/imported-tasks', { headers: authHeaders() }),
+    ])
+    surveyCards.value = w.ok
+      ? (await w.json() as WindowResponse).tasks.map(windowTaskToCard)
+      : []
+    if (imp.ok) importedTasks.value = (await imp.json() as { tasks: typeof importedTasks.value }).tasks
+  } catch {
+    surveyCards.value = []
+  } finally {
+    surveysLoading.value = false
+  }
 }
 
-async function pullSurvey(t: ArrivyTaskRow) {
-  pulling.value = t.arrivyTaskId
+function pgState(rid: string) {
+  return importedTasks.value[rid] ?? null
+}
+
+async function pullSurvey(card: SurveyCard) {
+  pulling.value = card.rid
   try {
-    const res = await fetch(`/api/photoguard/arrivy/import/${t.arrivyTaskId}`, {
+    const res = await fetch(`/api/photoguard/arrivy/import/${card.rid}`, {
       method: 'POST', headers: authHeaders(),
     })
-    const data = await res.json() as { error?: string; photosAdded?: number; photosSkipped?: number }
-    if (!res.ok) throw new Error(data.error || `Pull failed (${res.status})`)
-    flash(`${t.customerName ?? 'Survey'}: ${data.photosAdded ?? 0} photo(s) pulled, assessing now`)
-    await Promise.all([loadArrivyRecent(), loadAll()])
+    const data = await res.json() as { error?: string; photosAdded?: number }
+    if (!res.ok) throw new Error(data.error || `Import failed (${res.status})`)
+    flash(`${card.customer_name}: ${data.photosAdded ?? 0} photo(s) imported, assessing now`)
+    await Promise.all([loadSurveys(), loadAll()])
   } catch (e) {
-    flash(e instanceof Error ? e.message : 'Pull failed')
+    flash(e instanceof Error ? e.message : 'Import failed')
   } finally {
     pulling.value = null
   }
@@ -335,66 +347,53 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
         </div>
       </div>
 
-      <!-- Pull a survey from Arrivy for assessment. Collapsed by default: it
-           reaches a shared production system, so it shouldn't look like an
-           idle button. -->
-      <div class="rounded-xl border bg-card p-3 min-w-0">
+      <!-- Assess an Arrivy survey. Same cards as /projects/site-survey. -->
+      <div class="grid gap-2 min-w-0">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Assess an Arrivy survey
+            Arrivy surveys · import &amp; assess
           </p>
           <button
             type="button"
             class="min-h-11 px-3 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
             :aria-expanded="showArrivy"
-            @click="showArrivy = !showArrivy; if (showArrivy && !arrivyTasks.length) loadArrivyRecent()"
-          >{{ showArrivy ? 'Hide' : 'Browse recent' }}</button>
+            @click="showArrivy = !showArrivy; if (showArrivy && !surveyCards.length) loadSurveys()"
+          >{{ showArrivy ? 'Hide' : 'Browse surveys' }}</button>
         </div>
 
         <template v-if="showArrivy">
-          <p class="mt-1 text-[11px] text-muted-foreground">
-            Pulls one survey's photos and runs the AI assessment. Each pull takes a
-            couple of minutes and is paced so it doesn't slow Arrivy for the desk.
-          </p>
-
-          <div class="mt-2 flex gap-1" role="group" aria-label="Date range">
+          <div class="flex flex-wrap gap-1.5" role="group" aria-label="Survey date range">
             <button
-              v-for="d in [1, 2, 7]" :key="d" type="button"
+              v-for="p in (['today','yesterday','week'] as SurveyPreset[])" :key="p" type="button"
               class="min-h-11 px-3 rounded-full border text-[11px] font-medium whitespace-nowrap cursor-pointer transition-colors"
-              :class="arrivyDays === d ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
-              :aria-pressed="arrivyDays === d"
-              @click="arrivyDays = d; loadArrivyRecent()"
-            >{{ d === 1 ? 'Yesterday–today' : `Last ${d}d` }}</button>
+              :class="surveyPreset === p ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
+              :aria-pressed="surveyPreset === p"
+              @click="surveyPreset = p; loadSurveys()"
+            >{{ p === 'today' ? 'Today' : p === 'yesterday' ? 'Yesterday' : 'This week' }}</button>
           </div>
 
-          <p v-if="arrivyLoading" class="mt-2 text-[12px] text-muted-foreground">Loading from Arrivy…</p>
-          <p v-else-if="!arrivyTasks.length" class="mt-2 text-[12px] text-muted-foreground">
-            No surveys found in that window.
+          <p v-if="surveysLoading" class="text-[12px] text-muted-foreground">Loading surveys…</p>
+          <p v-else-if="!surveyCards.length" class="text-[12px] text-muted-foreground">
+            No surveys in that window.
           </p>
 
-          <div v-else class="mt-2 grid gap-1.5">
-            <div
-              v-for="t in arrivyTasks.slice(0, 40)" :key="t.arrivyTaskId"
-              class="flex items-center justify-between gap-2 rounded-lg border p-2 min-w-0"
-            >
-              <div class="min-w-0">
-                <p class="text-[12px] font-medium truncate">
-                  {{ t.customerName || t.title || t.arrivyTaskId }}
-                </p>
-                <p class="text-[10px] text-muted-foreground truncate">
-                  {{ t.status }}
-                  <span v-if="t.imported"> · {{ t.passed }}/{{ t.photos }} passing<span
-                    v-if="t.pending"> · {{ t.pending }} assessing</span></span>
-                  <span v-else-if="!t.hasFiles"> · no files attached</span>
-                </p>
+          <div v-else class="grid gap-1.5 min-w-0">
+            <div v-for="c in surveyCards" :key="c.rid" class="min-w-0">
+              <SurveyTaskCard :task="c" @open="pullSurvey(c)" />
+              <div class="flex flex-wrap items-center gap-2 px-2.5 pt-1">
+                <span v-if="pgState(c.rid)" class="text-[10px] text-muted-foreground">
+                  PhotoGuard: {{ pgState(c.rid)!.passed }}/{{ pgState(c.rid)!.photos }} passing<span
+                    v-if="pgState(c.rid)!.pending"> · {{ pgState(c.rid)!.pending }} assessing</span>
+                </span>
+                <span v-else class="text-[10px] text-muted-foreground">Not imported</span>
+                <button
+                  type="button" :disabled="pulling === c.rid"
+                  class="ml-auto min-h-11 px-3 rounded-full border text-[10px] font-medium cursor-pointer transition-colors disabled:opacity-50"
+                  :class="pgState(c.rid) ? 'bg-card hover:bg-muted' : 'bg-foreground text-background border-foreground'"
+                  :aria-label="`Import and assess the survey for ${c.customer_name}`"
+                  @click.stop="pullSurvey(c)"
+                >{{ pulling === c.rid ? 'Importing…' : pgState(c.rid) ? 'Re-import' : 'Import & assess' }}</button>
               </div>
-              <button
-                type="button" :disabled="pulling === t.arrivyTaskId"
-                class="flex-none min-h-11 px-3 rounded-full border text-[11px] font-medium cursor-pointer transition-colors disabled:opacity-50"
-                :class="t.imported ? 'bg-card hover:bg-muted' : 'bg-foreground text-background border-foreground'"
-                :aria-label="`${t.imported ? 'Re-pull' : 'Pull'} photos for ${t.customerName || t.arrivyTaskId}`"
-                @click="pullSurvey(t)"
-              >{{ pulling === t.arrivyTaskId ? 'Pulling…' : t.imported ? 'Re-pull' : 'Pull & assess' }}</button>
             </div>
           </div>
         </template>

@@ -1799,6 +1799,29 @@ async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskR
   return out
 }
 
+/**
+ * Which Arrivy tasks we've already pulled, and how they're doing.
+ *
+ * Local only — no Arrivy call. The browsing UI reads survey tasks from the
+ * Field view's own cached endpoint, so picking a survey costs Arrivy nothing;
+ * Arrivy is touched only when someone actually requests an import.
+ */
+photoguardRouter.get('/imported-tasks', (_req: Request, res: Response) => {
+  const rows = db.prepare(`
+    SELECT arrivy_task_id AS id,
+           COUNT(*) AS photos,
+           SUM(CASE WHEN validation_passed = 1 THEN 1 ELSE 0 END) AS passed,
+           SUM(CASE WHEN validation_passed = 0 AND validation_status = 'done' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN validation_status != 'done' THEN 1 ELSE 0 END) AS pending
+    FROM photoguard_photos
+    WHERE arrivy_task_id IS NOT NULL
+    GROUP BY arrivy_task_id
+  `).all() as Array<Record<string, unknown>>
+  const byId: Record<string, Record<string, unknown>> = {}
+  for (const r of rows) byId[String(r['id'])] = r
+  res.json({ tasks: byId })
+})
+
 /** Recent Arrivy surveys a tester can pick from. One list call, page 1 only —
  *  surveys dominate it, so paging deeper isn't worth the load. */
 photoguardRouter.get('/arrivy/recent', async (req: Request, res: Response) => {
