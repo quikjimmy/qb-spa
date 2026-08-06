@@ -434,6 +434,43 @@ photoguardRouter.get('/submissions/:id', (req: Request, res: Response) => {
   })
 })
 
+/**
+ * Anchor the site coordinates.
+ *
+ * A survey often starts before location permission is granted, which used to
+ * leave site_lat/site_lng null forever — and a null anchor means the geofence
+ * silently never runs. The form posts here as soon as it gets a fix.
+ *
+ * First good fix wins: later readings drift as the agent walks the property,
+ * and re-anchoring mid-survey would move the fence under photos already taken.
+ * Pass `force` to deliberately re-anchor.
+ */
+photoguardRouter.post('/submissions/:id/site', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const b = req.body as Record<string, unknown>
+  const lat = b['siteLat'] != null ? Number(b['siteLat']) : NaN
+  const lng = b['siteLng'] != null ? Number(b['siteLng']) : NaN
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    res.status(400).json({ error: 'siteLat and siteLng are required' })
+    return
+  }
+  const sub = db.prepare(`SELECT site_lat, site_lng FROM photoguard_submissions WHERE id = ?`)
+    .get(id) as { site_lat: number | null; site_lng: number | null } | undefined
+  if (!sub) { res.status(404).json({ error: 'Submission not found' }); return }
+
+  const alreadyAnchored = sub.site_lat != null && sub.site_lng != null
+  if (alreadyAnchored && b['force'] !== true) {
+    res.json({ ok: true, anchored: false, siteLat: sub.site_lat, siteLng: sub.site_lng })
+    return
+  }
+  db.prepare(`
+    UPDATE photoguard_submissions
+    SET site_lat = ?, site_lng = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(lat, lng, id)
+  res.json({ ok: true, anchored: true, siteLat: lat, siteLng: lng })
+})
+
 photoguardRouter.patch('/submissions/:id/answers', (req: Request, res: Response) => {
   const id = Number(req.params['id'])
   const b = req.body as { answers?: Array<{ fieldHash: string; value: unknown }> }

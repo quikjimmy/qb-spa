@@ -13,11 +13,13 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { loadForm, groupBySection, formLabel, FormNotImportedError } from '@/data/arrivy-forms'
 import {
-  authHeaders, currentPosition, photoState,
+  authHeaders, photoState,
   type FormDefinition, type FormField, type PhotoRow,
 } from '@/lib/photoguard'
 import { usePhotoGuardLive } from '@/lib/photoguardLive'
+import { useGeolocation } from '@/lib/geolocation'
 import PhotoCaptureTile from '@/components/photoguard/PhotoCaptureTile.vue'
+import LocationGate from '@/components/photoguard/LocationGate.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,7 +35,9 @@ const form = ref<FormDefinition | null>(null)
 const submissionId = ref<number | null>(null)
 const photos = ref<PhotoRow[]>([])
 const answers = ref<Record<string, unknown>>({})
-const geo = ref<{ lat: number; lng: number } | null>(null)
+const loc = useGeolocation()
+// Capture tiles only need the coordinate pair.
+const geo = computed(() => (loc.fix.value ? { lat: loc.fix.value.lat, lng: loc.fix.value.lng } : null))
 
 const loading = ref(true)
 const error = ref('')
@@ -121,8 +125,8 @@ async function start() {
         body: JSON.stringify({
           formType: formType.value,
           projectRid: projectRid.value,
-          siteLat: geo.value?.lat ?? null,
-          siteLng: geo.value?.lng ?? null,
+          siteLat: loc.fix.value?.lat ?? null,
+          siteLng: loc.fix.value?.lng ?? null,
         }),
       })
       if (!res.ok) {
@@ -147,11 +151,30 @@ async function start() {
 }
 
 onMounted(async () => {
-  // Ask for location first: it's the site anchor for every photo that follows,
-  // and a denial should surface before the agent starts shooting.
-  geo.value = await currentPosition()
+  // Deliberately does NOT prompt — a cold permission dialog with no context
+  // gets denied, and a denial is permanent for the origin. This only reads the
+  // current state (and silently fetches a fix if already granted); the actual
+  // ask happens from the LocationGate button.
+  void loc.refreshPermission()
   await start()
 })
+
+// Anchor the site as soon as a fix exists. Surveys frequently begin before
+// permission is granted, and without this the submission keeps a null anchor
+// and the geofence never applies.
+watch(() => loc.fix.value, async f => {
+  if (!f || !submissionId.value) return
+  await fetch(`/api/photoguard/submissions/${submissionId.value}/site`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ siteLat: f.lat, siteLng: f.lng }),
+  }).catch(() => { /* anchoring is best-effort */ })
+}, { immediate: true })
+
+async function askLocation() {
+  const f = await loc.request()
+  if (f) loc.startWatch()   // let GPS sharpen the initial coarse fix
+}
 
 watch(formType, () => { submissionId.value = null; sectionIndex.value = 0; start() })
 
@@ -258,10 +281,17 @@ async function submit(force = false) {
       <h1 class="text-2xl font-semibold tracking-tight">{{ formLabel(formType) }}</h1>
       <p class="text-[11px] text-muted-foreground">
         {{ overall.done }} / {{ overall.total }} required photos captured
-        <span v-if="geo"> · location on</span>
-        <span v-else class="text-amber-600"> · location off — enable it so photos tie to the site</span>
       </p>
     </div>
+
+    <LocationGate
+      :state="loc.state.value"
+      :fix="loc.fix.value"
+      :error="loc.error.value"
+      :requesting="loc.requesting.value"
+      :coarse="loc.coarse.value"
+      @request="askLocation"
+    />
 
     <p v-if="loading" class="text-sm text-muted-foreground">Loading form…</p>
 

@@ -209,15 +209,3 @@ export function fmtCoords(lat: number | null, lng: number | null): string {
   if (lat == null || lng == null) return '—'
   return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
 }
-
-/** Browser geolocation, best-effort — a refusal must not block capture. */
-export function currentPosition(timeoutMs = 8000): Promise<{ lat: number; lng: number } | null> {
-  if (!('geolocation' in navigator)) return Promise.resolve(null)
-  return new Promise(resolve => {
-    navigator.geolocation.getCurrentPosition(
-      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30_000 },
-    )
-  })
-}
