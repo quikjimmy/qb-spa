@@ -1808,14 +1808,17 @@ async function importSingleArrivyTask(arrivyTaskId: string): Promise<ImportTaskR
  */
 photoguardRouter.get('/imported-tasks', (_req: Request, res: Response) => {
   const rows = db.prepare(`
-    SELECT arrivy_task_id AS id,
+    SELECT p.arrivy_task_id AS id,
+           MAX(p.task_rowid) AS taskRowId,
            COUNT(*) AS photos,
-           SUM(CASE WHEN validation_passed = 1 THEN 1 ELSE 0 END) AS passed,
-           SUM(CASE WHEN validation_passed = 0 AND validation_status = 'done' THEN 1 ELSE 0 END) AS failed,
-           SUM(CASE WHEN validation_status != 'done' THEN 1 ELSE 0 END) AS pending
-    FROM photoguard_photos
-    WHERE arrivy_task_id IS NOT NULL
-    GROUP BY arrivy_task_id
+           SUM(CASE WHEN p.validation_passed = 1 THEN 1 ELSE 0 END) AS passed,
+           SUM(CASE WHEN p.validation_passed = 0 AND p.validation_status = 'done' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN p.validation_status != 'done' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN p.review_status IS NOT NULL THEN 1 ELSE 0 END) AS reviewed,
+           MAX(p.created_at) AS lastImportedAt
+    FROM photoguard_photos p
+    WHERE p.arrivy_task_id IS NOT NULL
+    GROUP BY p.arrivy_task_id
   `).all() as Array<Record<string, unknown>>
   const byId: Record<string, Record<string, unknown>> = {}
   for (const r of rows) byId[String(r['id'])] = r

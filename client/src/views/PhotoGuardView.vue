@@ -13,8 +13,9 @@ import {
 } from '@/lib/photoguard'
 import { usePhotoGuardLive } from '@/lib/photoguardLive'
 import { formLabel } from '@/data/arrivy-forms'
-import SurveyTaskCard from '@/components/survey/SurveyTaskCard.vue'
 import { windowTaskToCard, type WindowResponse, type SurveyCard } from '@/lib/surveyTasks'
+import ArrivySurveyRow, { type ImportState } from '@/components/photoguard/ArrivySurveyRow.vue'
+import AssessmentDrawer from '@/components/photoguard/AssessmentDrawer.vue'
 
 const auth = useAuthStore()
 
@@ -114,7 +115,17 @@ const surveysLoading = ref(false)
 const pulling = ref<string | null>(null)
 const showArrivy = ref(false)
 // arrivy task id -> what PhotoGuard already holds for it
-const importedTasks = ref<Record<string, { photos: number; passed: number; failed: number; pending: number }>>({})
+const importedTasks = ref<Record<string, ImportState>>({})
+// Which assessment is open, if any.
+const assessmentTask = ref<{ id: number; title: string } | null>(null)
+
+/** Just the PhotoGuard overlay — no Arrivy call, cheap enough to poll on SSE. */
+async function refreshImported() {
+  try {
+    const r = await fetch('/api/photoguard/imported-tasks', { headers: authHeaders() })
+    if (r.ok) importedTasks.value = (await r.json() as { tasks: Record<string, ImportState> }).tasks
+  } catch { /* leave what we have */ }
+}
 
 async function loadSurveys() {
   surveysLoading.value = true
@@ -134,8 +145,14 @@ async function loadSurveys() {
   }
 }
 
-function pgState(rid: string) {
+function pgState(rid: string): ImportState | null {
   return importedTasks.value[rid] ?? null
+}
+
+function openAssessment(card: SurveyCard) {
+  const st = pgState(card.rid)
+  if (!st?.taskRowId) return
+  assessmentTask.value = { id: st.taskRowId, title: card.customer_name || 'Survey' }
 }
 
 async function pullSurvey(card: SurveyCard) {
@@ -249,6 +266,8 @@ const { connected, onPhotoGuardEvent } = usePhotoGuardLive()
 const stopLive = onPhotoGuardEvent(evt => {
   if (evt.type === 'photo_validated' || evt.type === 'photo_reviewed' || evt.type === 'scan_complete') {
     loadAll()
+    // Keeps the per-survey "assessing 41/63" counters moving live.
+    if (showArrivy.value) refreshImported()
   }
 })
 onBeforeUnmount(() => stopLive())
@@ -347,25 +366,29 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
         </div>
       </div>
 
-      <!-- Assess an Arrivy survey. Same cards as /projects/site-survey. -->
+      <!-- Import & assess Arrivy surveys. Browsing reads the Field view's
+           cached endpoint, so it costs Arrivy nothing; Arrivy is only touched
+           on an explicit import. -->
       <div class="grid gap-2 min-w-0">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Arrivy surveys · import &amp; assess
+            Arrivy surveys
           </p>
           <button
             type="button"
-            class="min-h-11 px-3 rounded-full border text-[11px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
+            class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted cursor-pointer transition-colors"
             :aria-expanded="showArrivy"
             @click="showArrivy = !showArrivy; if (showArrivy && !surveyCards.length) loadSurveys()"
-          >{{ showArrivy ? 'Hide' : 'Browse surveys' }}</button>
+          >{{ showArrivy ? 'Hide' : 'Browse' }}</button>
         </div>
 
         <template v-if="showArrivy">
+          <!-- Date presets: chip sizing per docs/ui-component-specs.md. These
+               are filters, not primary actions, so they stay small. -->
           <div class="flex flex-wrap gap-1.5" role="group" aria-label="Survey date range">
             <button
               v-for="p in (['today','yesterday','week'] as SurveyPreset[])" :key="p" type="button"
-              class="min-h-11 px-3 rounded-full border text-[11px] font-medium whitespace-nowrap cursor-pointer transition-colors"
+              class="px-2 py-0.5 rounded-full border text-[10px] font-medium whitespace-nowrap cursor-pointer transition-colors"
               :class="surveyPreset === p ? 'bg-foreground text-background border-foreground' : 'bg-card hover:bg-muted'"
               :aria-pressed="surveyPreset === p"
               @click="surveyPreset = p; loadSurveys()"
@@ -377,24 +400,15 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
             No surveys in that window.
           </p>
 
-          <div v-else class="grid gap-1.5 min-w-0">
-            <div v-for="c in surveyCards" :key="c.rid" class="min-w-0">
-              <SurveyTaskCard :task="c" @open="pullSurvey(c)" />
-              <div class="flex flex-wrap items-center gap-2 px-2.5 pt-1">
-                <span v-if="pgState(c.rid)" class="text-[10px] text-muted-foreground">
-                  PhotoGuard: {{ pgState(c.rid)!.passed }}/{{ pgState(c.rid)!.photos }} passing<span
-                    v-if="pgState(c.rid)!.pending"> · {{ pgState(c.rid)!.pending }} assessing</span>
-                </span>
-                <span v-else class="text-[10px] text-muted-foreground">Not imported</span>
-                <button
-                  type="button" :disabled="pulling === c.rid"
-                  class="ml-auto min-h-11 px-3 rounded-full border text-[10px] font-medium cursor-pointer transition-colors disabled:opacity-50"
-                  :class="pgState(c.rid) ? 'bg-card hover:bg-muted' : 'bg-foreground text-background border-foreground'"
-                  :aria-label="`Import and assess the survey for ${c.customer_name}`"
-                  @click.stop="pullSurvey(c)"
-                >{{ pulling === c.rid ? 'Importing…' : pgState(c.rid) ? 'Re-import' : 'Import & assess' }}</button>
-              </div>
-            </div>
+          <div v-else class="grid gap-2 min-w-0">
+            <ArrivySurveyRow
+              v-for="c in surveyCards" :key="c.rid"
+              :card="c"
+              :state="pgState(c.rid)"
+              :importing="pulling === c.rid"
+              @import="pullSurvey(c)"
+              @view="openAssessment(c)"
+            />
           </div>
         </template>
       </div>
@@ -576,6 +590,15 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
       v-if="toast"
       class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-full border bg-card px-3 py-1.5 text-[11px] shadow"
     >{{ toast }}</p>
+
+    <!-- Assessment for an imported Arrivy survey -->
+    <AssessmentDrawer
+      v-if="assessmentTask"
+      :task-row-id="assessmentTask.id"
+      :title="assessmentTask.title"
+      @close="assessmentTask = null"
+      @open-photo="p => { openPhoto = p }"
+    />
 
     <!-- Audit trail -->
     <div
