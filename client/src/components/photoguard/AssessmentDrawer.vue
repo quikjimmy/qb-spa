@@ -9,6 +9,7 @@ import {
   accentText, authHeaders, parseStringList, photoState, stateAccent, stateLabel,
   fmtConfidence, type PhotoRow,
 } from '@/lib/photoguard'
+import AssessmentChat from '@/components/photoguard/AssessmentChat.vue'
 
 const props = defineProps<{ taskRowId: number | null; title: string }>()
 // The list travels with the photo so the dialog can walk it — reviewing 15
@@ -230,6 +231,11 @@ function sectionLabel(key: string): string {
                 {{ fmtConfidence(p.validation_confidence) }}
               </span>
             </button>
+          </div>
+
+          <!-- Ask about what you're reading -->
+          <div class="border-t pt-3">
+            <AssessmentChat v-if="taskRowId" scope="task" :scope-id="taskRowId" />
           </div>
 
           <!-- Everything else, folded away -->

@@ -187,6 +187,43 @@ export async function callModelText(prompt: string, timeoutMs = 60_000): Promise
   }
 }
 
+/**
+ * Free-form call, optionally with images attached.
+ *
+ * Used by the assessment chat: most questions are answerable from the
+ * descriptions already on record (cheap, text-only), but "is there a label in
+ * the top-left of this one?" needs the model to actually look again.
+ */
+export async function callModelWithImages(
+  prompt: string,
+  images: Buffer[] = [],
+  timeoutMs = 90_000,
+): Promise<string> {
+  if (!visionConfigured()) throw new VisionNotConfiguredError()
+  const key = process.env['OLLAMA_API_KEY']
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (key) headers['Authorization'] = `Bearer ${key}`
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const message: Record<string, unknown> = { role: 'user', content: prompt }
+    if (images.length) message['images'] = images.map(b => b.toString('base64'))
+
+    const res = await fetch(`${visionBase()}/api/chat`, {
+      method: 'POST', headers, signal: ctrl.signal,
+      // No format:'json' here — this one answers in prose.
+      body: JSON.stringify({ model: visionModel(), stream: false, messages: [message] }),
+    })
+    if (!res.ok) throw new Error(`Model API ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
+    const data = await res.json() as OllamaChatResponse
+    if (data.error) throw new Error(`Model API error: ${data.error}`)
+    return data.message?.content ?? ''
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function coerceIssues(v: unknown): string[] {
   if (Array.isArray(v)) {
     return v.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).filter(s => s.trim() !== '')

@@ -14,12 +14,16 @@ import {
   accentText, fmtBytes, fmtConfidence, fmtCoords, parseIssues, parseStringList,
   photoState, stateAccent, stateLabel, type PhotoRow,
 } from '@/lib/photoguard'
+import AssessmentChat from '@/components/photoguard/AssessmentChat.vue'
 
 const props = defineProps<{
   /** The list being reviewed, so the dialog can navigate within it. */
   photos: PhotoRow[]
   index: number
   busy?: boolean
+  /** Enables per-photo chat when the dialog knows its assessment scope. */
+  chatScope?: 'submission' | 'task' | null
+  chatScopeId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -214,6 +218,16 @@ const takenAt = computed(() => {
               <dt class="text-muted-foreground">Source</dt>
               <dd class="text-right truncate">{{ sourceLabel }}</dd>
             </dl>
+
+            <!-- Ask about THIS photo — the image goes with the question, so
+                 "is there a label in the corner?" is answerable. -->
+            <div v-if="chatScope && chatScopeId" class="border-t pt-3">
+              <AssessmentChat
+                :scope="chatScope" :scope-id="chatScopeId"
+                :photo-id="photo.id" :photo-label="photo.category_label"
+                compact
+              />
+            </div>
 
             <p v-if="photo.review_status" class="text-[11px]" :class="accentText(stateAccent(state))">
               {{ photo.reviewer }} marked this {{ photo.review_status }}

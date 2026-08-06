@@ -31,6 +31,7 @@ import {
   type CaptureSource, type GateIssue,
 } from '../lib/photoguardQuality'
 import { assessSets, listSetAssessments, ensureSetSchema } from '../lib/photoguardSets'
+import { ask as askAssessment, listMessages as listChat, ensureChatSchema, type ChatScope } from '../lib/photoguardChat'
 import {
   validatePhotoBuffer, visionConfigured, visionModel,
 } from '../lib/photoguardVision'
@@ -183,6 +184,7 @@ function ensureSchema(): void {
   ensureReviewSchema()
   ensureExampleSchema()
   ensureSetSchema()
+  ensureChatSchema()
   seedDefaultRules()
 }
 ensureSchema()
@@ -968,6 +970,49 @@ photoguardRouter.post('/examples/harvest', (req: Request, res: Response) => {
     createdBy: actorName(req),
   })
   res.json(report)
+})
+
+// ─── Assessment chat ──────────────────────────────────────────────────
+//
+// Grounded in what's already been assessed. Attaches the image when the
+// question is about one specific photo, because some questions can only be
+// answered by looking again.
+
+function isChatScope(v: string): v is ChatScope {
+  return v === 'submission' || v === 'task'
+}
+
+photoguardRouter.get('/chat/:scope/:id', (req: Request, res: Response) => {
+  const scope = String(req.params['scope'])
+  if (!isChatScope(scope)) { res.status(400).json({ error: 'Bad scope' }); return }
+  res.json({ messages: listChat(scope, Number(req.params['id'])) })
+})
+
+photoguardRouter.post('/chat/:scope/:id', async (req: Request, res: Response) => {
+  const scope = String(req.params['scope'])
+  if (!isChatScope(scope)) { res.status(400).json({ error: 'Bad scope' }); return }
+  const b = req.body as Record<string, unknown>
+  const question = String(b['question'] ?? '').trim()
+  if (!question) { res.status(400).json({ error: 'question is required' }); return }
+  if (question.length > 2000) { res.status(400).json({ error: 'question is too long' }); return }
+
+  const photoId = b['photoId'] != null ? Number(b['photoId']) : null
+
+  const result = await askAssessment(scope, Number(req.params['id']), question, {
+    photoId,
+    author: actorName(req),
+    // Only load bytes when a specific photo is in question.
+    imageLoader: async (id: number) => {
+      const row = db.prepare(`SELECT file_path FROM photoguard_photos WHERE id = ?`).get(id) as
+        | { file_path: string | null } | undefined
+      if (!row?.file_path) return null
+      try { return await fs.promises.readFile(path.join(PHOTO_DIR, path.basename(row.file_path))) }
+      catch { return null }
+    },
+  })
+
+  if (!result.ok) { res.status(502).json({ error: result.error }); return }
+  res.json({ ok: true, answer: result.answer, messages: listChat(scope, Number(req.params['id'])) })
 })
 
 // ─── Set-level assessment ─────────────────────────────────────────────

@@ -183,9 +183,16 @@ const reviewIndex = ref(0)
 const reviewBusy = ref(false)
 const openPhoto = computed<PhotoRow | null>(() => reviewList.value[reviewIndex.value] ?? null)
 
+// Scope travels with the photo so per-photo chat knows which assessment it
+// belongs to.
+const reviewScope = ref<{ scope: 'task' | 'submission'; id: number } | null>(null)
+
 function openPhotoIn(list: PhotoRow[], photo: PhotoRow) {
   reviewList.value = list
   reviewIndex.value = Math.max(0, list.findIndex(p => p.id === photo.id))
+  reviewScope.value = assessmentTask.value
+    ? { scope: 'task', id: assessmentTask.value.id }
+    : photo.submission_id ? { scope: 'submission', id: photo.submission_id } : null
 }
 
 function flash(msg: string) {
@@ -698,6 +705,8 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
       :photos="reviewList"
       :index="reviewIndex"
       :busy="reviewBusy"
+      :chat-scope="reviewScope?.scope ?? null"
+      :chat-scope-id="reviewScope?.id ?? null"
       @close="closeReview"
       @navigate="i => reviewIndex = i"
       @review="review"
