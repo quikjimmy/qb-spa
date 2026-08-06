@@ -36,8 +36,14 @@ export function visionModel(): string {
   return process.env['OLLAMA_VISION_MODEL'] || 'kimi-k2.6:cloud'
 }
 
+/** A daemon on this machine needs no auth, so requiring a key there would
+ *  make a perfectly working local Ollama look unconfigured. */
+export function isLocalBase(base = visionBase()): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i.test(base)
+}
+
 export function visionConfigured(): boolean {
-  return !!process.env['OLLAMA_API_KEY']
+  return !!process.env['OLLAMA_API_KEY'] || isLocalBase()
 }
 
 export class VisionNotConfiguredError extends Error {
@@ -158,12 +164,15 @@ export async function validatePhotoBuffer(
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
 
   try {
+    const key = process.env['OLLAMA_API_KEY']
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    // Only send auth when we have it — a local daemon rejects nothing, but
+    // `Bearer undefined` is a confusing thing to put on the wire.
+    if (key) headers['Authorization'] = `Bearer ${key}`
+
     const res = await fetch(`${visionBase()}/api/chat`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env['OLLAMA_API_KEY']}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       signal: ctrl.signal,
       body: JSON.stringify({
         model,

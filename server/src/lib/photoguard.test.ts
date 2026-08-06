@@ -304,6 +304,40 @@ test('buildVisionPrompt still reads sensibly with no hints', () => {
   assert.match(buildVisionPrompt('Roof Slope', ''), /No additional requirements/)
 })
 
+test('a local Ollama daemon counts as configured without an API key', async () => {
+  const { visionConfigured, isLocalBase } = await import('./photoguardVision')
+  const key = process.env['OLLAMA_API_KEY']
+  const base = process.env['OLLAMA_BASE']
+  try {
+    delete process.env['OLLAMA_API_KEY']
+
+    // Cloud with no key: genuinely unconfigured.
+    process.env['OLLAMA_BASE'] = 'https://ollama.com'
+    assert.equal(visionConfigured(), false)
+
+    // A daemon on this machine needs no auth — requiring a key here would
+    // make a working local Ollama look broken.
+    for (const b of ['http://localhost:11434', 'http://127.0.0.1:11434', 'http://[::1]:11434']) {
+      process.env['OLLAMA_BASE'] = b
+      assert.equal(isLocalBase(b), true, b)
+      assert.equal(visionConfigured(), true, b)
+    }
+
+    // A remote host is not local just because it has a port.
+    assert.equal(isLocalBase('https://ollama.example.com:11434'), false)
+
+    // Key alone is enough regardless of base.
+    process.env['OLLAMA_BASE'] = 'https://ollama.com'
+    process.env['OLLAMA_API_KEY'] = 'k'
+    assert.equal(visionConfigured(), true)
+  } finally {
+    if (key === undefined) delete process.env['OLLAMA_API_KEY']
+    else process.env['OLLAMA_API_KEY'] = key
+    if (base === undefined) delete process.env['OLLAMA_BASE']
+    else process.env['OLLAMA_BASE'] = base
+  }
+})
+
 test('parseVisionResponse reads clean JSON', () => {
   const v = parseVisionResponse('{"passed":true,"confidence":0.91,"issues":[],"description":"A meter."}')
   assert.deepEqual(v, { passed: true, confidence: 0.91, issues: [], description: 'A meter.' })
