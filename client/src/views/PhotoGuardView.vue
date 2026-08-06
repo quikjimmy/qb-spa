@@ -56,6 +56,47 @@ function jobHref(j: Job): string {
   return `/photoguard/form/${j.formType}?project=${j.projectRid}`
 }
 
+// ─── Audit trail ─────────────────────────────────────────────────────
+interface AuditEntry {
+  photoId: number
+  requirement: string | null
+  section: string | null
+  uploadedBy: string | null
+  captureSource: string | null
+  takenAt: string | null
+  uploadedAt: string | null
+  delayMinutes: number | null
+  onSite: boolean | null
+  distanceM: number | null
+  passed: boolean | null
+  reviewStatus: string | null
+  thumbPath: string | null
+}
+const auditFor = ref<number | null>(null)
+const audit = ref<{ entries: AuditEntry[]; summary: Record<string, number | null> } | null>(null)
+
+async function openAudit(submissionId: number) {
+  auditFor.value = submissionId
+  audit.value = null
+  const res = await fetch(`/api/photoguard/submissions/${submissionId}/audit`, { headers: authHeaders() })
+  if (res.ok) audit.value = await res.json()
+}
+
+function fmtDelay(min: number | null): string {
+  if (min == null) return 'unknown'
+  if (min < 2) return 'immediately'
+  if (min < 90) return `${min}m later`
+  const h = Math.round(min / 60)
+  return h < 48 ? `${h}h later` : `${Math.round(h / 24)}d later`
+}
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : `${iso}Z`)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
 // Review drawer
 const openPhoto = ref<PhotoRow | null>(null)
 const reviewNote = ref('')
@@ -369,10 +410,13 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
         </p>
 
         <div v-else class="grid gap-2 min-w-0">
-          <RouterLink
+          <div
             v-for="s in submissions" :key="String(s['id'])"
+            class="rounded-xl border bg-card min-w-0 overflow-hidden"
+          >
+          <RouterLink
             :to="`/photoguard/form/${s['form_type']}?submission=${s['id']}`"
-            class="rounded-xl border bg-card p-3 min-w-0 hover:bg-muted transition-colors"
+            class="block p-3 min-w-0 hover:bg-muted transition-colors"
           >
             <div class="flex items-baseline justify-between gap-2 min-w-0">
               <span class="truncate text-sm font-medium">
@@ -388,6 +432,12 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
               {{ s['passed_count'] || 0 }}/{{ s['photo_count'] || 0 }} photos passing
             </p>
           </RouterLink>
+          <button
+            type="button"
+            class="px-3 pb-2 text-[10px] underline underline-offset-2 text-muted-foreground hover:text-foreground"
+            @click="openAudit(Number(s['id']))"
+          >Audit trail</button>
+          </div>
         </div>
       </div>
 
@@ -412,6 +462,70 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
       v-if="toast"
       class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-full border bg-card px-3 py-1.5 text-[11px] shadow"
     >{{ toast }}</p>
+
+    <!-- Audit trail -->
+    <div
+      v-if="auditFor"
+      class="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      @click.self="auditFor = null"
+    >
+      <div class="bg-card w-full sm:max-w-2xl rounded-t-2xl sm:rounded-2xl p-4 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-start justify-between gap-2">
+          <p class="text-sm font-medium">Audit trail · job {{ auditFor }}</p>
+          <button type="button" class="text-[11px] text-muted-foreground" @click="auditFor = null">Close</button>
+        </div>
+
+        <p v-if="!audit" class="mt-2 text-[12px] text-muted-foreground">Loading…</p>
+
+        <template v-else>
+          <p class="mt-1 text-[11px] text-muted-foreground">
+            {{ audit.summary['photos'] }} photos · {{ audit.summary['contributors'] }} people ·
+            {{ audit.summary['onSite'] }} on site, {{ audit.summary['offSite'] }} off site,
+            {{ audit.summary['locationUnknown'] }} unknown ·
+            {{ audit.summary['liveCaptures'] }} live / {{ audit.summary['libraryUploads'] }} from library
+            <span v-if="audit.summary['medianDelayMinutes'] != null">
+              · typically uploaded {{ fmtDelay(audit.summary['medianDelayMinutes']) }}
+            </span>
+          </p>
+
+          <div class="mt-3 grid gap-1.5">
+            <div
+              v-for="e in audit.entries" :key="e.photoId"
+              class="flex gap-2 items-start rounded-lg border p-2 min-w-0"
+            >
+              <img
+                v-if="e.thumbPath" :src="e.thumbPath" alt=""
+                class="flex-none w-10 h-10 rounded object-cover bg-muted"
+              />
+              <div class="min-w-0 flex-1">
+                <p class="text-[12px] font-medium truncate">{{ e.requirement || 'Unassigned' }}</p>
+                <p class="text-[11px] text-muted-foreground">
+                  {{ e.uploadedBy || 'Unknown' }} ·
+                  <span :class="e.captureSource === 'upload' ? 'text-amber-600' : ''">
+                    {{ e.captureSource === 'upload' ? 'from library' : e.captureSource === 'video_frame' ? 'video frame' : 'live camera' }}
+                  </span>
+                </p>
+                <p class="text-[10px] text-muted-foreground">
+                  Taken {{ fmtTime(e.takenAt) }} · uploaded {{ fmtTime(e.uploadedAt) }}
+                  <span :class="(e.delayMinutes ?? 0) > 240 ? 'text-amber-600' : ''">
+                    ({{ fmtDelay(e.delayMinutes) }})
+                  </span>
+                </p>
+                <p class="text-[10px]">
+                  <span v-if="e.onSite === true" class="text-emerald-600">On site ({{ e.distanceM }}m)</span>
+                  <span v-else-if="e.onSite === false" class="text-rose-600">Off site ({{ e.distanceM }}m)</span>
+                  <span v-else class="text-muted-foreground">Location unknown</span>
+                </p>
+              </div>
+              <span
+                class="flex-none text-[10px] font-bold uppercase tracking-wider"
+                :class="e.passed === true ? 'text-emerald-600' : e.passed === false ? 'text-rose-600' : 'text-slate-500'"
+              >{{ e.passed === true ? 'Pass' : e.passed === false ? 'Fail' : 'Pending' }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
 
     <!-- Review drawer -->
     <div

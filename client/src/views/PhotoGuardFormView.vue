@@ -46,6 +46,9 @@ const geo = computed(() => (loc.fix.value ? { lat: loc.fix.value.lat, lng: loc.f
 const contributors = ref<Array<{ name: string; photos: number; last_at: string }>>([])
 const shareCopied = ref(false)
 const queue = useUploadQueue()
+const docs = ref<Array<{ recordId: number; type: string; fileName: string | null; url: string | null; linkUrl: string | null }>>([])
+const progress = ref<{ requiredTotal: number; requiredApproved: number; percentApproved: number } | null>(null)
+const showChecklist = ref(false)
 
 const loading = ref(true)
 const error = ref('')
@@ -96,6 +99,20 @@ const overall = computed(() => {
 const outstanding = computed(() =>
   (form.value?.fields ?? []).filter(f => f.fieldType === 'photo' && f.required && !isSatisfied(f)))
 
+/** Outstanding items grouped by their section, so the full list reads as a
+ *  route through the job rather than an undifferentiated pile. */
+const outstandingBySection = computed(() => {
+  const titles = new Map((form.value?.sections ?? []).map(s => [s.key, s.title]))
+  const out = new Map<string, { title: string; fields: FormField[] }>()
+  for (const f of outstanding.value) {
+    const key = f.sectionKey
+    const g = out.get(key) ?? { title: titles.get(key) ?? key, fields: [] }
+    g.fields.push(f)
+    out.set(key, g)
+  }
+  return [...out.values()]
+})
+
 // ─── Load ─────────────────────────────────────────────────────────────
 
 async function refreshSubmission() {
@@ -106,9 +123,11 @@ async function refreshSubmission() {
     photos: PhotoRow[]
     answers: Array<{ field_hash: string; value: string | null }>
     contributors?: Array<{ name: string; photos: number; last_at: string }>
+    progress?: { requiredTotal: number; requiredApproved: number; percentApproved: number }
   }
   photos.value = data.photos
   contributors.value = data.contributors ?? []
+  progress.value = data.progress ?? null
   const next: Record<string, unknown> = {}
   for (const a of data.answers) {
     if (a.value == null) continue
@@ -148,6 +167,7 @@ async function start() {
       router.replace({ query: { ...route.query, submission: String(created.id) } })
     }
     await refreshSubmission()
+    if (projectRid.value) void loadDocs()
   } catch (e) {
     if (e instanceof FormNotImportedError) {
       notImported.value = true
@@ -222,6 +242,16 @@ async function copyJobLink() {
     shareCopied.value = true
     setTimeout(() => { shareCopied.value = false }, 2500)
   } catch { /* clipboard blocked — the URL bar still works */ }
+}
+
+/** The design the crew is actually building to, proxied from Quickbase so no
+ *  QB login is needed on site. */
+async function loadDocs() {
+  try {
+    const res = await fetch(`/api/photoguard/documents/${projectRid.value}`, { headers: authHeaders() })
+    if (!res.ok) return
+    docs.value = (await res.json() as { documents: typeof docs.value }).documents
+  } catch { /* documents are a convenience, not a blocker */ }
 }
 
 async function askLocation() {
@@ -393,6 +423,16 @@ async function submit(force = false) {
       >{{ queue.draining.value ? 'Uploading…' : 'Retry now' }}</button>
     </div>
 
+    <!-- The design the crew is building to. Served through our server with the
+         app's own QB token, so a sub on a roof doesn't need a Quickbase login. -->
+    <div v-if="docs.length" class="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1 min-w-0">
+      <a
+        v-for="d in docs" :key="d.recordId"
+        :href="d.url ?? d.linkUrl ?? '#'" target="_blank" rel="noopener"
+        class="flex-none px-2.5 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted whitespace-nowrap"
+      >📄 {{ d.type }}<span v-if="d.fileName" class="text-muted-foreground"> · {{ d.fileName.slice(0, 24) }}</span></a>
+    </div>
+
     <p v-if="loading" class="text-sm text-muted-foreground">Loading form…</p>
 
     <!-- Form not imported yet -->
@@ -532,21 +572,69 @@ async function submit(force = false) {
         >{{ submitting ? 'Checking…' : 'Submit' }}</button>
       </div>
 
-      <!-- What's still missing -->
-      <div v-if="outstanding.length" class="rounded-xl border bg-card p-3">
-        <p class="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Still needed · {{ outstanding.length }}
-        </p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
-          <button
-            v-for="f in outstanding.slice(0, 20)" :key="f.hash" type="button"
-            class="px-2 py-0.5 rounded-full border text-[10px] font-medium bg-card hover:bg-muted"
-            @click="jumpTo(f.hash)"
-          >{{ f.label }}</button>
-          <span v-if="outstanding.length > 20" class="text-[10px] text-muted-foreground self-center">
-            +{{ outstanding.length - 20 }} more
-          </span>
+      <!-- Progress + what's left.
+           Was a wall of ~40 unexplained chips, which read as clutter rather
+           than a to-do list. Now: a progress bar you can actually judge
+           yourself against, one obvious next action, and the full list behind
+           a disclosure grouped by section so it's navigable rather than a heap. -->
+      <div class="rounded-xl border bg-card p-3 min-w-0">
+        <div class="flex items-baseline justify-between gap-2">
+          <p class="text-sm font-medium">
+            <span v-if="progress">{{ progress.percentApproved }}% approved</span>
+            <span v-else>{{ overall.done }} / {{ overall.total }} done</span>
+          </p>
+          <p class="text-[11px] text-muted-foreground tabular-nums">
+            <span v-if="progress">{{ progress.requiredApproved }} / {{ progress.requiredTotal }} required</span>
+          </p>
         </div>
+
+        <div class="mt-1.5 h-2 rounded-full bg-muted overflow-hidden">
+          <div
+            class="h-full transition-all"
+            :class="(progress?.percentApproved ?? 0) === 100 ? 'bg-emerald-500' : 'bg-sky-500'"
+            :style="{ width: `${progress?.percentApproved ?? 0}%` }"
+          />
+        </div>
+
+        <p v-if="!outstanding.length" class="mt-2 text-[12px] text-emerald-600 font-medium">
+          Everything required is approved — ready to submit.
+        </p>
+
+        <template v-else>
+          <p class="mt-2 text-[12px] text-muted-foreground">
+            <span class="font-medium text-foreground">{{ outstanding.length }}</span>
+            still needed. Next: <span class="font-medium text-foreground">{{ outstanding[0]?.label }}</span>
+          </p>
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              class="px-3 py-1.5 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground"
+              @click="jumpTo(outstanding[0]!.hash)"
+            >Go to next</button>
+            <button
+              type="button"
+              class="px-3 py-1.5 rounded-full border text-[11px] font-medium bg-card hover:bg-muted"
+              @click="showChecklist = !showChecklist"
+            >{{ showChecklist ? 'Hide list' : `Show all ${outstanding.length}` }}</button>
+          </div>
+
+          <div v-if="showChecklist" class="mt-2 grid gap-2">
+            <div v-for="g in outstandingBySection" :key="g.title" class="min-w-0">
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {{ g.title }} · {{ g.fields.length }}
+              </p>
+              <ul class="mt-0.5 grid gap-0.5">
+                <li v-for="f in g.fields" :key="f.hash">
+                  <button
+                    type="button"
+                    class="text-left text-[12px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                    @click="jumpTo(f.hash)"
+                  >{{ f.label }}</button>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- Submit outcome -->

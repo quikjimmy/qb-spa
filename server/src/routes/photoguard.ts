@@ -26,7 +26,7 @@ import {
 } from '../lib/photoguardForms'
 import { importArrivyForms, probeArrivyForms, ArrivyNotConfiguredError } from '../lib/arrivyFormImport'
 import {
-  extractMetadata, runQualityGates, gatesBlock,
+  extractMetadata, runQualityGates, gatesBlock, haversineMeters, GEOFENCE_METERS,
   type CaptureSource, type GateIssue,
 } from '../lib/photoguardQuality'
 import {
@@ -563,10 +563,29 @@ photoguardRouter.get('/submissions/:id', (req: Request, res: Response) => {
     GROUP BY captured_by_name ORDER BY photos DESC
   `).all(id)
 
+  // Completion measured on APPROVED requirements, not captured ones: a photo
+  // that exists but failed its check is not progress.
+  const requiredHashes = [...resolved.entries()].filter(([, r]) => r.required).map(([h]) => h)
+  const passingByHash = new Set(
+    (photos as Array<Record<string, unknown>>)
+      .filter(p =>
+        p['review_status'] === 'approved' ||
+        (p['review_status'] == null && p['gate_status'] !== 'blocked' && p['validation_passed'] === 1))
+      .map(p => String(p['category_hash'] ?? '')),
+  )
+  const approvedRequired = requiredHashes.filter(h => passingByHash.has(h)).length
+  const progress = {
+    requiredTotal: requiredHashes.length,
+    requiredApproved: approvedRequired,
+    percentApproved: requiredHashes.length
+      ? Math.round((approvedRequired / requiredHashes.length) * 100) : 0,
+  }
+
   res.json({
     submission: sub,
     answers,
     photos,
+    progress,
     contributors,
     site: siteCoordsFor(sub),
     design: describeDesign(project),
@@ -765,6 +784,187 @@ photoguardRouter.get('/submissions/:id/connectivity', (req: Request, res: Respon
       lastAt: samples[samples.length - 1]?.['at'] ?? null,
     },
   })
+})
+
+/**
+ * Audit trail for a job.
+ *
+ * Answers, per photo: who uploaded it, against which requirement, whether it
+ * passed, whether it was taken on site, and — the useful bit — the gap between
+ * when the shutter fired and when it reached us. A large gap isn't misconduct
+ * (the offline queue and camera-roll workflow both produce one legitimately),
+ * but it's the number you'd want in front of you if a job looked wrong.
+ */
+photoguardRouter.get('/submissions/:id/audit', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const sub = db.prepare(`SELECT * FROM photoguard_submissions WHERE id = ?`).get(id) as
+    | Record<string, unknown> | undefined
+  if (!sub) { res.status(404).json({ error: 'Submission not found' }); return }
+
+  const site = siteCoordsFor(sub)
+  const rows = db.prepare(`
+    SELECT id, category_label, category_hash, category_section, captured_by_name,
+           capture_source, created_at, photo_timestamp, gps_lat, gps_lng,
+           has_exif, has_gps, gate_status, validation_status, validation_passed,
+           validation_confidence, review_status, reviewer, review_note, reviewed_at,
+           file_path, thumb_path
+    FROM photoguard_photos WHERE submission_id = ? ORDER BY created_at
+  `).all(id) as Array<Record<string, unknown>>
+
+  const entries = rows.map(r => {
+    const taken = r['photo_timestamp'] ? new Date(String(r['photo_timestamp'])) : null
+    const uploaded = new Date(String(r['created_at']) + 'Z')
+    const validTaken = taken && !Number.isNaN(taken.getTime()) ? taken : null
+    const delayMinutes = validTaken
+      ? Math.round((uploaded.getTime() - validTaken.getTime()) / 60_000)
+      : null
+
+    // On site = the photo's own GPS lands within the fence of the property.
+    // Unknown (not "off site") when the photo carries no GPS — absence of
+    // evidence isn't evidence, and iOS strips GPS on some upload paths.
+    let onSite: boolean | null = null
+    let distanceM: number | null = null
+    const pLat = r['gps_lat'] as number | null
+    const pLng = r['gps_lng'] as number | null
+    if (pLat != null && pLng != null && site.lat != null && site.lng != null) {
+      distanceM = Math.round(haversineMeters(pLat, pLng, site.lat, site.lng))
+      onSite = distanceM <= GEOFENCE_METERS
+    }
+
+    return {
+      photoId: r['id'],
+      requirement: r['category_label'],
+      section: r['category_section'],
+      uploadedBy: r['captured_by_name'],
+      captureSource: r['capture_source'],
+      takenAt: r['photo_timestamp'],
+      uploadedAt: r['created_at'],
+      delayMinutes,
+      onSite,
+      distanceM,
+      hasExif: r['has_exif'] === 1,
+      hasGps: r['has_gps'] === 1,
+      passed: r['review_status'] === 'approved' ? true
+        : r['review_status'] === 'rejected' || r['review_status'] === 'resubmit' ? false
+        : r['gate_status'] === 'blocked' ? false
+        : r['validation_status'] === 'done' ? r['validation_passed'] === 1
+        : null,
+      validationStatus: r['validation_status'],
+      confidence: r['validation_confidence'],
+      reviewStatus: r['review_status'],
+      reviewer: r['reviewer'],
+      reviewNote: r['review_note'],
+      thumbPath: r['thumb_path'],
+      filePath: r['file_path'],
+    }
+  })
+
+  const withDelay = entries.filter(e => e.delayMinutes != null).map(e => e.delayMinutes as number)
+  res.json({
+    submissionId: id,
+    site,
+    entries,
+    summary: {
+      photos: entries.length,
+      contributors: new Set(entries.map(e => e.uploadedBy).filter(Boolean)).size,
+      onSite: entries.filter(e => e.onSite === true).length,
+      offSite: entries.filter(e => e.onSite === false).length,
+      locationUnknown: entries.filter(e => e.onSite == null).length,
+      liveCaptures: entries.filter(e => e.captureSource === 'camera' || e.captureSource === 'video_frame').length,
+      libraryUploads: entries.filter(e => e.captureSource === 'upload').length,
+      medianDelayMinutes: withDelay.length
+        ? [...withDelay].sort((a, b) => a - b)[Math.floor(withDelay.length / 2)] ?? null
+        : null,
+      maxDelayMinutes: withDelay.length ? Math.max(...withDelay) : null,
+    },
+  })
+})
+
+// ─── Job documents (the design the crew is building to) ───────────────
+//
+// Design docs already sync from Quickbase into attachment_cache. The existing
+// Documents UI links to the QB record page, which assumes a Quickbase login —
+// fine for office staff, useless for a subcontractor on a roof. So we proxy
+// the bytes with the server's own QB token instead.
+//
+// QB's /v1/files response is base64-encoded (verified live: a 254KB PDF comes
+// back as base64 with content-type application/pdf), so it has to be decoded
+// before being streamed on.
+
+/** Attachment types worth putting in front of a crew, most useful first. */
+const DESIGN_TYPES = ['Approved Plans', 'Proposed Design', 'Permit', 'Change Order Doc']
+
+photoguardRouter.get('/documents/:projectRid', (req: Request, res: Response) => {
+  const rid = Number(req.params['projectRid'])
+  if (!Number.isFinite(rid)) { res.status(400).json({ error: 'Bad project id' }); return }
+
+  const rows = db.prepare(`
+    SELECT record_id, attachment_type, file_name, file_blob, link_url, date_created
+    FROM attachment_cache
+    WHERE project_rid = ?
+    ORDER BY date_created DESC
+  `).all(rid) as Array<{
+    record_id: number; attachment_type: string | null; file_name: string | null
+    file_blob: string | null; link_url: string | null; date_created: string | null
+  }>
+
+  const docs = rows
+    .filter(r => DESIGN_TYPES.includes((r.attachment_type ?? '').trim()))
+    .map(r => {
+      let hasFile = false
+      let version = 1
+      try {
+        const blob = r.file_blob ? JSON.parse(r.file_blob) as { url?: string; versions?: unknown[] } : null
+        hasFile = !!blob?.versions?.length
+        if (blob?.versions?.length) version = blob.versions.length
+      } catch { /* treat as link-only */ }
+      return {
+        recordId: r.record_id,
+        type: r.attachment_type,
+        fileName: r.file_name,
+        dateCreated: r.date_created,
+        linkUrl: r.link_url,
+        hasFile,
+        version,
+        // Served through us, so no Quickbase account is needed on site.
+        url: hasFile ? `/api/photoguard/documents/file/${r.record_id}?v=${version}` : null,
+      }
+    })
+    .sort((a, b) => DESIGN_TYPES.indexOf(String(a.type)) - DESIGN_TYPES.indexOf(String(b.type)))
+
+  res.json({ projectRid: rid, documents: docs })
+})
+
+photoguardRouter.get('/documents/file/:recordId', async (req: Request, res: Response) => {
+  const recordId = Number(req.params['recordId'])
+  const version = Math.max(1, Number(req.query['v'] ?? 1))
+  const token = process.env['QB_USER_TOKEN']
+  const realm = process.env['QB_REALM_HOSTNAME']
+  if (!token || !realm) { res.status(503).json({ error: 'Quickbase is not configured' }); return }
+
+  const row = db.prepare(`SELECT file_name FROM attachment_cache WHERE record_id = ?`)
+    .get(recordId) as { file_name: string | null } | undefined
+  if (!row) { res.status(404).json({ error: 'Document not found' }); return }
+
+  try {
+    const qb = await fetch(
+      `https://api.quickbase.com/v1/files/br9kwm8ke/${recordId}/7/${version}`,
+      { headers: { 'QB-Realm-Hostname': realm, 'Authorization': `QB-USER-TOKEN ${token}` } },
+    )
+    if (!qb.ok) {
+      res.status(qb.status === 404 ? 404 : 502).json({ error: `Quickbase returned ${qb.status}` })
+      return
+    }
+    // Body is base64 text, not raw bytes.
+    const buf = Buffer.from(await qb.text(), 'base64')
+    const name = row.file_name || `document-${recordId}`
+    res.setHeader('Content-Type', qb.headers.get('content-type') || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `inline; filename="${name.replace(/"/g, '')}"`)
+    res.setHeader('Cache-Control', 'private, max-age=3600')
+    res.send(buf)
+  } catch (e) {
+    res.status(502).json({ error: e instanceof Error ? e.message : 'Download failed' })
+  }
 })
 
 // ─── Upload (the live capture path) ───────────────────────────────────
