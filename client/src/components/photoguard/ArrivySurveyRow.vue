@@ -78,51 +78,50 @@ const statusClass = computed(() => ({
 </script>
 
 <template>
-  <div class="rounded-xl border bg-card min-w-0 overflow-hidden">
-    <!-- Identical to /projects/site-survey so a survey reads the same everywhere -->
-    <div class="p-1.5 pb-0">
-      <SurveyTaskCard :task="card" @open="phase === 'assessed' || phase === 'assessing' ? emit('view') : emit('import')" />
-    </div>
+  <!-- No outer card: SurveyTaskCard already draws one, and nesting produced a
+       double border with a stretched dead gap on wide screens. The PhotoGuard
+       strip hangs directly under it, left-aligned next to the status rather
+       than floated to the far edge. -->
+  <div class="min-w-0">
+    <SurveyTaskCard :task="card" @open="phase === 'new' ? emit('import') : emit('view')" />
 
-    <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 min-w-0">
+    <div class="flex flex-wrap items-center gap-2 pl-2.5 pr-1 pt-1 min-w-0">
       <span class="inline-block size-1.5 rounded-full flex-none" :class="dotClass" aria-hidden="true" />
-      <p class="text-[11px] font-medium min-w-0 flex-1 truncate" :class="statusClass">
+      <span class="text-[11px] font-medium truncate" :class="statusClass">
         {{ statusText }}
         <span v-if="phase === 'assessed' && passRate !== null" class="text-muted-foreground">
           · {{ passRate }}% pass
         </span>
-      </p>
+      </span>
 
-      <!-- One action, matched to the state -->
       <button
         v-if="phase === 'new'"
         type="button"
-        class="flex-none min-h-9 px-3 rounded-full border text-[11px] font-medium bg-foreground text-background border-foreground cursor-pointer transition-colors"
+        class="flex-none px-2.5 py-1 rounded-full border text-[10px] font-medium bg-foreground text-background border-foreground cursor-pointer transition-colors"
         :aria-label="`Import and assess the survey for ${card.customer_name}`"
         @click="emit('import')"
       >Import &amp; assess</button>
 
-      <button
+      <span
         v-else-if="phase === 'importing'"
-        type="button" disabled
-        class="flex-none min-h-9 px-3 rounded-full border text-[11px] font-medium bg-muted text-muted-foreground opacity-70"
-      >Importing…</button>
+        class="flex-none px-2.5 py-1 rounded-full border text-[10px] font-medium bg-muted text-muted-foreground"
+      >Importing…</span>
 
       <button
         v-else
         type="button"
-        class="flex-none min-h-9 px-3 rounded-full border text-[11px] font-medium cursor-pointer transition-colors"
+        class="flex-none px-2.5 py-1 rounded-full border text-[10px] font-medium cursor-pointer transition-colors"
         :class="phase === 'assessed'
           ? 'bg-foreground text-background border-foreground'
           : 'bg-card hover:bg-muted'"
         :aria-label="`View the assessment for ${card.customer_name}`"
         @click="emit('view')"
-      >{{ phase === 'assessed' ? 'View assessment' : 'View progress' }}</button>
-    </div>
+      >{{ phase === 'assessed' ? 'View assessment →' : 'View progress →' }}</button>
 
-    <!-- Only while there's something still to check -->
-    <div v-if="phase === 'assessing'" class="h-1 bg-muted">
-      <div class="h-full bg-amber-500 transition-all" :style="{ width: `${progressPct}%` }" />
+      <!-- Inline progress: reads next to the count it belongs to -->
+      <span v-if="phase === 'assessing'" class="flex-none w-16 h-1 rounded-full bg-muted overflow-hidden">
+        <span class="block h-full bg-amber-500 transition-all" :style="{ width: `${progressPct}%` }" />
+      </span>
     </div>
   </div>
 </template>

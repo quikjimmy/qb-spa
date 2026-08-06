@@ -14,6 +14,7 @@ import {
 import { usePhotoGuardLive } from '@/lib/photoguardLive'
 import { formLabel } from '@/data/arrivy-forms'
 import { windowTaskToCard, type WindowResponse, type SurveyCard } from '@/lib/surveyTasks'
+import { arrivyTaskIdFrom } from '@/lib/photoguard'
 import ArrivySurveyRow, { type ImportState } from '@/components/photoguard/ArrivySurveyRow.vue'
 import AssessmentDrawer from '@/components/photoguard/AssessmentDrawer.vue'
 
@@ -145,20 +146,23 @@ async function loadSurveys() {
   }
 }
 
-function pgState(rid: string): ImportState | null {
-  return importedTasks.value[rid] ?? null
+function pgState(card: SurveyCard): ImportState | null {
+  const id = arrivyTaskIdFrom(card.task_url)
+  return id ? importedTasks.value[id] ?? null : null
 }
 
 function openAssessment(card: SurveyCard) {
-  const st = pgState(card.rid)
+  const st = pgState(card)
   if (!st?.taskRowId) return
   assessmentTask.value = { id: st.taskRowId, title: card.customer_name || 'Survey' }
 }
 
 async function pullSurvey(card: SurveyCard) {
-  pulling.value = card.rid
+  const arrivyId = arrivyTaskIdFrom(card.task_url)
+  if (!arrivyId) { flash('That survey has no Arrivy task link'); return }
+  pulling.value = arrivyId
   try {
-    const res = await fetch(`/api/photoguard/arrivy/import/${card.rid}`, {
+    const res = await fetch(`/api/photoguard/arrivy/import/${arrivyId}`, {
       method: 'POST', headers: authHeaders(),
     })
     const data = await res.json() as { error?: string; photosAdded?: number }
@@ -404,8 +408,8 @@ const modalAiIssues = computed(() => (openPhoto.value ? parseStringList(openPhot
             <ArrivySurveyRow
               v-for="c in surveyCards" :key="c.rid"
               :card="c"
-              :state="pgState(c.rid)"
-              :importing="pulling === c.rid"
+              :state="pgState(c)"
+              :importing="pulling === arrivyTaskIdFrom(c.task_url)"
               @import="pullSurvey(c)"
               @view="openAssessment(c)"
             />

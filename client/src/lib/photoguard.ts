@@ -261,3 +261,17 @@ export function isEmptyBlock(raw: string | null | undefined): boolean {
     .trim()
   return text === ''
 }
+
+/**
+ * The Arrivy task id for a survey card.
+ *
+ * SurveyCard.rid is the QUICKBASE record id (e.g. 6164), not Arrivy's task id
+ * — the Arrivy id only appears inside task_url
+ * (https://app.arrivy.com/tasks/4704956006662144). Matching on rid silently
+ * showed every imported survey as "Not imported".
+ */
+export function arrivyTaskIdFrom(taskUrl: string | null | undefined): string | null {
+  if (!taskUrl) return null
+  const m = taskUrl.match(/\/tasks\/(\d{6,})/)
+  return m?.[1] ?? null
+}
