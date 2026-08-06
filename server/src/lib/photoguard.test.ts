@@ -642,3 +642,83 @@ test('buildReviewPrompt tells the model that silence is an acceptable answer', a
   // Must not nag about the outstanding list the form already shows.
   assert.match(p, /Do NOT report a required photo as missing just because/)
 })
+
+// ─── Method branching ─────────────────────────────────────────────────
+
+test('an answer can branch the job into extra requirements', async () => {
+  const { default: db } = await import('../db')
+  upsertForm(normalizeArrivyForm(fixtureForm(), 'site_survey'))
+  db.prepare(`DELETE FROM photoguard_requirement_rules`).run()
+
+  // "If you used an Ironridge clamp, we need the torque marking" — the branch
+  // doesn't exist until someone on site picks a method.
+  db.prepare(`
+    INSERT INTO photoguard_requirement_rules
+      (name, form_type, condition_type, condition_field, condition_op, condition_value,
+       target_hashes, target_sections, effect, active)
+    VALUES ('Ironridge clamp needs torque photo', 'site_survey', 'answer', '916',
+            'contains', 'Ironridge', ?, '[]', 'require', 1)
+  `).run(JSON.stringify(['999']))
+
+  // '999' is optional at base.
+  assert.equal(resolveRequirements('site_survey', null).get('999')?.required, false)
+
+  // Another method selected — rule stays quiet.
+  const other = resolveRequirements('site_survey', null, new Map([['916', 'Unirac']]))
+  assert.equal(other.get('999')?.required, false)
+
+  // The method that demands the extra evidence.
+  const branched = resolveRequirements('site_survey', null, new Map([['916', 'Ironridge FlashFoot2']]))
+  assert.equal(branched.get('999')?.required, true)
+  assert.deepEqual(branched.get('999')?.reasons, ['Ironridge clamp needs torque photo'])
+
+  db.prepare(`DELETE FROM photoguard_requirement_rules`).run()
+})
+
+test('answer rules are ignored without answers, and are not bound by the project allowlist', async () => {
+  const rule = {
+    name: 'r', form_type: 'site_survey', condition_type: 'answer' as const,
+    condition_field: '916', condition_op: 'eq' as const, condition_value: 'Ironridge',
+    target_hashes: '[]', target_sections: '[]', effect: 'require' as const, active: 1,
+  }
+  // No answers supplied at all.
+  assert.equal(evaluateRule(rule, {}), false)
+  // A form field hash is not a project_cache column, and must not be rejected
+  // for failing that allowlist.
+  assert.equal(evaluateRule(rule, {}, new Map([['916', 'Ironridge']])), true)
+  assert.equal(evaluateRule(rule, {}, new Map([['916', 'Unirac']])), false)
+})
+
+// ─── Example scoring ──────────────────────────────────────────────────
+
+test('scoreCandidate ranks human approval above model confidence', async () => {
+  const { scoreCandidate } = await import('./photoguardExamples')
+  const base = { megapixels: 12, hasExif: 1, hasGps: 1, gateStatus: 'ok' as string | null }
+
+  const humanApproved = scoreCandidate({ ...base, validationPassed: 1, validationConfidence: 0.5, reviewStatus: 'approved' })
+  const modelOnly = scoreCandidate({ ...base, validationPassed: 1, validationConfidence: 1.0, reviewStatus: null })
+  assert.ok(humanApproved > modelOnly,
+    'a human-approved photo must outrank one the model merely liked — otherwise the model picks its own teaching examples')
+})
+
+test('scoreCandidate refuses anything a reviewer or gate rejected', async () => {
+  const { scoreCandidate } = await import('./photoguardExamples')
+  const base = { megapixels: 12, hasExif: 1, hasGps: 1, validationConfidence: 0.99, validationPassed: 1 }
+  assert.equal(scoreCandidate({ ...base, reviewStatus: 'rejected', gateStatus: 'ok' }), 0)
+  assert.equal(scoreCandidate({ ...base, reviewStatus: 'resubmit', gateStatus: 'ok' }), 0)
+  assert.equal(scoreCandidate({ ...base, reviewStatus: null, gateStatus: 'blocked' }), 0)
+  assert.equal(scoreCandidate({ ...base, validationPassed: 0, reviewStatus: null, gateStatus: 'ok' }), 0)
+  // ...but a human override beats a model failure.
+  assert.ok(scoreCandidate({ ...base, validationPassed: 0, reviewStatus: 'approved', gateStatus: 'ok' }) > 0)
+})
+
+test('scoreCandidate caps the resolution reward so a huge photo of nothing cannot win', async () => {
+  const { scoreCandidate } = await import('./photoguardExamples')
+  const mk = (megapixels: number) => scoreCandidate({
+    megapixels, hasExif: 1, hasGps: 1, validationPassed: 1,
+    validationConfidence: 0.9, reviewStatus: 'approved', gateStatus: 'ok',
+  })
+  assert.equal(mk(48), mk(12), 'resolution saturates')
+  assert.ok(mk(12) > mk(2))
+  assert.ok(mk(48) <= 100)
+})

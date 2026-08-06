@@ -49,6 +49,9 @@ const queue = useUploadQueue()
 const docs = ref<Array<{ recordId: number; type: string; fileName: string | null; url: string | null; linkUrl: string | null }>>([])
 const progress = ref<{ requiredTotal: number; requiredApproved: number; percentApproved: number } | null>(null)
 const showChecklist = ref(false)
+// Surfaced when an answer branches the job into extra requirements — silently
+// growing the list would be baffling on a phone.
+const branchNote = ref('')
 
 // ─── AI job review ───────────────────────────────────────────────────
 interface Finding {
@@ -198,7 +201,8 @@ async function start() {
   error.value = ''
   notImported.value = false
   try {
-    form.value = await loadForm(formType.value, projectRid.value, { force: true })
+    form.value = await loadForm(formType.value, projectRid.value,
+      { force: true, submissionId: submissionId.value })
 
     // Resume an existing submission when the URL names one, else open a new run.
     const existing = route.query['submission'] ? Number(route.query['submission']) : null
@@ -356,11 +360,31 @@ async function saveAnswers() {
   if (!submissionId.value) return
   const payload = Object.entries(answers.value).map(([fieldHash, value]) => ({ fieldHash, value }))
   if (!payload.length) return
-  await fetch(`/api/photoguard/submissions/${submissionId.value}/answers`, {
-    method: 'PATCH',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answers: payload }),
-  }).catch(() => { /* autosave is best-effort; submit re-checks anyway */ })
+  try {
+    await fetch(`/api/photoguard/submissions/${submissionId.value}/answers`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: payload }),
+    })
+    // An answer can branch the job — choosing a mounting method may add the
+    // evidence that method requires — so re-resolve requirements after saving.
+    await reloadRequirements()
+  } catch { /* autosave is best-effort; submit re-checks anyway */ }
+}
+
+async function reloadRequirements() {
+  if (!submissionId.value) return
+  try {
+    const before = new Set((form.value?.fields ?? []).filter(f => f.required).map(f => f.hash))
+    form.value = await loadForm(formType.value, projectRid.value,
+      { force: true, submissionId: submissionId.value })
+    const added = (form.value.fields ?? [])
+      .filter(f => f.fieldType === 'photo' && f.required && !before.has(f.hash))
+    if (added.length) {
+      branchNote.value = `${added.length} extra photo${added.length > 1 ? 's' : ''} now required: ${added.map(f => f.label).slice(0, 3).join(', ')}`
+      setTimeout(() => { branchNote.value = '' }, 8000)
+    }
+  } catch { /* keep the form we have */ }
 }
 
 onBeforeUnmount(() => { if (saveTimer) clearTimeout(saveTimer) })
@@ -490,6 +514,10 @@ async function submit(force = false) {
       >📄 {{ d.type }}<span v-if="d.fileName" class="text-muted-foreground"> · {{ d.fileName.slice(0, 24) }}</span></a>
     </div>
 
+    <p v-if="branchNote" class="rounded-lg border border-sky-300 bg-card p-2.5 text-[12px] text-sky-700">
+      {{ branchNote }}
+    </p>
+
     <p v-if="loading" class="text-sm text-muted-foreground">Loading form…</p>
 
     <!-- Form not imported yet -->
@@ -537,6 +565,7 @@ async function submit(force = false) {
               :field="field"
               :submission-id="submissionId"
               :photos="photosByHash.get(field.hash) ?? []"
+              :example="form?.examples?.[field.hash] ?? null"
               :geo="geo"
               @uploaded="refreshSubmission"
               @queued="queue.refreshQueue()"

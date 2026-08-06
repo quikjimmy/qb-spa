@@ -22,7 +22,13 @@ const props = defineProps<{
   submissionId: number
   photos: PhotoRow[]
   geo: { lat: number; lng: number } | null
+  example?: { thumb: string | null; full: string | null; caption: string; labels: string[] } | null
 }>()
+
+// Reference shot for this requirement. Shown before anything is captured —
+// once the crew has taken theirs, the example stops being the useful thing on
+// screen and collapses to a link.
+const showExample = ref(false)
 
 const emit = defineEmits<{ (e: 'uploaded'): void; (e: 'queued'): void }>()
 
@@ -285,6 +291,32 @@ function onVideoPick(e: Event) {
         class="flex-none text-[10px] font-bold uppercase tracking-wider"
         :class="accentText(accent)"
       >{{ stateLabel(state) }}</span>
+    </div>
+
+    <!-- What a good one looks like. Real accepted work, not stock imagery. -->
+    <div v-if="example?.thumb" class="mt-2 min-w-0">
+      <button
+        type="button"
+        class="flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"
+        @click="showExample = !showExample"
+      >
+        <img :src="example.thumb" alt="" class="w-8 h-8 rounded object-cover bg-muted" />
+        <span class="underline underline-offset-2">
+          {{ showExample ? 'Hide example' : 'See example' }}
+        </span>
+      </button>
+      <div v-if="showExample" class="mt-1.5">
+        <a :href="example.full ?? example.thumb" target="_blank" rel="noopener">
+          <img :src="example.full ?? example.thumb" alt="Example" class="w-full rounded-lg bg-muted" />
+        </a>
+        <p v-if="example.caption" class="mt-1 text-[11px] text-muted-foreground">{{ example.caption }}</p>
+        <ul v-if="example.labels.length" class="mt-1 flex flex-wrap gap-1">
+          <li
+            v-for="l in example.labels" :key="l"
+            class="px-1.5 py-0.5 rounded-full border text-[10px] text-muted-foreground"
+          >{{ l }}</li>
+        </ul>
+      </div>
     </div>
 
     <!-- Other captures on this requirement (teammates, extra angles) -->

@@ -34,6 +34,9 @@ import {
 } from '../lib/photoguardVision'
 import { attachPhotoGuardSseStream, publishPhotoGuardEvent } from '../lib/photoguardEvents'
 import { runJobReview, listFindings, ensureReviewSchema } from '../lib/photoguardReview'
+import {
+  ensureExampleSchema, harvestExamples, examplesFor, primaryExamples, labelsFor, scoreCandidate,
+} from '../lib/photoguardExamples'
 
 export const photoguardRouter = Router()
 
@@ -168,6 +171,7 @@ function ensureSchema(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_rev ON photoguard_photos(review_status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_photos_hash ON photoguard_photos(content_hash)`)
   ensureReviewSchema()
+  ensureExampleSchema()
   seedDefaultRules()
 }
 ensureSchema()
@@ -213,6 +217,23 @@ function siteCoordsFor(sub: Record<string, unknown> | undefined): { lat: number 
     lat: sub?.['site_lat'] != null ? Number(sub['site_lat']) : null,
     lng: sub?.['site_lng'] != null ? Number(sub['site_lng']) : null,
   }
+}
+
+/** Answers on a submission as hash → value, for answer-driven rules.
+ *  Arrays are flattened to a comma list so `contains` works on multi-selects. */
+function answerMap(submissionId: number | null | undefined): Map<string, string> {
+  const m = new Map<string, string>()
+  if (!submissionId) return m
+  const rows = db.prepare(
+    `SELECT field_hash, value FROM photoguard_answers WHERE submission_id = ?`,
+  ).all(submissionId) as Array<{ field_hash: string; value: string | null }>
+  for (const r of rows) {
+    if (r.value == null) continue
+    let v: unknown = r.value
+    try { v = JSON.parse(r.value) } catch { /* plain string */ }
+    m.set(r.field_hash, Array.isArray(v) ? v.join(', ') : String(v ?? ''))
+  }
+  return m
 }
 
 /** Photos whose bytes are already on this submission — powers duplicate detection. */
@@ -305,7 +326,11 @@ async function validateStoredPhoto(photoId: number): Promise<void> {
 
   const cat = p.category_hash ? findCategory(p.category_hash) : null
   const label = p.category_label || cat?.label || 'Unspecified'
-  const hints = cat?.hints || ''
+  // Labels a reviewer attached to this requirement's examples are the
+  // mechanism for teaching the model what to watch for on this specific shot.
+  const taught = p.category_hash ? labelsFor(p.category_hash) : []
+  const hints = [cat?.hints || '', taught.length ? `Reviewers specifically check for: ${taught.join('; ')}.` : '']
+    .filter(Boolean).join(' ')
 
   db.prepare(`UPDATE photoguard_photos SET validation_status='running' WHERE id=?`).run(photoId)
 
@@ -360,13 +385,18 @@ photoguardRouter.get('/forms/:formType', (req: Request, res: Response) => {
   }
   const rid = req.query['project'] ? Number(req.query['project']) : null
   const project = projectFor(rid)
-  const resolved = resolveRequirements(ft, project)
+  // When the caller names its submission, answer-driven rules can apply —
+  // this is what makes a method choice reveal its extra requirements.
+  const subId = req.query['submission'] ? Number(req.query['submission']) : null
+  const resolved = resolveRequirements(ft, project, answerMap(subId))
+  const examples = primaryExamples(ft)
 
   const tokens = tokenContextFromProject(project)
   res.json({
     ...form,
     projectRid: rid,
     design: describeDesign(project),
+    examples,
     fields: form.fields.map(f => {
       // Arrivy leaves {{customer_name}}-style placeholders in its text for
       // its own renderer to fill; we're the renderer now.
@@ -555,7 +585,7 @@ photoguardRouter.get('/submissions/:id', (req: Request, res: Response) => {
     SELECT * FROM photoguard_photos WHERE submission_id = ? ORDER BY created_at
   `).all(id)
   const project = projectFor(sub['project_rid'] as number | null)
-  const resolved = resolveRequirements(String(sub['form_type']), project)
+  const resolved = resolveRequirements(String(sub['form_type']), project, answerMap(id))
 
   // Who has contributed, so the crew can see each other working.
   const contributors = db.prepare(`
@@ -664,7 +694,7 @@ photoguardRouter.post('/submissions/:id/submit', (req: Request, res: Response) =
   const form = getForm(formType)
   if (!form) { res.status(409).json({ error: 'Form definition missing' }); return }
 
-  const resolved = resolveRequirements(formType, projectFor(sub['project_rid'] as number | null))
+  const resolved = resolveRequirements(formType, projectFor(sub['project_rid'] as number | null), answerMap(id))
   const photos = db.prepare(`
     SELECT category_hash, gate_status, validation_passed, review_status
     FROM photoguard_photos WHERE submission_id = ?
@@ -786,6 +816,99 @@ photoguardRouter.get('/submissions/:id/connectivity', (req: Request, res: Respon
       lastAt: samples[samples.length - 1]?.['at'] ?? null,
     },
   })
+})
+
+// ─── Reference examples ───────────────────────────────────────────────
+
+photoguardRouter.get('/examples/:fieldHash', (req: Request, res: Response) => {
+  res.json({ examples: examplesFor(String(req.params['fieldHash'])) })
+})
+
+/** Promote an existing photo to be the reference for its requirement. */
+photoguardRouter.post('/examples', (req: Request, res: Response) => {
+  const b = req.body as Record<string, unknown>
+  const photoId = Number(b['photoId'])
+  const p = db.prepare(`
+    SELECT id, category_hash, form_type, file_path, thumb_path, width, height,
+           validation_passed, validation_confidence, review_status, has_exif, has_gps, gate_status
+    FROM photoguard_photos WHERE id = ?
+  `).get(photoId) as Record<string, unknown> | undefined
+  if (!p) { res.status(404).json({ error: 'Photo not found' }); return }
+  if (!p['category_hash']) { res.status(400).json({ error: 'Photo has no requirement attached' }); return }
+
+  const labels = Array.isArray(b['labels']) ? (b['labels'] as unknown[]).map(String) : []
+  const score = scoreCandidate({
+    validationPassed: p['validation_passed'] as number | null,
+    validationConfidence: p['validation_confidence'] as number | null,
+    reviewStatus: p['review_status'] as string | null,
+    megapixels: (Number(p['width'] ?? 0) * Number(p['height'] ?? 0)) / 1_000_000,
+    hasExif: p['has_exif'] as number | null,
+    hasGps: p['has_gps'] as number | null,
+    gateStatus: p['gate_status'] as string | null,
+  })
+  const hash = String(p['category_hash'])
+  const makePrimary = b['primary'] !== false
+
+  const tx = db.transaction(() => {
+    if (makePrimary) {
+      db.prepare(`UPDATE photoguard_examples SET is_primary = 0 WHERE field_hash = ?`).run(hash)
+    }
+    db.prepare(`
+      INSERT INTO photoguard_examples
+        (field_hash, form_type, photo_id, file_path, thumb_path, caption, labels, score, source, is_primary, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'promoted', ?, ?)
+      ON CONFLICT(field_hash, photo_id) DO UPDATE SET
+        caption = excluded.caption, labels = excluded.labels,
+        score = excluded.score, is_primary = excluded.is_primary, source = 'promoted'
+    `).run(hash, p['form_type'] ?? null, photoId, p['file_path'], p['thumb_path'],
+      String(b['caption'] ?? ''), JSON.stringify(labels), score, makePrimary ? 1 : 0, actorName(req))
+  })
+  tx()
+  res.status(201).json({ ok: true, fieldHash: hash, score })
+})
+
+/** Edit the caption/labels on an example. Labels are the training signal — they
+ *  are injected into the vision prompt for this requirement. */
+photoguardRouter.patch('/examples/:id', (req: Request, res: Response) => {
+  const id = Number(req.params['id'])
+  const b = req.body as Record<string, unknown>
+  const row = db.prepare(`SELECT field_hash FROM photoguard_examples WHERE id = ?`).get(id) as
+    | { field_hash: string } | undefined
+  if (!row) { res.status(404).json({ error: 'Example not found' }); return }
+
+  if (b['primary'] === true) {
+    db.prepare(`UPDATE photoguard_examples SET is_primary = 0 WHERE field_hash = ?`).run(row.field_hash)
+  }
+  db.prepare(`
+    UPDATE photoguard_examples SET
+      caption = COALESCE(?, caption),
+      labels = COALESCE(?, labels),
+      is_primary = CASE WHEN ? THEN 1 ELSE is_primary END
+    WHERE id = ?
+  `).run(
+    b['caption'] != null ? String(b['caption']) : null,
+    Array.isArray(b['labels']) ? JSON.stringify((b['labels'] as unknown[]).map(String)) : null,
+    b['primary'] === true ? 1 : 0,
+    id,
+  )
+  res.json({ ok: true })
+})
+
+photoguardRouter.delete('/examples/:id', (req: Request, res: Response) => {
+  db.prepare(`DELETE FROM photoguard_examples WHERE id = ?`).run(Number(req.params['id']))
+  res.json({ ok: true })
+})
+
+/** Bulk-seed examples from photos already held, including the Arrivy
+ *  back-catalogue pulled in by /scan. */
+photoguardRouter.post('/examples/harvest', (req: Request, res: Response) => {
+  const report = harvestExamples({
+    formType: req.query['formType'] ? String(req.query['formType']) : undefined,
+    perField: req.query['perField'] ? Number(req.query['perField']) : undefined,
+    minScore: req.query['minScore'] ? Number(req.query['minScore']) : undefined,
+    createdBy: actorName(req),
+  })
+  res.json(report)
 })
 
 // ─── Live job review ──────────────────────────────────────────────────

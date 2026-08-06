@@ -9,14 +9,14 @@
 // Verified source forms (Arrivy, 2026-08-05):
 //   site_survey      → 'Site Survey Form'               79 photo fields
 //   install_checkout → 'Field Task Site Checkout V1.02' 127 photo fields
-import { authHeaders, isEmptyBlock, type FormDefinition, type FormField, type FormSection } from '@/lib/photoguard'
+import { authHeaders, isEmptyBlock, type ExampleRef, type FormDefinition, type FormField, type FormSection } from '@/lib/photoguard'
 
-export type { FormDefinition, FormField, FormSection }
+export type { FormDefinition, FormField, FormSection, ExampleRef }
 
 const cache = new Map<string, FormDefinition>()
 
-function key(formType: string, projectRid?: number | null): string {
-  return `${formType}::${projectRid ?? ''}`
+function key(formType: string, projectRid?: number | null, submissionId?: number | null): string {
+  return `${formType}::${projectRid ?? ''}::${submissionId ?? ''}`
 }
 
 export class FormNotImportedError extends Error {
@@ -29,13 +29,18 @@ export class FormNotImportedError extends Error {
 export async function loadForm(
   formType: string,
   projectRid?: number | null,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; submissionId?: number | null } = {},
 ): Promise<FormDefinition> {
-  const k = key(formType, projectRid)
+  const k = key(formType, projectRid, opts.submissionId)
   const hit = cache.get(k)
   if (hit && !opts.force) return hit
 
-  const qs = projectRid ? `?project=${projectRid}` : ''
+  // The submission is passed so answer-driven rules resolve: picking a method
+  // in the form can add requirements, and the server needs the answers to know.
+  const params = new URLSearchParams()
+  if (projectRid) params.set('project', String(projectRid))
+  if (opts.submissionId) params.set('submission', String(opts.submissionId))
+  const qs = params.toString() ? `?${params}` : ''
   const res = await fetch(`/api/photoguard/forms/${encodeURIComponent(formType)}${qs}`, {
     headers: authHeaders(),
   })

@@ -41,6 +41,13 @@ export interface DesignSummary {
   text: string
 }
 
+export interface ExampleRef {
+  thumb: string | null
+  full: string | null
+  caption: string
+  labels: string[]
+}
+
 export interface FormDefinition {
   formType: string
   title: string
@@ -49,6 +56,7 @@ export interface FormDefinition {
   importedAt: string | null
   projectRid?: number | null
   design?: DesignSummary | null
+  examples?: Record<string, ExampleRef>
   sections: FormSection[]
   fields: FormField[]
 }

@@ -601,7 +601,12 @@ export function tokenContextFromProject(project: ProjectRow | null): TokenContex
   }
 }
 
-export type ConditionType = 'missing_items' | 'attribute' | 'inspection'
+// 'answer' keys off what the crew selected in THIS form, which is what makes
+// method branching work: choose a mounting system, and the extra evidence that
+// method demands (a torque marking, a specific flashing detail) becomes
+// required. Project-level conditions can't express that — the branch doesn't
+// exist until someone on site picks a path.
+export type ConditionType = 'missing_items' | 'attribute' | 'inspection' | 'answer'
 export type ConditionOp = 'contains' | 'nonempty' | 'empty' | 'eq' | 'neq' | 'gt' | 'lt'
 
 export interface RequirementRule {
@@ -636,7 +641,10 @@ export function hasValue(raw: unknown): boolean {
 
 /** Columns a rule is allowed to read. Allowlisted so a rule row can never
  *  reference an arbitrary column (these are user-editable records). */
+/** For 'answer' rules the condition_field is a form field hash, not a column,
+ *  so it isn't constrained by the project_cache allowlist below. */
 export const RULE_FIELDS: Record<ConditionType, string[]> = {
+  answer: [],
   missing_items: ['permit_missing_items', 'nem_missing_items', 'pto_missing_items'],
   attribute: [
     'mpu_callout', 'existing_system', 'system_size_kw', 'module_brand', 'inverter_brand',
@@ -649,12 +657,24 @@ export const RULE_FIELDS: Record<ConditionType, string[]> = {
  * Evaluate one rule against a project_cache row.
  * Pure — no DB access — so the matrix of ops is cheap to unit test.
  */
-export function evaluateRule(rule: RequirementRule, project: ProjectRow): boolean {
+export function evaluateRule(
+  rule: RequirementRule,
+  project: ProjectRow,
+  answers?: Map<string, string>,
+): boolean {
   if (rule.active !== 1) return false
-  const allowed = RULE_FIELDS[rule.condition_type]
-  if (!allowed || !allowed.includes(rule.condition_field)) return false
 
-  const raw = project[rule.condition_field]
+  let raw: unknown
+  if (rule.condition_type === 'answer') {
+    // Answers live on the submission, not the project. No allowlist applies —
+    // the field hash is only meaningful within this form.
+    if (!answers) return false
+    raw = answers.get(rule.condition_field)
+  } else {
+    const allowed = RULE_FIELDS[rule.condition_type]
+    if (!allowed || !allowed.includes(rule.condition_field)) return false
+    raw = project[rule.condition_field]
+  }
   const str = raw == null ? '' : String(raw).trim()
   const target = (rule.condition_value ?? '').trim()
 
@@ -709,6 +729,7 @@ export interface ResolvedRequirement {
 export function resolveRequirements(
   formType: string,
   project: ProjectRow | null,
+  answers?: Map<string, string>,
 ): Map<string, ResolvedRequirement> {
   const out = new Map<string, ResolvedRequirement>()
   const form = getForm(formType)
@@ -718,14 +739,15 @@ export function resolveRequirements(
     if (f.fieldType !== 'photo') continue
     out.set(f.hash, { required: f.required, base: f.required, reasons: [] })
   }
-  if (!project) return out
+  // Answer-driven rules still apply on a project-less submission.
+  if (!project && !answers?.size) return out
 
   const rules = listRules(formType)
   const requiredBy = new Map<string, string[]>()
   const optionalBy = new Map<string, string[]>()
 
   for (const rule of rules) {
-    if (!evaluateRule(rule, project)) continue
+    if (!evaluateRule(rule, project ?? {}, answers)) continue
 
     let hashes: string[] = []
     let sections: string[] = []
