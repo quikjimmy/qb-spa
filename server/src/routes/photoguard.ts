@@ -362,8 +362,26 @@ async function validateStoredPhoto(photoId: number): Promise<void> {
   // flag equipment that doesn't match what was sold.
   const design = describeDesign(projectFor(p.project_rid))
 
+  // Position within the set, so the model knows this is one of several.
+  let group: { collective: boolean; expectedCount?: number | null; position?: number | null; total?: number | null } | undefined
+  if (cat?.collective && p.category_hash) {
+    const sibs = db.prepare(`
+      SELECT id FROM photoguard_photos
+      WHERE category_hash = ?
+        AND ((submission_id IS NOT NULL AND submission_id = ?) OR (task_rowid IS NOT NULL AND task_rowid = ?))
+      ORDER BY created_at
+    `).all(p.category_hash, p.submission_id, p.task_rowid) as Array<{ id: number }>
+    const idx = sibs.findIndex(x => x.id === p.id)
+    group = {
+      collective: true,
+      expectedCount: cat.expectedCount,
+      position: idx >= 0 ? idx + 1 : null,
+      total: sibs.length || null,
+    }
+  }
+
   try {
-    const r = await validatePhotoBuffer(buf, label, hints, design?.text)
+    const r = await validatePhotoBuffer(buf, label, hints, design?.text, group)
     db.prepare(`
       UPDATE photoguard_photos SET
         validation_status='done', validation_passed=?, validation_confidence=?,

@@ -37,6 +37,7 @@ let resolveRequirements: Forms['resolveRequirements']
 let ARRIVY_TYPE_MAP: Forms['ARRIVY_TYPE_MAP']
 let describeDesign: Forms['describeDesign']
 let resolveFormTokens: Forms['resolveFormTokens']
+let detectGrouping: Forms['detectGrouping']
 let parseVisionResponse: Vision['parseVisionResponse']
 let buildVisionPrompt: Vision['buildVisionPrompt']
 let haversineMeters: Quality['haversineMeters']
@@ -47,7 +48,7 @@ let gatesBlock: Quality['gatesBlock']
 before(async () => {
   ({
     normalizeArrivyForm, evaluateRule, slugify, defaultHintFor,
-    upsertForm, getForm, resolveRequirements, ARRIVY_TYPE_MAP, describeDesign, resolveFormTokens,
+    upsertForm, getForm, resolveRequirements, ARRIVY_TYPE_MAP, describeDesign, resolveFormTokens, detectGrouping,
   } = await import('./photoguardForms'));
   ({ parseVisionResponse, buildVisionPrompt } = await import('./photoguardVision'));
   ({ haversineMeters, dmsToDecimal, runQualityGates, gatesBlock } = await import('./photoguardQuality'))
@@ -721,4 +722,84 @@ test('scoreCandidate caps the resolution reward so a huge photo of nothing canno
   assert.equal(mk(48), mk(12), 'resolution saturates')
   assert.ok(mk(12) > mk(2))
   assert.ok(mk(48) <= 100)
+})
+
+// ─── Collective requirements ──────────────────────────────────────────
+
+test('detectGrouping reads multi-photo requirements from real Arrivy labels', () => {
+  // Explicit counts.
+  assert.deepEqual(detectGrouping('360 Degree of Sub panel room (8 Photos)'),
+    { collective: true, expectedCount: 8 })
+  assert.deepEqual(detectGrouping('Rafter size (Measuring Tape | 2 Photos)'),
+    { collective: true, expectedCount: 2 })
+  assert.deepEqual(detectGrouping('Foundation Attachment Point(s) (3 Photos)'),
+    { collective: true, expectedCount: 3 })
+
+  // "(1 Photo)" is a single shot, NOT a set.
+  assert.deepEqual(detectGrouping('Knee Wall (1 Photo)'),
+    { collective: false, expectedCount: 1 })
+
+  // One-each-of-N, count unknown until someone counts them.
+  assert.deepEqual(detectGrouping('Panel Sticker (1 Photo per Sticker)'),
+    { collective: true, expectedCount: null })
+  assert.deepEqual(detectGrouping('Meter Wall (1 Photo per Meter)'),
+    { collective: true, expectedCount: null })
+
+  // Collective by wording.
+  assert.deepEqual(detectGrouping('Photos of Every Roof Plane'),
+    { collective: true, expectedCount: null })
+  assert.equal(detectGrouping('360-Degree View of Attic (8 Photos)').collective, true)
+})
+
+test('detectGrouping does not mistake a content requirement for a set', () => {
+  // The counterexample that matters: one photo that must SHOW everything is
+  // not the same as a set of photos. Treating it as collective would stop us
+  // failing a photo that genuinely misses the point.
+  assert.deepEqual(detectGrouping('Final Array ( must be able to count all panels)'),
+    { collective: false, expectedCount: null })
+  assert.equal(detectGrouping('Rail Bonding (bare copper on each row or Bonding Clips)').collective, false)
+  assert.equal(detectGrouping('MSP (Dead-front Off)').collective, false)
+  assert.equal(detectGrouping('House Number').collective, false)
+  assert.equal(detectGrouping('').collective, false)
+})
+
+test('a collective photo is judged as a contribution, not as the whole job', () => {
+  const label = 'Photos of Every Roof Plane'
+  const solo = buildVisionPrompt(label, 'Show the roof planes.')
+  const group = buildVisionPrompt(label, 'Show the roof planes.', undefined,
+    { collective: true, expectedCount: null, position: 3, total: 15 })
+
+  // The failure that was happening: every single roof photo rejected for not
+  // showing all the planes.
+  assert.match(group, /MULTI-PHOTO REQUIREMENT/)
+  assert.match(group, /Do NOT fail it for being partial/)
+  assert.match(group, /photo 3 of 15/)
+  assert.match(group, /Penalising a single photo for not\s+showing everything is always wrong/)
+
+  // "Wrong angle" must not survive into a set member's fail criteria.
+  assert.equal(/- Wrong angle or doesn't show what's needed/.test(group), false)
+  assert.equal(/- Wrong angle or doesn't show what's needed/.test(solo), true)
+
+  // A normal requirement is unchanged.
+  assert.equal(/MULTI-PHOTO REQUIREMENT/.test(solo), false)
+})
+
+test('normalizeArrivyForm carries grouping onto photo fields', () => {
+  const raw = {
+    id: '1', title: 'T',
+    content: [
+      { hash: 'a', type: 'ImageUploadComponent', yAxisValue: 1,
+        content: { label: '360 Degree of Sub panel room (8 Photos)', isRequired: true } },
+      { hash: 'b', type: 'ImageUploadComponent', yAxisValue: 2,
+        content: { label: 'House Number', isRequired: true } },
+      { hash: 'c', type: 'DropDownComponent', yAxisValue: 3, content: { label: 'Panel Rating' } },
+    ],
+  }
+  const f = normalizeArrivyForm(raw, 'site_survey')
+  const byHash = new Map(f.fields.map(x => [x.hash, x]))
+  assert.equal(byHash.get('a')?.collective, true)
+  assert.equal(byHash.get('a')?.expectedCount, 8)
+  assert.equal(byHash.get('b')?.collective, false)
+  // Non-photo fields never carry grouping.
+  assert.equal(byHash.get('c')?.collective, false)
 })

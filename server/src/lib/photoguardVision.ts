@@ -63,7 +63,22 @@ export class VisionNotConfiguredError extends Error {
  * isn't the subject, otherwise every roof shot would fail for not showing a
  * module sticker.
  */
-export function buildVisionPrompt(categoryLabel: string, hints: string, design?: string): string {
+export interface GroupContext {
+  /** True when the requirement can only be met by a set of photos. */
+  collective: boolean
+  /** Stated count when the label gives one ("(8 Photos)"). */
+  expectedCount?: number | null
+  /** Where this photo sits in the set, when known. */
+  position?: number | null
+  total?: number | null
+}
+
+export function buildVisionPrompt(
+  categoryLabel: string,
+  hints: string,
+  design?: string,
+  group?: GroupContext,
+): string {
   const designBlock = design
     ? `
 
@@ -76,9 +91,32 @@ you actually see. Do NOT fail a photo merely because equipment is not visible
 in it; most photos are not equipment photos.`
     : ''
 
+  // A collective requirement ("Photos of Every Roof Plane", "360 Degree ...
+  // (8 Photos)") cannot be satisfied by any single frame. Judging each photo
+  // against the whole requirement failed every one of them with objections
+  // that were true but useless — "does not capture all roof planes". For these,
+  // the question is whether THIS photo is a usable contribution; whether the
+  // SET is complete is assessed separately, across all of them.
+  const groupBlock = group?.collective
+    ? `
+
+IMPORTANT — THIS IS A MULTI-PHOTO REQUIREMENT.
+"${categoryLabel}" is satisfied by a SET of photos${group.expectedCount ? ` (about ${group.expectedCount})` : ''}, not by any single one.${group.position && group.total ? ` This is photo ${group.position} of ${group.total} submitted so far.` : ''}
+
+Judge ONLY whether THIS photo is a usable contribution to that set:
+- PASS it if it is in focus, adequately lit, and clearly shows part of the
+  required subject from a useful angle.
+- FAIL it only if it is unusable (blurred, too dark, obstructed) or shows an
+  entirely different subject.
+- Do NOT fail it for being partial, for showing only one plane/angle/side, for
+  not covering the whole area, or for not being comprehensive. Coverage is
+  judged across the whole set, not here. Penalising a single photo for not
+  showing everything is always wrong on this category.`
+    : ''
+
   return `You are a solar site survey photo validator. A field agent just took this photo for the category: "${categoryLabel}"
 
-Requirements for this photo: ${hints || 'No additional requirements beyond matching the category.'}${designBlock}
+Requirements for this photo: ${hints || 'No additional requirements beyond matching the category.'}${designBlock}${groupBlock}
 
 Respond in JSON format ONLY:
 {
@@ -92,7 +130,9 @@ A photo PASSES if it meets the requirements. It FAILS if:
 - Wrong subject (photo doesn't match the category)
 - Too blurry or dark to be useful
 - Missing required elements (measuring tape, labels, etc.)
-- Wrong angle or doesn't show what's needed
+${group?.collective
+  ? '- (Not applicable here: partial coverage is expected on a multi-photo requirement)'
+  : "- Wrong angle or doesn't show what's needed"}
 - Photo appears to be a placeholder, stock image, or not a real site photo`
 }
 
@@ -227,6 +267,7 @@ export async function validatePhotoBuffer(
   categoryLabel: string,
   hints: string,
   design?: string,
+  group?: GroupContext,
 ): Promise<VisionResult> {
   if (!visionConfigured()) throw new VisionNotConfiguredError()
 
@@ -253,7 +294,7 @@ export async function validatePhotoBuffer(
         format: 'json',
         messages: [{
           role: 'user',
-          content: buildVisionPrompt(categoryLabel, hints, design),
+          content: buildVisionPrompt(categoryLabel, hints, design, group),
           images: [buf.toString('base64')],
         }],
       }),

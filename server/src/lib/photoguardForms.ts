@@ -67,6 +67,8 @@ export interface NormalizedField {
   sectionKey: string
   sortOrder: number
   hints: string
+  collective: boolean
+  expectedCount: number | null
 }
 
 export interface NormalizedForm {
@@ -110,6 +112,52 @@ export function slugify(s: string): string {
  *  clobber it — see upsertForm(). */
 export function defaultHintFor(label: string): string {
   return `The photo must clearly show: ${label}. It should be in focus, well lit, and framed so the subject is unambiguous.`
+}
+
+// ─── Collective requirements ──────────────────────────────────────────
+//
+// Some requirements can only be satisfied by a SET of photos: "Photos of Every
+// Roof Plane", "360 Degree of Sub panel room (8 Photos)", "Panel Sticker
+// (1 Photo per Sticker)". Judging each frame against the whole requirement
+// fails 100% of them — no single photo shows every roof plane — and the
+// objections are unarguable but useless ("does not capture all roof planes").
+//
+// Arrivy encodes the intent in the label, so it's parsed rather than guessed.
+// Verified against the live forms; the counterexample that must NOT match is
+// "Final Array ( must be able to count all panels)", which is one photo with a
+// content requirement, not a set.
+
+export interface Grouping {
+  collective: boolean
+  /** Explicit count when the label states one; null when it varies. */
+  expectedCount: number | null
+}
+
+export function detectGrouping(label: string): Grouping {
+  const l = (label ?? '').trim()
+
+  // "(1 Photo per Sticker)" / "(1 Photo per Meter)" — one each, count unknown
+  // until someone counts the stickers. MUST be tested before the plain-count
+  // branch, which would otherwise read the "1" and call it a single photo.
+  if (/\(\s*\d*\s*photos?\s+per\s+/i.test(l)) {
+    return { collective: true, expectedCount: null }
+  }
+
+  // "(8 Photos)" / "(Measuring Tape | 2 Photos)" — the count isn't always
+  // first inside the bracket, so scan the whole group.
+  const explicit = l.match(/\([^)]*?(\d+)\s*photos?\b[^)]*\)/i)
+  if (explicit?.[1]) {
+    const n = Number(explicit[1])
+    // "(1 Photo)" is a single shot, not a set.
+    return { collective: n > 1, expectedCount: n }
+  }
+
+  // "Photos of Every Roof Plane", "360 Degree of ..." — collective by wording.
+  if (/photos?\s+of\s+every\b/i.test(l) || /^\s*360[\s-]?degree/i.test(l)) {
+    return { collective: true, expectedCount: null }
+  }
+
+  return { collective: false, expectedCount: null }
 }
 
 function optionsFor(type: string, c: ArrivyComponentContent): string[] | null {
@@ -181,6 +229,7 @@ export function normalizeArrivyForm(raw: ArrivyForm, formType: PhotoGuardFormTyp
     if (currentKey === 'general') seedGeneral()
 
     const label = (c.label ?? c.title ?? c.text ?? '').trim()
+    const grouping = fieldType === 'photo' ? detectGrouping(label) : { collective: false, expectedCount: null }
     fields.push({
       hash,
       label: label || (fieldType === 'block' ? '' : `(untitled ${fieldType})`),
@@ -190,6 +239,8 @@ export function normalizeArrivyForm(raw: ArrivyForm, formType: PhotoGuardFormTyp
       sectionKey: currentKey,
       sortOrder: sortOrder++,
       hints: fieldType === 'photo' ? defaultHintFor(label || 'the requested subject') : '',
+      collective: grouping.collective,
+      expectedCount: grouping.expectedCount,
     })
   }
 
@@ -243,6 +294,8 @@ export function ensurePhotoGuardFormSchema(): void {
       source TEXT NOT NULL DEFAULT 'arrivy',
       ai_readable INTEGER NOT NULL DEFAULT 1,
       ai_writable INTEGER NOT NULL DEFAULT 0,
+      collective INTEGER NOT NULL DEFAULT 0,
+      expected_count INTEGER,
       retired_at TEXT,
       UNIQUE (form_id, hash)
     )
@@ -263,6 +316,13 @@ export function ensurePhotoGuardFormSchema(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `)
+  // Additive migration for stores created before collective requirements.
+  {
+    const cols = db.prepare(`PRAGMA table_info(photoguard_form_fields)`).all() as Array<{ name: string }>
+    const names = new Set(cols.map(c => c.name))
+    if (!names.has('collective')) db.exec(`ALTER TABLE photoguard_form_fields ADD COLUMN collective INTEGER NOT NULL DEFAULT 0`)
+    if (!names.has('expected_count')) db.exec(`ALTER TABLE photoguard_form_fields ADD COLUMN expected_count INTEGER`)
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_fields_form ON photoguard_form_fields(form_id)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pg_fields_type ON photoguard_form_fields(field_type)`)
 }
@@ -320,14 +380,14 @@ export function upsertForm(form: NormalizedForm): UpsertResult {
 
     const insert = db.prepare(`
       INSERT INTO photoguard_form_fields
-        (form_id, hash, label, field_type, required, options, hints, section_key, sort_order, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'arrivy')
+        (form_id, hash, label, field_type, required, options, hints, section_key, sort_order, source, collective, expected_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'arrivy', ?, ?)
     `)
     // Deliberately does NOT touch hints — see hint-preservation update below.
     const update = db.prepare(`
       UPDATE photoguard_form_fields
       SET label = ?, field_type = ?, required = ?, options = ?, section_key = ?,
-          sort_order = ?, retired_at = NULL
+          sort_order = ?, collective = ?, expected_count = ?, retired_at = NULL
       WHERE form_id = ? AND hash = ?
     `)
     const refreshHint = db.prepare(`
@@ -344,14 +404,15 @@ export function upsertForm(form: NormalizedForm): UpsertResult {
       const was = prior.get(fl.hash)
       if (!was) {
         insert.run(formId, fl.hash, fl.label, fl.fieldType, fl.required ? 1 : 0,
-          opts, fl.hints, fl.sectionKey, fl.sortOrder)
+          opts, fl.hints, fl.sectionKey, fl.sortOrder,
+          fl.collective ? 1 : 0, fl.expectedCount)
         inserted++
         continue
       }
       // Fields we authored ourselves are not Arrivy's to overwrite.
       if (was.source === 'custom') continue
       update.run(fl.label, fl.fieldType, fl.required ? 1 : 0, opts,
-        fl.sectionKey, fl.sortOrder, formId, fl.hash)
+        fl.sectionKey, fl.sortOrder, fl.collective ? 1 : 0, fl.expectedCount, formId, fl.hash)
       if (was.hints_edited === 1) hintsPreserved++
       else refreshHint.run(fl.hints, formId, fl.hash)
       updated++
@@ -395,6 +456,8 @@ export interface StoredField {
   source: string
   ai_readable: number
   ai_writable: number
+  collective: number
+  expected_count: number | null
 }
 
 export interface StoredForm {
@@ -414,6 +477,8 @@ export interface StoredForm {
     sectionKey: string
     sortOrder: number
     source: string
+    collective: boolean
+    expectedCount: number | null
   }>
 }
 
@@ -433,7 +498,8 @@ export function getForm(formType: string): StoredForm | null {
   `).all(form.id) as Array<{ key: string; title: string; sort_order: number }>
 
   const fields = db.prepare(`
-    SELECT hash, label, field_type, required, options, hints, section_key, sort_order, source
+    SELECT hash, label, field_type, required, options, hints, section_key, sort_order, source,
+           collective, expected_count
     FROM photoguard_form_fields
     WHERE form_id = ? AND retired_at IS NULL
     ORDER BY sort_order
@@ -456,6 +522,8 @@ export function getForm(formType: string): StoredForm | null {
       sortOrder: f.sort_order,
       hints: f.hints,
       source: f.source,
+      collective: f.collective === 1,
+      expectedCount: f.expected_count,
     })),
   }
 }
@@ -463,17 +531,20 @@ export function getForm(formType: string): StoredForm | null {
 /** Category lookup for a photo coming back from Arrivy, by field hash. */
 export function findCategory(hash: string): {
   formType: string; label: string; sectionKey: string; hints: string; required: boolean
+  collective: boolean; expectedCount: number | null
 } | null {
   ensurePhotoGuardFormSchema()
   const row = db.prepare(`
-    SELECT f.form_type, ff.label, ff.section_key, ff.hints, ff.required
+    SELECT f.form_type, ff.label, ff.section_key, ff.hints, ff.required,
+           ff.collective, ff.expected_count
     FROM photoguard_form_fields ff
     JOIN photoguard_forms f ON f.id = ff.form_id
     WHERE ff.hash = ? AND ff.field_type = 'photo'
     ORDER BY ff.retired_at IS NOT NULL
     LIMIT 1
   `).get(hash) as
-    | { form_type: string; label: string; section_key: string; hints: string; required: number }
+    | { form_type: string; label: string; section_key: string; hints: string; required: number
+        collective: number; expected_count: number | null }
     | undefined
   if (!row) return null
   return {
@@ -482,6 +553,8 @@ export function findCategory(hash: string): {
     sectionKey: row.section_key,
     hints: row.hints,
     required: row.required === 1,
+    collective: row.collective === 1,
+    expectedCount: row.expected_count,
   }
 }
 
